@@ -30,7 +30,7 @@ Each arm installs skills into the repository's `.agents/skills/`, which both CLI
 | `none` | Nothing | Control |
 | `placebo` | One skill of about the same length as the largest pack's entry skill, with generic advice ("read the code before changing it, keep changes small") and a broad description | Whether any extra skill text has an effect |
 | `superpowers` | [obra/superpowers](https://github.com/obra/superpowers) as its Codex and Cursor install guides describe it, including `using-superpowers`, `test-driven-development`, `systematic-debugging` and `verification-before-completion` | The best-known workflow pack |
-| `pocock` | [mattpocock/skills](https://github.com/mattpocock/skills), engineering skills relevant to backend code: `tdd`, `diagnose`, `zoom-out`, `codebase-design` | A second widely used pack, with a smaller and more targeted set |
+| `pocock` | [mattpocock/skills](https://github.com/mattpocock/skills), the 27 skills its plugin manifest installs (11 of them model-invocable, including `tdd`, `diagnosing-bugs`, `codebase-design` and `code-review`) | A second widely used pack, with a smaller and more targeted set |
 | `pstack` (Cursor only) | [cursor/plugins `pstack`](https://github.com/cursor/plugins/tree/main/pstack) 0.15.29 (commit `190d287`, 2026-10-20), installed as a Cursor plugin in the clean home | Cursor's widely promoted "rigorous engineering" pack |
 
 **pstack needs three adjustments, all recorded as part of the treatment:**
@@ -76,7 +76,7 @@ The experiment is about making effective changes, so every task is a change task
 
 **Calibration first.** Past experiments here hit the ceiling: agents passed whether or not they had help. Before the tasks are frozen, `none` runs each task 3 times per agent. A change task is kept only if the control passes between 1 and 2 of 3 times on at least one agent. Otherwise it is made harder or easier and calibrated again, and every attempt is logged. The calibration runs are not part of the results.
 
-**Step 0 (feasibility):** confirm that `sm-core` tests run offline under JDK 21 in under 5 minutes. Experiment 3 only compiled shopizer and never ran its tests. If they do not run, the verifier becomes the hidden test alone, run with `-pl sm-core -am -Dtest=...`.
+**Step 0 (feasibility), done 2026-10-21:** the whole reactor's tests run offline under JDK 21 (`sm-core` in 20 s, `sm-shop` REST integration tests in 27 s). The verifier is `scripts/verify.sh`: it saves the agent's diff, copies in the hidden test and runs `mvn -o clean test` on the whole reactor. It must clean, because a stale compiled test in `target/` gave a false failure while the tasks were built.
 
 ## Measures
 
@@ -156,4 +156,13 @@ Stage 1 comes to about **$10 to $50** (`pstack` is the most uncertain part) and 
 
 - 2026-10-21: design written.
 - 2026-10-21 (before any run): cost estimate corrected from $60–170 to the measured token counts of Experiment 3. `QA` cut to `none` and `caveman`. `CROSS` change task and "effective change" measures added. `pstack` arm added (Cursor only, invoked through `/poteto-mode`, every model role set to `inherit-parent`). H4 changed from "pack overhead on QA" to "tests that bite"; H7 added.
+- 2026-10-21 (before any run), tasks and arms built:
+  - `BUG` plants a copy-paste slip in `ProductPriceUtils.finalPrice` (a special with both dates checks the start date twice, so it never applies). The existing suite passes with the plant. Hidden test: 4 cases of the date window.
+  - `FEAT`: the cart limit of 99, over `POST /cart`, `PUT /cart/{code}` and `POST /cart/{code}/multi`. Hidden test: 4 API tests.
+  - `CROSS`: manufacturer `website`, over the entity, the API model, two populators, a mapper, the product populator and API validation. Create and update swallow exceptions into 503, so a 400 needs a deliberate design. Hidden test: 5 API tests against the JSON.
+  - Each hidden test fails on the starting code and passes on `tasks/<id>/reference.patch`. The full suite passes with each reference applied.
+  - `setup.sh` replaces git history with one commit, so the plant cannot be found by diffing.
+  - Arms come from pinned commits through `scripts/build_arms.sh`. `superpowers` is all 15 skills, and the text its `sessionStart` hook injects goes in `AGENTS.md`, because plugin folders are blocked by isolation. `pocock` is the 27 skills in its plugin manifest; Matt Pocock's `diagnose` is now `diagnosing-bugs`, and `zoom-out` is no longer published. `pstack` is its skills and agents as project files, plus the model rule.
+  - Isolation: Codex runs with a clean `HOME` and `CODEX_HOME`, which also hides `~/.codex/AGENTS.md` and Codex memories. Cursor cannot log in under a clean home, so it runs with the real home and the rig's `isolate` blocks the skill, plugin and agent folders. Both are blocked from this repository, where the hidden tests live.
+  - AgentTrialRig changes: an arm-level `prompt_prefix` (for `/poteto-mode`), and an `isolate` fix (see `results/gate.md`).
 - 2026-10-21 (before any run): `caveman` moved to its own experiment ([2026-10-caveman](../2026-10-caveman/)) at the user's request. `QA` and H3 removed from this one. 162 runs.
