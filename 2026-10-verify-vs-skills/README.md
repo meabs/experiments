@@ -160,3 +160,4 @@ The unit of analysis is the task. For each task and arm, the result is passes ou
   - **What stays the same.** The selection rule and the gate apply to arm D at medium effort, unchanged. Arm A's calibration at low effort is reused, as its settings have not changed.
   - **Where the record is.** The high-effort calibration is kept as a record in `results/calibration-high-effort.md`, and it is not part of the results.
 
+- 2026-10-21 (after calibration, no measured run): **the gate did not pass.** Of the 20 tasks the rule kept, 7 scored 0 or 1 of 2 in arm D at medium effort; the gate needs 8 (`results/calibration.md`). Arm A at low effort passed 36 of 50 calibration runs, D at medium 42 of 50 and D at high 47 of 50 (`results/calibration-high-effort.md`). Two of the three neighbour-break tasks (`OPTORDER`, `PAGEVIS`) were passed by every calibration run in both arms and were not kept. Under the design, more tasks are built and calibrated before any measured run.
