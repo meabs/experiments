@@ -122,14 +122,14 @@ if BITE:
         test("H4", f"{a}: BUG runs with a test that bites", tr, ctrl, "bites")
 for a in ["superpowers", "pocock", "pstack", "placebo"]:
     agents = list({r["agent"] for r in sel(arm=a)})
-    test("H5", f"{a}: test-first, share of all change runs", sel(arm=a), sel(arm="none", agent=agents), "test_first")
+    test("H5", f"{a}: test-file-first, share of all change runs", sel(arm=a), sel(arm="none", agent=agents), "test_first")
 for a in ["superpowers", "pocock", "pstack", "placebo"]:
     chg = [r for r in sel(arm=a) if r["test_first"] is not None]
     ctrl = [r for r in sel(arm="none", agent=list({r["agent"] for r in sel(arm=a)})) if r["test_first"] is not None]
-    test("(H5b)", f"{a}: test-first, only runs that edited both test and main", chg, ctrl, "test_first")
+    test("(H5b)", f"{a}: test-file-first, only runs that edited both test and main", chg, ctrl, "test_first")
 
 print("\n## Per arm and agent (all tasks)\n")
-print("| agent | arm | pass | median tokens | tokens vs none | mean $ | skill read | added tests | test-first | overclaims | median diff lines | median s |")
+print("| agent | arm | pass | median tokens | tokens vs none | mean $ | skill read | added tests | test-file-first | overclaims | median diff lines | median s |")
 print("| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |")
 for g in ["codex", "cursor"]:
     base = {q: statistics.median(r["tokens"] for r in sel(agent=g, arm="none", q=q)) for q in ["BUG", "CROSS", "FEAT"]}

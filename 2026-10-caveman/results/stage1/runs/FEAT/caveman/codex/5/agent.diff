@@ -1,0 +1,158 @@
+diff --git a/sm-shop/src/main/java/com/salesmanager/shop/store/controller/shoppingCart/facade/ShoppingCartFacadeImpl.java b/sm-shop/src/main/java/com/salesmanager/shop/store/controller/shoppingCart/facade/ShoppingCartFacadeImpl.java
+index 7fdc139..35e79da 100755
+--- a/sm-shop/src/main/java/com/salesmanager/shop/store/controller/shoppingCart/facade/ShoppingCartFacadeImpl.java
++++ b/sm-shop/src/main/java/com/salesmanager/shop/store/controller/shoppingCart/facade/ShoppingCartFacadeImpl.java
+@@ -37,6 +37,7 @@ import com.salesmanager.core.business.services.catalog.product.ProductService;
+ import com.salesmanager.core.business.services.catalog.product.attribute.ProductAttributeService;
+ import com.salesmanager.core.business.services.shoppingcart.ShoppingCartCalculationService;
+ import com.salesmanager.core.business.services.shoppingcart.ShoppingCartService;
++import com.salesmanager.core.business.services.system.MerchantConfigurationService;
+ //import com.salesmanager.core.business.utils.ProductPriceUtils;
+ import com.salesmanager.core.model.catalog.product.Product;
+ import com.salesmanager.core.model.catalog.product.attribute.ProductAttribute;
+@@ -46,6 +47,7 @@ import com.salesmanager.core.model.catalog.product.variant.ProductVariant;
+ import com.salesmanager.core.model.customer.Customer;
+ import com.salesmanager.core.model.merchant.MerchantStore;
+ import com.salesmanager.core.model.reference.language.Language;
++import com.salesmanager.core.model.system.MerchantConfiguration;
+ import com.salesmanager.core.model.shoppingcart.ShoppingCart;
+ import com.salesmanager.shop.constants.Constants;
+ import com.salesmanager.shop.mapper.cart.ReadableShoppingCartMapper;
+@@ -71,6 +73,8 @@ import com.salesmanager.shop.utils.ImageFilePath;
+ public class ShoppingCartFacadeImpl implements ShoppingCartFacade {
+ 
+ 	private static final Logger LOG = LoggerFactory.getLogger(ShoppingCartFacadeImpl.class);
++	private static final String CART_MAX_LINE_QUANTITY = "CART_MAX_LINE_QUANTITY";
++	private static final int DEFAULT_CART_MAX_LINE_QUANTITY = 99;
+ 
+ 	@Inject
+ 	private ShoppingCartService shoppingCartService;
+@@ -78,6 +82,8 @@ public class ShoppingCartFacadeImpl implements ShoppingCartFacade {
+ 	@Inject
+ 	private ShoppingCartCalculationService shoppingCartCalculationService;
+ 
++	@Inject
++	private MerchantConfigurationService merchantConfigurationService;
+ 
+ 	@Inject
+ 	private ProductService productService;
+@@ -114,6 +120,8 @@ public class ShoppingCartFacadeImpl implements ShoppingCartFacade {
+ 	// REMOVE
+ 	public ShoppingCartData addItemsToShoppingCart(final ShoppingCartData shoppingCartData, final ShoppingCartItem item,
+ 			final MerchantStore store, final Language language, final Customer customer) throws Exception {
++		long maxLineQuantity = getMaxLineQuantity(store);
++		validateQuantity(item.getQuantity(), maxLineQuantity);
+ 
+ 		ShoppingCart cartModel = null;
+ 
+@@ -146,6 +154,8 @@ public class ShoppingCartFacadeImpl implements ShoppingCartFacade {
+ 		}
+ 		com.salesmanager.core.model.shoppingcart.ShoppingCartItem shoppingCartItem = createCartItem(cartModel, item,
+ 				store);
++		validateAddQuantity(cartModel, shoppingCartItem, CollectionUtils.isEmpty(item.getShoppingCartAttributes()),
++				maxLineQuantity);
+ 
+ 		boolean duplicateFound = false;
+ 		if (CollectionUtils.isEmpty(item.getShoppingCartAttributes())) {// increment quantity
+@@ -344,7 +354,7 @@ public class ShoppingCartFacadeImpl implements ShoppingCartFacade {
+ 
+ 	// used for api
+ 	private List<com.salesmanager.core.model.shoppingcart.ShoppingCartItem> createCartItems(ShoppingCart cartModel,
+-			List<PersistableShoppingCartItem> shoppingCartItems, MerchantStore store) throws Exception {
++			List<PersistableShoppingCartItem> shoppingCartItems, MerchantStore store, long maxLineQuantity) throws Exception {
+ 
+ 		List<String> productSkus = shoppingCartItems.stream().map(s -> s.getProduct()).collect(Collectors.toList());
+ 
+@@ -378,6 +388,7 @@ public class ShoppingCartFacadeImpl implements ShoppingCartFacade {
+ 				continue;
+ 			}
+ 			PersistableShoppingCartItem shoppingCartItem = oShoppingCartItem.get();
++			validateQuantity(shoppingCartItem.getQuantity(), maxLineQuantity);
+ 			item.setQuantity(shoppingCartItem.getQuantity());
+ 			item.setShoppingCart(cartModel);
+ 
+@@ -477,6 +488,56 @@ public class ShoppingCartFacadeImpl implements ShoppingCartFacade {
+ 		return reqAttr.getRequest().getAttribute(key);
+ 	}
+ 
++	private long getMaxLineQuantity(final MerchantStore store) throws Exception {
++		MerchantConfiguration configuration = merchantConfigurationService
++				.getMerchantConfiguration(CART_MAX_LINE_QUANTITY, store);
++		if (configuration == null || StringUtils.isBlank(configuration.getValue())) {
++			return DEFAULT_CART_MAX_LINE_QUANTITY;
++		}
++
++		try {
++			long maxLineQuantity = Long.parseLong(configuration.getValue().trim());
++			if (maxLineQuantity < 0) {
++				throw new NumberFormatException("negative value");
++			}
++			return maxLineQuantity;
++		} catch (NumberFormatException e) {
++			throw new CartModificationException("Configuration " + CART_MAX_LINE_QUANTITY
++					+ " must be a non-negative whole number", e);
++		}
++	}
++
++	private void validateQuantity(final int quantity, final long maxLineQuantity)
++			throws CartModificationException {
++		if (quantity > maxLineQuantity) {
++			throw new CartModificationException("Cart line quantity " + quantity
++					+ " exceeds maximum " + maxLineQuantity);
++		}
++	}
++
++	private void validateAddQuantity(final ShoppingCart cartModel,
++			final com.salesmanager.core.model.shoppingcart.ShoppingCartItem itemModel,
++			final boolean mergeUnattributedItem, final long maxLineQuantity)
++			throws CartModificationException {
++		validateQuantity(itemModel.getQuantity(), maxLineQuantity);
++
++		if (!mergeUnattributedItem || CollectionUtils.isEmpty(cartModel.getLineItems())) {
++			return;
++		}
++
++		for (com.salesmanager.core.model.shoppingcart.ShoppingCartItem existingItem : cartModel.getLineItems()) {
++			if (existingItem.getProduct().getId().longValue() == itemModel.getProduct().getId().longValue()
++					&& CollectionUtils.isEmpty(existingItem.getAttributes())) {
++				long resultingQuantity = (long) existingItem.getQuantity() + itemModel.getQuantity();
++				if (!itemModel.isProductVirtual() && resultingQuantity > maxLineQuantity) {
++					throw new CartModificationException("Cart line quantity " + resultingQuantity
++							+ " exceeds maximum " + maxLineQuantity);
++				}
++				return;
++			}
++		}
++	}
++
+ 	// @Override
+ 	// DELETE
+ 	public ShoppingCartData getShoppingCartData(final Customer customer, final MerchantStore store,
+@@ -831,6 +892,8 @@ public class ShoppingCartFacadeImpl implements ShoppingCartFacade {
+ 			MerchantStore store, Language language) throws Exception {
+ 
+ 		com.salesmanager.core.model.shoppingcart.ShoppingCartItem itemModel = createCartItem(cartModel, item, store);
++		validateAddQuantity(cartModel, itemModel, CollectionUtils.isEmpty(item.getAttributes()),
++				getMaxLineQuantity(store));
+ 
+ 		// need to check if the item is already in the cart
+ 		boolean duplicateFound = false;
+@@ -878,6 +941,7 @@ public class ShoppingCartFacadeImpl implements ShoppingCartFacade {
+ 			MerchantStore store, Language language) throws Exception {
+ 
+ 		com.salesmanager.core.model.shoppingcart.ShoppingCartItem itemModel = createCartItem(cartModel, item, store);
++		validateQuantity(item.getQuantity(), getMaxLineQuantity(store));
+ 
+ 		boolean itemModified = false;
+ 		// check if existing product
+@@ -969,8 +1033,9 @@ public class ShoppingCartFacadeImpl implements ShoppingCartFacade {
+ 			MerchantStore store, Language language) throws Exception {
+ 
+ 		int itemUpdatedCnt = 0;
++		long maxLineQuantity = getMaxLineQuantity(store);
+ 		List<com.salesmanager.core.model.shoppingcart.ShoppingCartItem> inCartItemList = createCartItems(cartModel,
+-				cartItems, store);
++				cartItems, store, maxLineQuantity);
+ 
+ 		Set<com.salesmanager.core.model.shoppingcart.ShoppingCartItem> existingItems = cartModel.getLineItems();
+ 		// loop over incoming items since they drive changes

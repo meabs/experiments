@@ -20,18 +20,18 @@
 | H4 | superpowers: BUG runs with a test that bites | 12/12 | 8/12 | 0.047 | yes |
 | H4 | pocock: BUG runs with a test that bites | 12/12 | 8/12 | 0.047 | yes |
 | H4 | pstack: BUG runs with a test that bites | 5/6 | 8/12 | 0.439 | no |
-| H5 | superpowers: test-first, share of all change runs | 31/36 | 0/36 | 0.000 | yes |
-| H5 | pocock: test-first, share of all change runs | 10/36 | 0/36 | 0.000 | yes |
-| H5 | pstack: test-first, share of all change runs | 6/18 | 0/18 | 0.010 | yes |
-| H5 | placebo: test-first, share of all change runs | 0/36 | 0/36 | 1.000 | no |
-| (H5b) | superpowers: test-first, only runs that edited both test and main | 31/35 | 0/10 | 0.000 | yes |
-| (H5b) | pocock: test-first, only runs that edited both test and main | 10/22 | 0/10 | 0.010 | yes |
-| (H5b) | pstack: test-first, only runs that edited both test and main | 6/13 | 0/2 | 0.343 | no |
-| (H5b) | placebo: test-first, only runs that edited both test and main | 0/11 | 0/10 | 1.000 | no |
+| H5 | superpowers: test-file-first, share of all change runs | 31/36 | 0/36 | 0.000 | yes |
+| H5 | pocock: test-file-first, share of all change runs | 10/36 | 0/36 | 0.000 | yes |
+| H5 | pstack: test-file-first, share of all change runs | 6/18 | 0/18 | 0.010 | yes |
+| H5 | placebo: test-file-first, share of all change runs | 0/36 | 0/36 | 1.000 | no |
+| (H5b) | superpowers: test-file-first, only runs that edited both test and main | 31/35 | 0/10 | 0.000 | yes |
+| (H5b) | pocock: test-file-first, only runs that edited both test and main | 10/22 | 0/10 | 0.010 | yes |
+| (H5b) | pstack: test-file-first, only runs that edited both test and main | 6/13 | 0/2 | 0.343 | no |
+| (H5b) | placebo: test-file-first, only runs that edited both test and main | 0/11 | 0/10 | 1.000 | no |
 
 ## Per arm and agent (all tasks)
 
-| agent | arm | pass | median tokens | tokens vs none | mean $ | skill read | added tests | test-first | overclaims | median diff lines | median s |
+| agent | arm | pass | median tokens | tokens vs none | mean $ | skill read | added tests | test-file-first | overclaims | median diff lines | median s |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | codex | none | 16/18 | 1.67M | 1.00x | 0.076 | 0/18 | 7/18 | 0/8 | 2 | 82 | 134 |
 | codex | placebo | 14/18 | 2.20M | 1.25x | 0.087 | 18/18 | 9/18 | 0/9 | 3 | 82 | 161 |

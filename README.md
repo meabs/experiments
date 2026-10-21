@@ -5,4 +5,4 @@ Agent experiments run with [AgentTrialRig](https://github.com/meabs/AgentTrialRi
 | Folder | Question | Status |
 | --- | --- | --- |
 | [2026-10-skills-impact](2026-10-skills-impact/) | Do popular agent skill packs (Superpowers, Matt Pocock's skills, pstack) change correctness or cost on a real Java repository? | Done: no pass-rate gain; Superpowers works test-first at 2–3x tokens ([report](2026-10-skills-impact/REPORT.md)) |
-| [2026-10-caveman](2026-10-caveman/) | Does the caveman skill cut tokens without losing correctness? | Design |
+| [2026-10-caveman](2026-10-caveman/) | Does the caveman skill cut tokens without losing correctness? | Done (Codex): output down 13%, total saving not shown, correctness held ([report](2026-10-caveman/REPORT.md)) |

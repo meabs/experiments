@@ -170,3 +170,13 @@ Stage 1 comes to about **$10 to $50** (`pstack` is the most uncertain part) and 
 - 2026-10-21 (before any run): `caveman` moved to its own experiment ([2026-10-caveman](../2026-10-caveman/)) at the user's request. `QA` and H3 removed from this one. 162 runs.
 - 2026-10-21 (after stage 1, before analysis): test-first is counted over all change runs, as written; the share among runs that edited both test and main code is also reported. Tests that bite: a run's test changes are applied to the planted code and its test classes are run; a failing test counts as biting, and runs that wrote no test count as not biting. Stage 2 skipped: `trialrig plan` marks every cell futile.
 - 2026-10-21 (after stage 1): the cost estimate was wrong for Cursor (0.4M to 1.2M tokens a run, mostly cache reads, against 30k to 80k expected). See `REPORT.md`.
+- 2026-10-21 (after analysis), engineering-rigour review. Raw results unchanged. Preregistered tables unchanged, except that "test-first" is renamed "test-file-first". Added, and labelled retrospective in `REPORT.md`:
+  - a regrade of every run from its Maven log (162/162 agree);
+  - per-defect mutation testing of the agents' BUG tests;
+  - confirmed-TDD evidence from the event logs;
+  - effect sizes with intervals, and Holm-adjusted p-values;
+  - task-clustering and ceiling analysis;
+  - comparability of how the arms were delivered;
+  - reconciled cost figures.
+  `summarize.py` was hardened (expected hidden count, skips, unreadable reports); the audit found no grade affected. Regression tests are in `tests/`, and `scripts/reproduce.sh` rebuilds every analysis.
+
