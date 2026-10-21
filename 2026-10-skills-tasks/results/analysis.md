@@ -52,3 +52,25 @@ A pack's gain counts as a pack effect only if it exceeds the placebo's (T3).
 | feature | 5 | 7/10 | 6/10 | 9/10 | 8/10 |
 
 Total estimated spend (list prices): $2.95.
+
+## Exploratory, added after the results (2026-10-21, following an external review)
+
+Not part of the preregistered analysis. These contrasts were chosen after seeing the data, so p values are descriptive only.
+
+Tasks on which every arm scored the same: 7 of 16 (AMBIG, AVAIL, CATDUP, HREVIEW, MANCODE, MANINUSE, MANORDER). Only 9 tasks separate the arms at all.
+
+### Packs against the placebo (generic-guidance arm)
+
+| pack vs placebo | tasks better / same / worse | mean per-task difference in pass rate (95% CI) | p (two-sided) |
+| --- | --- | --- | --- |
+| superpowers | 3 / 9 / 4 | +3.1 pts (-18.8 to +25.0) | 1.000 |
+| pocock | 4 / 12 / 0 | +12.5 pts (+3.1 to +25.0) | 0.125 |
+
+### Cost per verified success
+
+| arm | verified passes | total $ | $ per verified pass | tokens per verified pass | minutes per verified pass |
+| --- | --- | --- | --- | --- | --- |
+| none | 24/32 | 0.50 | 0.021 | 0.50M | 1.0 |
+| placebo | 23/32 | 0.55 | 0.024 | 0.56M | 1.1 |
+| superpowers | 24/32 | 1.22 | 0.051 | 1.46M | 2.3 |
+| pocock | 27/32 | 0.68 | 0.025 | 0.64M | 1.2 |

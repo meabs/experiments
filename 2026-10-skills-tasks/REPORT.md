@@ -6,12 +6,14 @@ Run on 2026-10-21. The design, hypotheses and selection rule are in [README.md](
 
 - **No pack measurably raised the pass rate.**
   - Superpowers passed 24 of 32 runs, the same as the control.
-  - Pocock passed 27 of 32 runs: 4 tasks better, 1 worse, +9.4 points. That is not significant (Holm p = 0.38), and the interval runs from −3 to +22 points.
+  - Pocock passed 27 of 32 runs: 4 tasks better, 1 worse, +9.4 points. That is inconclusive (Holm p = 0.38): the interval runs from −3 to +22 points, and every gain was a single run on a task.
   - The placebo passed 23 of 32.
+  - This is no *measured* improvement, not evidence that the packs have no benefit.
 - **Superpowers changed how the agent worked and cost about three times as much.**
   - It wrote tests in 23 of 32 runs (the control wrote none) and ran Maven in 28 of 32 runs (the control ran Maven once).
   - It used 3.07 times the control's tokens per task (2.50 to 3.68). Pocock used 1.57 times (1.10 to 2.24).
-- **Writing tests helped where the failure only shows at runtime, and that is the only place it helped.**
+- **More process did not mean more correct changes.** Superpowers ran the test suite in 28 of 32 runs against 1 of 32 for the control, and passed the same number.
+- **On one task, the arm that tested against the running API got it right.** This is a plausible mechanism, not proof that testing caused it: the pack changed other behaviour too, and only one run is confirmed test-first.
   - On `TAXRATE`, the control and the placebo added validation annotations that nothing enforces and failed all four runs. Superpowers passed both of its runs. Both wrote an integration test that calls the endpoint and added a range check in the API; one run is confirmed to have seen its test fail before the fix (the other is unknown).
   - On `ADDR`, `CARTCALC` and `PAGE`, Superpowers did worse than the control.
 - **Nearly every failure came with a claim of success.** In 28 of the 30 failed runs, the agent said its change worked. This held in every arm, so no pack fixed it.
@@ -25,7 +27,7 @@ These results are at **low** reasoning effort and are not directly comparable wi
 | --- | --- |
 | Agent | Codex `gpt-5.6-luna`, reasoning effort low, clean home, the same isolation as skills-impact |
 | Repository | shopizer at `6a4a0a6` (Java, Maven, JDK 21) |
-| Arms | `none`, `placebo` (a generic "careful engineering" skill), `superpowers`, `pocock`, byte-identical to skills-impact's |
+| Arms | `none`, `placebo` (a generic "careful engineering" skill), `superpowers`, `pocock`, byte-identical to skills-impact's. The placebo is not inert: it holds real general guidance (understand the call path, consider edge cases, keep changes small), so it is better read as a *generic-guidance* arm. The packs are adapted to Codex's skill layout, and Superpowers gets its bootstrap through `AGENTS.md` |
 | Tasks | 16, chosen from a pool of 18 by a rule fixed before calibration: 10 real upstream bugs, 1 planted bug, 5 features |
 | Runs | 16 tasks × 4 arms × 2 = 128, all completed (status `ok`, no timeouts) |
 | Grading | Hidden API-level JUnit tests the agent never saw, plus the full existing suite. A run passes only if every hidden test ran and passed and no other test failed |
@@ -71,6 +73,8 @@ Each task contributes one number: a pack's passes minus the control's passes, fr
 
 Neither T1 nor T2 is supported. The placebo moved results on 4 of 16 tasks, about as often as the packs did. So a one-run swing on a task is within the noise of two runs at low effort.
 
+Only 9 of the 16 tasks separate the arms at all. Six were passed by every run and `HREVIEW` was failed by every run, so the effective sample is smaller than it looks.
+
 For Pocock, the pre-planned exploratory check does not point to the skills:
 
 - 23 of the 27 runs that read a Pocock skill passed;
@@ -89,6 +93,33 @@ For Pocock, the pre-planned exploratory check does not point to the skills:
 - Superpowers' cost ratio (3.1x) matches skills-impact at high effort (2–3x). In both experiments, Superpowers mostly changed the process and the cost, not the outcome.
 - At low effort, the control almost never tests its own change: it ran Maven tests in 1 of 32 runs.
 - Pocock read a skill in 27 of 32 runs and the placebo in all 32. The placebo reads cost little (1.09x).
+
+## Exploratory analysis, added after the results
+
+Added on 2026-10-21 after an external review, so it is not part of the preregistered analysis. The contrasts were chosen after seeing the data, so the p values are descriptive only. The numbers are in [results/analysis.md](results/analysis.md).
+
+**Packs against the generic-guidance arm.** The design said a pack counts only if it beats the placebo, but tested each pack only against `none`.
+
+| pack vs placebo | tasks better / same / worse | mean per-task difference in pass rate | p (two-sided) |
+| --- | --- | --- | --- |
+| superpowers | 3 / 9 / 4 | +3.1 pts | 1.000 |
+| pocock | 4 / 12 / 0 | +12.5 pts | 0.125 |
+
+- Pocock never did worse than the generic-guidance arm. But only 4 tasks differ, so the exact test cannot go below p = 0.125. A bootstrap interval over so few differing tasks is not reliable, so I don't give one.
+- This is a lead for the next experiment, not a result.
+
+**Cost per verified success.** This is a better decision measure than the token ratio alone, because it charges failed runs to the arm that produced them.
+
+| arm | verified passes | total $ | $ per verified pass | tokens per verified pass | minutes per verified pass |
+| --- | --- | --- | --- | --- | --- |
+| none | 24/32 | 0.50 | 0.021 | 0.50M | 1.0 |
+| placebo | 23/32 | 0.55 | 0.024 | 0.56M | 1.1 |
+| superpowers | 24/32 | 1.22 | 0.051 | 1.46M | 2.3 |
+| pocock | 27/32 | 0.68 | 0.025 | 0.64M | 1.2 |
+
+Superpowers costs about 2.4 times as much as the control per verified change and takes about 2.3 times as long. Pocock's extra passes bring its cost per success close to the control's.
+
+**Effort may matter more than skills.** `HREVIEW` passed 2 of 2 at high effort in calibration (`results/calibration-high.md`) and 0 of 8 at low effort here, across all four arms. That is a clue, not a controlled comparison: the runs were different, and there are 2 against 8.
 
 ## What went wrong, by task
 
@@ -145,7 +176,9 @@ The eighth run (Pocock, run 2) kept create working but did not touch the API, so
 ## How far the result goes
 
 - **Sixteen tasks are too few for effects of this size.** The per-task differences for Pocock have a standard deviation of about 0.27 (in pass-rate units). A real +9-point effect would need roughly 65 tasks to reach 80% power at this α. The interval cannot rule out effects of that size, but it does rule out a gain of more than about 22 points from either pack on tasks like these.
-- **Two runs per task is coarse.** The placebo, which should do nothing, changed 4 tasks by one run each.
+- **Two runs per task is coarse.** The placebo, which has no specialist content, changed 4 tasks by one run each.
+- **Few tasks separate the arms.** Picking the 16 hardest of only 18 candidates did little to avoid ceiling and floor effects: 7 tasks scored the same in every arm.
+- **Codex only.** The packs were adapted to Codex's skill layout. This says nothing about how they perform in their original Claude Code setting.
 - **One repository and one agent at one effort level.** I wrote the tasks, reference patches and hidden tests, and they are committed so others can check them. Ten of the bugs are real upstream defects, and one is planted.
 - **Not comparable with skills-impact on pass rate.** That experiment ran at high effort, where the control passed 32 of 34 calibration runs on this pool. The cost and process findings do line up.
 
@@ -167,13 +200,26 @@ The selection rule was applied as written ([results/calibration.md](results/cali
 | 1/2 | `ADDR`, `CONTENT`, `CUSTDUP`, `HCUST`, `NOTFOUND` |
 | 2/2, kept | the other 9 |
 
-One change after the runs, to presentation only: `analyse.py` printed the T3 row without its first columns, because of a misplaced conditional expression. I fixed that line and reran the script. The statistics were not changed.
+After the runs, an exploratory section was added following an external review: packs against the placebo, cost per verified success, and the effort clue. It is labelled as such, and the preregistered tests are unchanged. Wording was also tightened: the placebo is now described as an active generic-guidance arm, Pocock as inconclusive, and the TAXRATE testing evidence as a plausible mechanism, not a cause.
+
+One other change after the runs, to presentation only: `analyse.py` printed the T3 row without its first columns, because of a misplaced conditional expression. I fixed that line and reran the script. The statistics were not changed.
 
 ## Suggested next step
 
-The control's errors at low effort are mostly runtime traps (`TAXRATE`, `HREVIEW`, `NOTFOUND`) that compiling and the existing suite do not reveal. That is where test-writing helped on `TAXRATE`, and it is also where all three packs failed together on `HREVIEW`.
+A 60-task repeat would size the Pocock signal more precisely, but it would leave the more useful causal question open. A smaller, targeted design would separate the effect of verification, of a full pack and of reasoning effort:
 
-A follow-up with about 60 tasks would size the Pocock signal. It should weight runtime-trap tasks and ask one question directly: does running the endpoint, not just writing a unit test, change the outcome?
+| arm | configuration | what it isolates |
+| --- | --- | --- |
+| A | no skills, low effort | baseline |
+| B | a short instruction to verify against the running API, low effort | value of explicit verification |
+| C | Superpowers, low effort | what the full pack adds |
+| D | no skills, high effort | value of more reasoning |
+
+- **Tasks.** Use runtime-trap tasks such as `TAXRATE`, `HREVIEW`, `ADDR` and `HCUST`, plus new tasks where the fix must keep neighbouring behaviour working.
+- **Difficulty.** Some tasks must still be hard at high effort, or arm D will sit at the ceiling: high effort passed 32 of 34 in calibration.
+- **Runs.** Use more runs per task, randomise run order, and keep the hidden verifier.
+- **Measures.** Report cost and time per verified success.
+- **Hypothesis.** Explicit verification against executable behaviour gives more correctness per unit of cost than a broad skill pack.
 
 ## Reproducing
 

@@ -123,3 +123,27 @@ for k in ["real bug", "planted bug", "feature"]:
     if ts:
         print(f"| {k} | {len(ts)} | " + " | ".join(f"{sum(passes(t, a) for t in ts)}/{2 * len(ts)}" for a in ARMS) + " |")
 print(f"\nTotal estimated spend (list prices): ${sum(r['cost'] for r in rows):.2f}.")
+
+print("\n## Exploratory, added after the results (2026-10-21, following an external review)\n")
+print("Not part of the preregistered analysis. These contrasts were chosen after seeing the data, so p values are "
+      "descriptive only.\n")
+same = [t for t in tasks if len({passes(t, a) for a in ARMS}) == 1]
+print(f"Tasks on which every arm scored the same: {len(same)} of {len(tasks)} ({', '.join(same)}). "
+      f"Only {len(tasks) - len(same)} tasks separate the arms at all.\n")
+print("### Packs against the placebo (generic-guidance arm)\n")
+print("| pack vs placebo | tasks better / same / worse | mean per-task difference in pass rate (95% CI) | p (two-sided) |")
+print("| --- | --- | --- | --- |")
+for a in ["superpowers", "pocock"]:
+    d = [passes(t, a) - passes(t, "placebo") for t in tasks]
+    rate = [x / 2 for x in d]
+    lo, hi = boot(rate)
+    print(f"| {a} | {sum(x > 0 for x in d)} / {sum(x == 0 for x in d)} / {sum(x < 0 for x in d)} | "
+          f"{st.mean(rate) * 100:+.1f} pts ({lo * 100:+.1f} to {hi * 100:+.1f}) | {signflip_p(d, True):.3f} |")
+print("\n### Cost per verified success\n")
+print("| arm | verified passes | total $ | $ per verified pass | tokens per verified pass | minutes per verified pass |")
+print("| --- | --- | --- | --- | --- | --- |")
+for a in ARMS:
+    rs = [r for r in rows if r["arm"] == a]
+    n = sum(r["passed"] for r in rs)
+    print(f"| {a} | {n}/{len(rs)} | {sum(r['cost'] for r in rs):.2f} | {sum(r['cost'] for r in rs) / n:.3f} | "
+          f"{sum(r['tokens'] for r in rs) / n / 1e6:.2f}M | {sum(r['seconds'] for r in rs) / n / 60:.1f} |")
