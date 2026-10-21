@@ -168,3 +168,8 @@ The unit of analysis is the task. For each task and arm, the result is passes ou
   - The new tasks are calibrated with arms A (low) and D (medium), 2 runs each, as before.
   - Why three new tasks were enough: the gate failed by one task, and two of the three original *N* tasks were not kept. Their prompts named the neighbouring behaviour, and every calibration run avoided the trap.
 - 2026-10-21 (after calibrating the three added tasks, no measured run): **the gate again did not pass (7 of 8).** Arm A at low effort found `BOXVIS` hard (0/2) and `CUSTREVIEW` hard (1/2), but arm D at medium effort passed both 2 of 2. `USERACTIVE` was passed by every run and was not kept. The rule now keeps `BOXVIS` and `CUSTREVIEW` in place of `MANCODE` and `HCUST`.
+- 2026-10-21 (before any measured run): **the measured runs go ahead although the gate did not pass (7 of 8)**, at the user's decision.
+  - **Why.** Two rounds of task building showed that medium effort solves most tasks that defeat low effort. More tasks were unlikely to pass the gate.
+  - **Comparisons unaffected.** H1 and H3 (`verify` and `superpowers` against `none`) do not depend on the gate. H2 (`medium` against `none`) can still be detected with arm D near the ceiling.
+  - **Comparisons affected.** The ceiling limits the secondary comparisons of B and C with D, and the report says so.
+  - **The kept tasks.** The 20 tasks kept by the unchanged rule are those in `results/calibration.md`.
