@@ -1,0 +1,3 @@
+Merchants set a display "order" on each manufacturer, when creating it (POST /api/v1/private/manufacturer) and when updating it (PUT /api/v1/private/manufacturer/{id}), so that the storefront shows brands in their chosen order. But the order is never saved: every manufacturer comes back with "order": 0, and the storefront list comes back in no particular order.
+
+Store the order sent on create and update, return it, and make the storefront manufacturer list (GET /api/v1/manufacturers) come back sorted by order, lowest first. Manufacturers with the same order are sorted by code. Paging the list must keep this sort across pages.

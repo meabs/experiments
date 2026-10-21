@@ -13,5 +13,5 @@ D=sm-shop/src/test/java/com/salesmanager/test/shop/hidden
 mkdir -p "$D" && cp "$E/hidden/$TRIAL_QUESTION/"*.java "$D/"
 mvn -o -B -Dmaven.repo.local="$HOME/.m2/repository" -Dmaven.test.failure.ignore=true clean test > "$R/verify-mvn.log" 2>&1
 mrc=$?
-n=$(cat "$E/hidden/$TRIAL_QUESTION/"*.java | grep -c "@Test")
+n=$(cat "$E/hidden/$TRIAL_QUESTION/"*.java | grep -cE "@Test([^A-Za-z]|$)")
 python3 -I "$E/scripts/summarize.py" "$R" "$mrc" "$n"

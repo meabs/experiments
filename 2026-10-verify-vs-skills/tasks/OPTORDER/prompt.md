@@ -1,0 +1,3 @@
+Our merchandisers set a display order on product options (such as Colour and Size) and on option values (such as Red and Blue) so the storefront lists them in a sensible order. The order never sticks: whatever "order" they send when creating or updating an option or an option value through the admin REST API, reading it back (GET /api/v1/private/product/option/{id} and GET /api/v1/private/product/option/value/{id}) gives 0.
+
+The "order" sent on create and update must be stored and returned for both options and option values. Our older import tool sends "sortOrder" instead of "order" for option values, and that works today; it must keep working.

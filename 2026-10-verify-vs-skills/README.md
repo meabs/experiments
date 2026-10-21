@@ -133,3 +133,23 @@ The unit of analysis is the task. For each task and arm, the result is passes ou
 ## Amendment log
 
 - 2026-10-21: design written at the user's request, following the skills-tasks report and its external review. Codex only.
+- 2026-10-21 (before calibration), the candidate pool of 25:
+  - **New tasks (8).**
+    - Neighbour-break (*N*), each with a `naive.patch`:
+      - `REVEDIT`: `HREVIEW` from skills-tasks, plus `keepsCreatingReviewsAndTheirRating`. Its naive patch is the actual diff of a failed skills-tasks run (`HREVIEW/none/1`), which broke review creation.
+      - `PAGEVIS`: one handler serves the public and admin page lists.
+      - `OPTORDER`: switching the option-value mapper from `sortOrder` to `order` breaks existing clients.
+    - Runtime-trap (*R*):
+      - `SUPERDEL`: the superadmin check compares groups with a string, and the obvious exception gives 500.
+      - `CUSTLOGIN`: the admin password and email changes both break the login name. They were found as two bugs and merged, because they share a cause.
+      - `CARTLAST`: reading an empty cart deletes it, and a null item set fails the totals.
+      - `USERERR`: wrong statuses, including a lazy proxy that hides a missing user.
+      - `BOXGET`: a box read by code loses its code, id and visibility, and its text comes back wrapped in CDATA.
+    - All are real upstream defects found by probing the API. None is planted.
+  - **Reused unchanged from skills-tasks (17).** `ADDR`, `AMBIG`, `AVAIL`, `CARTCALC`, `CATCOUNT`, `CATDUP`, `CONTENT`, `CUSTDUP`, `HCUST`, `MANCODE`, `MANINUSE`, `MANORDER`, `NOTFOUND`, `PAGE`, `REVIEW`, `TAXPAGE` and `TAXRATE`, all classed *R*. `HREVIEW` is replaced by `REVEDIT`. `CUSTPAGE` and `CUSTSEARCH` stay folded into `HCUST`.
+  - **Prompts.** Some prompts name the neighbouring behaviour that must keep working (`PAGEVIS`, `OPTORDER`, `CARTLAST`, `BOXGET`, `USERERR`), as a ticket would. `REVEDIT` does not.
+  - **Pool size.** About 26 candidates were planned and 25 were built.
+  - **H4 calculation (before any run).** H4 is computed from each arm's *pooled* cost per verified pass, with tasks resampled for the interval. A per-task cost per pass is undefined whenever an arm passes no run of a task.
+  - **Process measures added to `analyse.py` (exploratory).** "API-level test written": the diff adds a test that uses `TestRestTemplate`, `ServicesTestSupport` or `MockMvc`. "Started or called the app": a shell command runs `spring-boot:run` or `java -jar`, or calls localhost.
+
+- 2026-10-21 (before calibration): full validation passed for all 25 candidates (`tasks/*/validation.json`). Two fixes came out of it. The hidden-test count in `verify.sh` and `validate.py` counted `@TestMethodOrder` as a test, and now matches `@Test` only. `SUPERDEL`'s test dropped `@DirtiesContext`, because restarting the Spring context broke an existing store-logo test.

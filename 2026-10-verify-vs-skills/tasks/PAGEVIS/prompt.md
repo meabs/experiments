@@ -1,0 +1,3 @@
+Our marketing team prepares content pages in the back office and keeps them hidden (visible = false) until launch day. Shoppers are already finding them: the storefront's page list (GET /api/v1/content/pages) includes hidden pages, and anyone who guesses a code can read a hidden page at GET /api/v1/content/pages/{code}.
+
+Shoppers must not see hidden pages: the public list must leave them out, and the public page-by-code endpoint must answer 404 Not Found for them. The back office must keep seeing everything: the admin list (GET /api/v1/private/content/pages) must still include hidden pages, and admins must still be able to read them.

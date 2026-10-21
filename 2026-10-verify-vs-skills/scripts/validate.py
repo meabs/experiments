@@ -8,7 +8,7 @@
 
 Usage: python3 -I validate.py <ID> [<ID> ...] [--full]. Needs JDK 21, offline ~/.m2 and the shopizer clone ($SHOPIZER).
 """
-import glob, json, os, shutil, subprocess, sys, tempfile
+import glob, json, os, re, shutil, subprocess, sys, tempfile
 import xml.etree.ElementTree as ET
 
 E = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -93,7 +93,7 @@ def validate(tid, full):
             open(os.path.join(t, "validate-full.log"), "w").write(p.stdout[-30000:])
             out = os.path.join(tmp, "s")
             os.makedirs(out)
-            n = sum(open(f).read().count("@Test") for f in glob.glob(os.path.join(E, "hidden", tid, "*.java")))
+            n = sum(len(re.findall(r"@Test\b", open(f).read())) for f in glob.glob(os.path.join(E, "hidden", tid, "*.java")))
             sh(f"python3 -I '{E}/scripts/summarize.py' '{out}' {p.returncode} {n}", w)
             res["full"] = json.load(open(os.path.join(out, "verify-summary.json")))
     ref_ok = res.get("ref_compiled") and res.get("reference") and all(o == "pass" for o in res["reference"].values())
