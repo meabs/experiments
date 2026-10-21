@@ -8,7 +8,7 @@ The `none` arm only, 3 runs per agent per task version. Rule from the design: a 
 | BUG v2: special end date saved as start date in `PersistableProductAvailabilityMapper` | 3/3 | 3/3 | 593k / 125k | ceiling: made harder |
 | BUG v3: both slips together (one symptom, two causes) | 2/3 | 3/3 | 1.09M / 194k | **kept** |
 | FEAT v1: cart line limit of 99 | 3/3 | 3/3 | 2.84M / 573k | ceiling: made harder |
-| FEAT v2: limit from merchant configuration, default 99 | 3/3 | 3/3 | 3.64M / 810k | ceiling: decision pending |
+| FEAT v2: limit from merchant configuration, default 99 | 3/3 | 3/3 | 3.64M / 810k | kept for cost and process only (user decision) |
 | CROSS: manufacturer website end to end | 1/3 | 3/3 | 2.47M / 342k | **kept** |
 
 How the failures happened (every one is a genuine defect, checked by reading the diff):
