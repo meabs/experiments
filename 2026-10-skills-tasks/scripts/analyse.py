@@ -96,10 +96,9 @@ for h, a, two in [("T1", "superpowers", False), ("T2", "pocock", False), ("T3", 
 adj = dict(zip(["T1", "T2"], holm([res["T1"][4], res["T2"][4]])))
 for h in ["T1", "T2", "T3"]:
     a, d, m, (lo, hi), p = res[h]
+    tail = f"{p:.3f} | {adj[h]:.3f} |" if h in adj else f"{p:.3f} (two-sided) | - |"
     print(f"| {h} | {a} | {sum(x > 0 for x in d)} / {sum(x == 0 for x in d)} / {sum(x < 0 for x in d)} | "
-          f"{m * 100:+.1f} pts ({lo * 100:+.1f} to {hi * 100:+.1f}) | {p:.3f}{' (two-sided)' if h == 'T3' else ''} | "
-          f"{adj[h]:.3f} |" if h in adj else
-          f"{m * 100:+.1f} pts ({lo * 100:+.1f} to {hi * 100:+.1f}) | {p:.3f} (two-sided) | - |")
+          f"{m * 100:+.1f} pts ({lo * 100:+.1f} to {hi * 100:+.1f}) | " + tail)
 print("\nA pack's gain counts as a pack effect only if it exceeds the placebo's (T3).")
 
 print("\n## Cost and process (all tasks)\n")
