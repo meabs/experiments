@@ -31,7 +31,16 @@ Each arm installs skills into the repository's `.agents/skills/`, which both CLI
 | `placebo` | One skill of about the same length as the largest pack's entry skill, with generic advice ("read the code before changing it, keep changes small") and a broad description | Whether any extra skill text has an effect |
 | `superpowers` | [obra/superpowers](https://github.com/obra/superpowers) as its Codex and Cursor install guides describe it, including `using-superpowers`, `test-driven-development`, `systematic-debugging` and `verification-before-completion` | The best-known workflow pack |
 | `pocock` | [mattpocock/skills](https://github.com/mattpocock/skills), engineering skills relevant to backend code: `tdd`, `diagnose`, `zoom-out`, `codebase-design` | A second widely used pack, with a smaller and more targeted set |
-| `caveman` | `caveman` alone (from mattpocock/skills) | The claim that it cuts tokens by about 75% while keeping accuracy |
+| `caveman` | `caveman` alone (from mattpocock/skills) | The claim that it cuts tokens by about 75% while keeping accuracy, on change tasks as well as questions |
+| `pstack` (Cursor only) | [cursor/plugins `pstack`](https://github.com/cursor/plugins/tree/main/pstack) 0.15.29 (commit `190d287`, 2026-10-20), installed as a Cursor plugin in the clean home | Cursor's widely promoted "rigorous engineering" pack |
+
+**pstack needs three adjustments, all recorded as part of the treatment:**
+
+1. Its entry skill `poteto-mode` sets `disable-model-invocation: true`, so it never starts on its own. The vendor's usage is to begin the prompt with `/poteto-mode`, so this arm's prompt is the task prompt with that prefix. The gate checks that headless `cursor-agent -p` honours the prefix. If it does not, the prompt instead says "Use the poteto-mode skill", and the change is logged.
+2. By default it hands code to `grok-4.7-xhigh-fast` subagents and judgment to `claude-opus-5-5-xhigh` subagents. That would change the model under test and multiply the cost. The arm writes `~/.cursor/rules/pstack-models.mdc` (the file `/setup-pstack` writes) with every role set to `inherit-parent`, so all subagents run on `grok-4.7-low`. Panel sizes stay as shipped.
+3. It ships for Cursor and Claude Code only, so there is no Codex cell.
+
+The gate also checks that Cursor's `stream-json` usage includes subagent tokens. If it does not, pstack's cost is undercounted and is reported as a lower bound.
 
 Two packs were left out: Anthropic's `anthropics/skills`, because it holds document and design skills with nothing for a Java backend, and the Vercel React rules, because shopizer has no frontend.
 
@@ -54,7 +63,18 @@ The prompts never mention skills, documentation or tools. The hidden tests live 
 | --- | --- | --- | --- | --- |
 | `BUG` | Bug fix | A planted regression in `sm-core` business logic (for example, pagination or price calculation), reported as a user symptom ("customers on page 2 see the last item of page 1 again"). The plant is a one-line change that the module's existing tests do not catch | A hidden JUnit test for the symptom, plus the module's own tests, plus a compile of the whole reactor | `systematic-debugging`, `diagnose`, `tdd` |
 | `FEAT` | Small feature | A new rule in an existing service, with two edge cases written into the prompt (for example, a coupon-code validation rule) | A hidden JUnit test of the rule and its edge cases, plus the module's tests and a reactor compile. Whether the agent added tests of its own is recorded separately | `test-driven-development`, `tdd`, `verification-before-completion` |
-| `QA` | Read-only | Eight multi-step impact questions from Experiment 3 (`SU`), scored by F1 against bytecode-derived truth. Pass is a mean F1 of at least 0.95 | Answer key (`expect` regexes per question) | `caveman` (token claim); pack overhead on non-coding work |
+| `CROSS` | Multi-file change | Add a field end to end: entity, service, API model, mapper, and one REST response, with one existing caller that must keep working | A hidden API-level test, plus the tests of every touched module and a reactor compile | Planning and verification skills; pstack's "go deep first" |
+| `QA` (only `none` and `caveman`) | Read-only | Eight multi-step impact questions from Experiment 3 (`SU`), scored by F1 against bytecode-derived truth. Pass is a mean F1 of at least 0.95 | Answer key (`expect` regexes per question) | `caveman` token claim on questions |
+
+The experiment is about making effective changes. `BUG`, `FEAT` and `CROSS` are the primary tasks, and `QA` is kept only to test caveman's claim on its home ground.
+
+**Effective change, measured from the final repository and never from what the agent says:**
+
+- **Correct**: the hidden test passes.
+- **No regressions**: the existing tests of every module the agent touched still pass.
+- **Builds**: the whole reactor compiles.
+- **Focused**: the number of lines changed compared with the reference solution, and any files changed outside the modules the task needs (reported, not part of pass).
+- **Tests that bite**: for `BUG`, the agent's own new tests are run against the unfixed code. A test that also passes there does not catch the bug. The TDD skills claim to produce tests that do.
 
 **Calibration first.** Past experiments here hit the ceiling: agents passed whether or not they had help. Before the tasks are frozen, `none` runs each task 3 times per agent. A change task is kept only if the control passes between 1 and 2 of 3 times on at least one agent. Otherwise it is made harder or easier and calibrated again, and every attempt is logged. The calibration runs are not part of the results.
 
@@ -86,7 +106,8 @@ These are fixed now. Each treatment arm is compared with `none`, and `placebo` i
 | H1 | `superpowers` raises the pass rate on `BUG` and `FEAT` | Pooled across both agents and both tasks, the pass rate is higher than `none` with a one-sided Fisher p < 0.05 |
 | H2 | `pocock` raises the pass rate on `BUG` and `FEAT` | Same test as H1 |
 | H3 | `caveman` cuts total tokens by at least 20% with no loss of correctness | The relative-cost interval lies entirely below 0.80 on at least one agent, and the pass rate is not lower by more than one run in six |
-| H4 | The workflow packs cost more tokens on `QA` than `none` | The relative-cost interval lies entirely above 1.00 |
+| H4 | The TDD packs (`superpowers`, `pocock`, `pstack`) produce tests that bite | On `BUG`, a larger share of their runs add a test that fails on the unfixed code than in `none` (Fisher p < 0.05) |
+| H7 | `pstack` raises the pass rate on Cursor | Pooled over `BUG`, `FEAT` and `CROSS` (18 runs), the pass rate is higher than Cursor `none`, with a one-sided Fisher p < 0.05. Its token cost is reported alongside |
 | H5 | The packs make agents work test-first | `superpowers` or `pocock` is test-first in a larger share of change runs than `none` (Fisher p < 0.05) |
 | H6 | The packs reduce overclaiming | Fewer overclaims than `none`. Reported as descriptive only, since overclaims are expected to be rare |
 
@@ -96,13 +117,20 @@ Predictions, written down now so they can be checked: H3 fails on total tokens (
 
 ## Size, order and stopping
 
-- **Stage 1**: 6 runs per (task, arm, agent), giving 3 × 5 × 2 × 6 = **180 runs**. The order is randomised, with no arm run as a block. `parallel = 3` (Maven needs memory).
+- **Stage 1**: 6 runs per cell. Change tasks: 3 tasks × 5 arms × 2 agents × 6 = 180 runs, plus `pstack` on Cursor (3 × 6 = 18). `QA`: 2 arms × 2 agents × 6 = 24. That is **222 runs** in total. The order is randomised, with no arm run as a block. `parallel = 3` (Maven needs memory).
 - **Stage 2**: `trialrig plan --results results/stage1 --max-reps 12`. Cells still marked open get more runs, up to 12 per arm, if the spend allows. Extra runs taken after looking at the data are reported as sequential, and their p-values are marked as such.
-- **Power, stated plainly**: at 6 runs a cell, only very large differences show up within a cell (about 1 of 6 against 5 of 6). Pooled across 2 agents and 2 change tasks (24 runs an arm), a difference of about 35 percentage points is detectable. Token differences under about 20% are not reliable at this size and are reported as "no evidence", not as "no effect".
+- **Power, stated plainly**: at 6 runs a cell, only very large differences show up within a cell (about 1 of 6 against 5 of 6). Pooled across 2 agents and 3 change tasks (36 runs an arm), a difference of about 35 percentage points is detectable. Token differences under about 20% are not reliable at this size and are reported as "no evidence", not as "no effect".
 
 ## Estimated cost and time
 
-From Experiments 2 and 3 on shopizer: Codex uses roughly 0.3 to 1.2 million tokens per run (mostly cached), about $0.10 to $0.40 a run. Cursor at Grok 4.7 rates is roughly $0.50 to $1.50 a run, depending on cache billing. Stage 1 comes to about **$60 to $170** and **6 to 9 hours** of wall time at `parallel = 3`. The Mac is kept awake with a detached `caffeinate -dimsu`.
+These figures come from the token counts Experiment 3 recorded on shopizer, priced at the rates above with no cache discount for Cursor:
+
+- Codex change runs: 0.3 to 1.2 million tokens, about 90% of them cached, so $0.03 to $0.10 a run.
+- Cursor change runs: 30k to 80k tokens, so $0.06 to $0.16 a run.
+- Cursor `QA` runs: 240k to 520k tokens, so $0.50 to $1.00 a run.
+- `pstack` runs: assumed to cost 3 to 10 times a Cursor change run, because of its subagents.
+
+Stage 1 comes to about **$20 to $65** and **9 to 11 hours** of wall time at `parallel = 3`. That is more than one day, so it runs in two sessions with the same pinned CLI versions. The Mac is kept awake with a detached `caffeinate -dimsu`.
 
 ## Grading integrity
 
@@ -132,3 +160,4 @@ From Experiments 2 and 3 on shopizer: Codex uses roughly 0.3 to 1.2 million toke
 ## Amendment log
 
 - 2026-10-21: design written.
+- 2026-10-21 (before any run): cost estimate corrected from $60–170 to the measured token counts of Experiment 3. `QA` cut to `none` and `caveman`. `CROSS` change task and "effective change" measures added. `pstack` arm added (Cursor only, invoked through `/poteto-mode`, every model role set to `inherit-parent`). H4 changed from "pack overhead on QA" to "tests that bite"; H7 added.
