@@ -8,6 +8,7 @@ Rule, fixed before calibration: keep the 20 tasks with the lowest A + D score, t
 | AMBIG | R | 2/2 | 2/2 | 4 | yes |
 | AVAIL | R | 2/2 | 2/2 | 4 | yes |
 | BOXGET | R | 2/2 | 2/2 | 4 | yes |
+| BOXVIS | N | 0/2 | 2/2 | 2 | yes |
 | CARTCALC | R | 2/2 | 2/2 | 4 | yes |
 | CARTLAST | R | 0/2 | 2/2 | 2 | yes |
 | CATCOUNT | R | 2/2 | 1/2 | 3 | yes |
@@ -15,8 +16,9 @@ Rule, fixed before calibration: keep the 20 tasks with the lowest A + D score, t
 | CONTENT | R | 1/2 | 2/2 | 3 | yes |
 | CUSTDUP | R | 2/2 | 2/2 | 4 | yes |
 | CUSTLOGIN | R | 1/2 | 2/2 | 3 | yes |
-| HCUST | R | 2/2 | 2/2 | 4 | yes |
-| MANCODE | R | 2/2 | 2/2 | 4 | yes |
+| CUSTREVIEW | R | 1/2 | 2/2 | 3 | yes |
+| HCUST | R | 2/2 | 2/2 | 4 | no |
+| MANCODE | R | 2/2 | 2/2 | 4 | no |
 | MANINUSE | R | 2/2 | 2/2 | 4 | no |
 | MANORDER | R | 2/2 | 2/2 | 4 | no |
 | NOTFOUND | R | 2/2 | 1/2 | 3 | yes |
@@ -28,6 +30,7 @@ Rule, fixed before calibration: keep the 20 tasks with the lowest A + D score, t
 | SUPERDEL | R | 1/2 | 0/2 | 1 | yes |
 | TAXPAGE | R | 2/2 | 2/2 | 4 | no |
 | TAXRATE | R | 0/2 | 0/2 | 0 | yes |
+| USERACTIVE | R | 2/2 | 2/2 | 4 | no |
 | USERERR | R | 0/2 | 0/2 | 0 | yes |
 
 Kept tasks scoring 0 or 1 of 2 in D: 7 (gate needs 8): **not passed**.

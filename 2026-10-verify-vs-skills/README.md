@@ -167,3 +167,4 @@ The unit of analysis is the task. For each task and arm, the result is passes ou
   - `USERACTIVE` (*R*): an admin edit of a user disables the account. The obvious populator change turned out to be correct, so this task has no naive patch.
   - The new tasks are calibrated with arms A (low) and D (medium), 2 runs each, as before.
   - Why three new tasks were enough: the gate failed by one task, and two of the three original *N* tasks were not kept. Their prompts named the neighbouring behaviour, and every calibration run avoided the trap.
+- 2026-10-21 (after calibrating the three added tasks, no measured run): **the gate again did not pass (7 of 8).** Arm A at low effort found `BOXVIS` hard (0/2) and `CUSTREVIEW` hard (1/2), but arm D at medium effort passed both 2 of 2. `USERACTIVE` was passed by every run and was not kept. The rule now keeps `BOXVIS` and `CUSTREVIEW` in place of `MANCODE` and `HCUST`.
