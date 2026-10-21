@@ -1,8 +1,9 @@
-"""Writes the trial files from tasks/*/prompt.md. The rig cannot set effort per arm, so high effort has its own files.
+"""Writes the trial files from tasks/*/prompt.md. The rig cannot set effort per arm, so arm D (medium effort) has its own files.
 
 - trial.toml: arms none, verify, superpowers at low effort (measured runs, selected tasks)
-- trial-high.toml: arm high (no skills) at high effort (measured runs, selected tasks)
-- calibration.toml / calibration-high.toml: arms none and high on every task, 2 runs each
+- trial-medium.toml: arm medium (no skills) at medium effort (measured runs, selected tasks)
+- calibration.toml / calibration-medium.toml: arms none and medium on every task, 2 runs each
+  (calibration-high.toml, the superseded high-effort arm D, is kept as a record; see README amendment log)
 
 Usage: python3 -I make_trial.py [TASK ...]. With task ids, the trial files include only those (the selected tasks);
 calibration files always include every task. Paths use the /Users/USER placeholder; run scripts/localize.sh after.
@@ -61,8 +62,8 @@ if __name__ == "__main__":
     chosen = sys.argv[1:] or every
     skills = "\\\\.agents/skills/[^ ]*SKILL\\\\.md"
     write(os.path.join(E, "calibration.toml"), "verify-vs-skills-calibration", 2, [arm("none")], every, "low", "none")
-    write(os.path.join(E, "calibration-high.toml"), "verify-vs-skills-calibration-high", 2, [arm("high")], every, "high", "high")
+    write(os.path.join(E, "calibration-medium.toml"), "verify-vs-skills-calibration-medium", 2, [arm("medium")], every, "medium", "medium")
     write(os.path.join(E, "trial.toml"), "verify-vs-skills", 3,
           [arm("none"), arm("verify", "arms/verify"), arm("superpowers", "arms/superpowers", skills)], chosen, "low", "none")
-    write(os.path.join(E, "trial-high.toml"), "verify-vs-skills-high", 3, [arm("high")], chosen, "high", "high")
+    write(os.path.join(E, "trial-medium.toml"), "verify-vs-skills-medium", 3, [arm("medium")], chosen, "medium", "medium")
     print(f"calibration: {len(every)} tasks; trial: {len(chosen)} tasks")

@@ -28,11 +28,11 @@ On tasks where the obvious change compiles but is wrong at runtime, or breaks a 
 
 - a one-paragraph instruction to check the change against the running application, including the other uses of shared code it touches;
 - the Superpowers skill pack;
-- high reasoning effort.
+- more reasoning effort (medium; first designed as high, see the amendment log).
 
 ## Agent and repository
 
-- Codex `gpt-5.6-luna`, with the same clean home, isolation and rig version (AgentTrialRig `41da661`) as skills-tasks. Reasoning effort is **low** in arms A to C and **high** in arm D.
+- Codex `gpt-5.6-luna`, with the same clean home, isolation and rig version (AgentTrialRig `41da661`) as skills-tasks. Reasoning effort is **low** in arms A to C and **medium** in arm D (high until the amendment of 2026-10-21).
 - shopizer at `6a4a0a6`, JDK 21, offline Maven. The verifier and isolation are reused from skills-tasks.
 
 ## Arms
@@ -42,13 +42,13 @@ On tasks where the obvious change compiles but is wrong at runtime, or breaks a 
 | A | `none` | low | The task prompt only | Baseline |
 | B | `verify` | low | The task prompt, plus `AGENTS.md` holding the instruction below | Value of an explicit verification instruction |
 | C | `superpowers` | low | The Superpowers pack, built exactly as in skills-tasks (same pinned commit, bootstrap through `AGENTS.md`) | What a full pack adds |
-| D | `high` | high | The task prompt only | Value of more reasoning |
+| D | `medium` | medium (was `high`; see amendment log) | The task prompt only | Value of more reasoning |
 
 The instruction for arm B, fixed now and committed as `arms/verify/AGENTS.md`:
 
 > Before you say you are done, check your change against the running application, not only by compiling it or by running the existing unit tests. Start the application, or write or run a test that starts it, and call the endpoints your change affects with the requests a client would send. Then find every other caller of any shared code you changed (services, mappers, populators, error handlers) and check that those callers still behave as they did before. In your final reply, say exactly what you ran and what you saw, and say plainly if you could not check something.
 
-The rig cannot set a different effort per arm. So arm D runs as a second trial file (`trial-high.toml`) with its own agent settings, otherwise identical. The two trial files are started together, so both cover the same hours.
+The rig cannot set a different effort per arm. So arm D runs as a second trial file (`trial-medium.toml`) with its own agent settings, otherwise identical. The two trial files are started together, so both cover the same hours.
 
 Within each trial, the rig orders runs by repeat, then task, then arm, so arms A to C are interleaved within each task. The rig cannot randomise order.
 
@@ -109,14 +109,14 @@ The unit of analysis is the task. For each task and arm, the result is passes ou
 | # | Hypothesis | Test |
 | --- | --- | --- |
 | H1 | `verify` raises the pass rate over `none` | One-sided exact sign-flip permutation test over tasks |
-| H2 | `high` raises the pass rate over `none` | As H1 |
+| H2 | `medium` (arm D) raises the pass rate over `none` | As H1 |
 | H3 | `superpowers` raises the pass rate over `none` | As H1 |
 | H4 | `verify` costs less per verified pass than `superpowers` | Per-task ratio of cost per pass, bootstrap over tasks; reported with its interval, not tested |
 | H5 | `verify` has fewer neighbour breaks than `none` | One-sided sign-flip on the per-task difference in runs with a failing `keeps…` test (*N* tasks only) |
 
 - H1 to H3 are Holm-adjusted together at α = 0.05. H5 is reported separately, unadjusted, and labelled secondary.
 - Effects are the mean per-task difference in pass rate, with a bootstrap interval over tasks (10,000 resamples, seed 1).
-- Also reported, two-sided and unadjusted, and labelled secondary: `verify` against `superpowers`, `verify` against `high`, and `superpowers` against `high`.
+- Also reported, two-sided and unadjusted, and labelled secondary: `verify` against `superpowers`, `verify` against `medium`, and `superpowers` against `medium`.
 - Exploratory, and labelled as such:
   - results for *N* tasks and *R* tasks separately;
   - false-claim rates by arm;
@@ -153,3 +153,10 @@ The unit of analysis is the task. For each task and arm, the result is passes ou
   - **Process measures added to `analyse.py` (exploratory).** "API-level test written": the diff adds a test that uses `TestRestTemplate`, `ServicesTestSupport` or `MockMvc`. "Started or called the app": a shell command runs `spring-boot:run` or `java -jar`, or calls localhost.
 
 - 2026-10-21 (before calibration): full validation passed for all 25 candidates (`tasks/*/validation.json`). Two fixes came out of it. The hidden-test count in `verify.sh` and `validate.py` counted `@TestMethodOrder` as a test, and now matches `@Test` only. `SUPERDEL`'s test dropped `@DirtiesContext`, because restarting the Spring context broke an existing store-logo test.
+- 2026-10-21 (after calibration of arm D at high effort, before any measured run): **arm D changed from high to medium reasoning effort**, at the user's request.
+  - **Why.** High effort sat at the ceiling, and the gate would have failed. At the time of the decision, arm D at high effort had passed 28 of 29 calibration runs. Its only failure was `USERERR`, and it passed every task that arm A failed twice: `CARTLAST`, `REVEDIT` and `TAXRATE`. Arm A at low effort passed 36 of 50.
+  - **Options considered.** Under the design, the alternative was to build harder tasks. Two rounds of calibration (skills-tasks and this one) showed that high effort solves nearly every task that can be verified here. Medium effort still tests whether more reasoning beats an instruction or a skill pack, and is less likely to sit at the ceiling.
+  - **What changes.** Arm D runs at medium effort. It is renamed `medium` in the trial files (`trial-medium.toml`, `calibration-medium.toml`) and in `select_tasks.py` and `analyse.py`. H2 now reads "`medium` raises the pass rate over `none`".
+  - **What stays the same.** The selection rule and the gate apply to arm D at medium effort, unchanged. Arm A's calibration at low effort is reused, as its settings have not changed.
+  - **Where the record is.** The high-effort calibration is kept as a record in `results/calibration-high-effort.md`, and it is not part of the results.
+

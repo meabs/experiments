@@ -9,7 +9,7 @@ list-price cost over verified passes), with the ratio's interval from resampling
 H5 uses neighbour-break tasks only (tasks with naive.patch): per task, runs of `none` with a failing keeps... test minus
 runs of `verify` with one; one-sided sign-flip.
 
-Usage: python3 -I analyse.py <runs dir, low-effort trial> <runs dir, high-effort trial> > results/analysis.md
+Usage: python3 -I analyse.py <runs dir, low-effort trial> <runs dir, medium-effort trial (arm D)> > results/analysis.md
 """
 import glob, gzip, itertools, json, os, random, re, statistics as st, sys
 from collections import defaultdict
@@ -21,8 +21,8 @@ import process  # noqa: E402  (test-file-first and TDD evidence, unchanged from 
 from stats import holm  # noqa: E402
 
 LOW, HIGH = sys.argv[1], sys.argv[2]
-ARMS = ["none", "verify", "superpowers", "high"]
-LABEL = {"none": "A none (low)", "verify": "B verify (low)", "superpowers": "C superpowers (low)", "high": "D high (no skills)"}
+ARMS = ["none", "verify", "superpowers", "medium"]
+LABEL = {"none": "A none (low)", "verify": "B verify (low)", "superpowers": "C superpowers (low)", "medium": "D medium (no skills)"}
 
 
 def kind(t):
@@ -121,7 +121,7 @@ print("\n## Hypotheses (preregistered)\n")
 print("| # | arm vs none | tasks better / same / worse | mean per-task difference in pass rate (95% CI) | p (one-sided) | Holm p |")
 print("| --- | --- | --- | --- | --- | --- |")
 res = {}
-for h, a in [("H1", "verify"), ("H2", "high"), ("H3", "superpowers")]:
+for h, a in [("H1", "verify"), ("H2", "medium"), ("H3", "superpowers")]:
     d = [passes(t, a) - passes(t, "none") for t in tasks]
     rate = [x / reps for x in d]
     res[h] = (a, d, st.mean(rate), boot(rate), signflip_p(d))
@@ -158,7 +158,7 @@ print("Selection used the calibration runs of arms A and D, which favours those 
 
 print("## Secondary comparisons (two-sided, unadjusted)\n")
 print("| comparison | tasks better / same / worse | mean per-task difference in pass rate (95% CI) | p |\n| --- | --- | --- | --- |")
-for a, b in [("verify", "superpowers"), ("verify", "high"), ("superpowers", "high")]:
+for a, b in [("verify", "superpowers"), ("verify", "medium"), ("superpowers", "medium")]:
     d = [passes(t, a) - passes(t, b) for t in tasks]
     rate = [x / reps for x in d]
     lo, hi = boot(rate)
