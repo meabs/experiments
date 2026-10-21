@@ -1,6 +1,6 @@
 # Do skill packs help across many different tasks? (Codex)
 
-Written 2026-10-21, before any measured run. Later changes go in the amendment log at the bottom. Draft: the task list is being built and is not frozen yet.
+Written 2026-10-21, before any measured run. Later changes go in the amendment log at the bottom.
 
 ## Why this follows skills-impact
 
@@ -23,16 +23,41 @@ On a varied set of real change tasks, do Superpowers or Matt Pocock's skills rai
 
 ## Tasks
 
-- **Candidates:** about 20 new tasks, none of them reused from skills-impact. They cover bug fixes (a single cause, two causes, and a symptom far from its cause), small features, cross-module fields, and validation and error handling. They span catalog, cart, customer, content, tax and store code.
-- **What each task has:**
-  - a prompt written as a merchant or developer would write it, which never mentions skills, tests or tools;
-  - a hidden API-level acceptance test that fails on the starting code and passes with a reference patch;
-  - a full suite that passes with the reference applied.
-- **Selection (fixed now):** `none` runs each candidate twice in calibration, and those runs are discarded. The 16 candidates with the lowest calibration pass rate are kept, with ties broken by candidate number. Selecting on the control's calibration runs avoids filling the experiment with tasks every arm solves, and the measured runs are fresh, so it does not favour any arm.
+17 candidate tasks, none reused from skills-impact. Most are **real defects found in shopizer** by probing its REST API (marked *real*): the bug is in upstream code at `6a4a0a6`, so no plant is needed. One is a planted two-cause bug, and the rest are small features. Each task has a prompt written the way a merchant, developer or support team would put it, an API-level hidden test, and a reference patch.
+
+| ID | Kind | What is wrong or wanted | Causes the reference touches |
+| --- | --- | --- | --- |
+| `PAGE` | Bug (*real*) | `GET /api/v2/products?page=N` ignores the page | API binds no `page` parameter |
+| `CONTENT` | Bug (*real*) | Listing content pages or boxes without paging parameters answers 500 | Two endpoints declare `int page, int count` with no defaults |
+| `AMBIG` | Bug (*real*) | `GET /api/v1/category/{id}` and `/{friendlyUrl}` both answer 500 | Two handler mappings are ambiguous |
+| `AVAIL` | Bug (*real*) | A product created with `available: false` comes back available | Mapper copies `visible` into `available` |
+| `ADDR` | Bug (*real*, several causes) | PATCHed delivery address loses its street, and the state lands in the postal code | Three copy-paste slips in the facade's fallback code, plus the populator in two places |
+| `CUSTDUP` | Bug (*real*) | Registering or admin-creating a customer with an email in use answers 500 | Exception with no handler; admin path throws the wrong exception |
+| `CUSTPAGE` | Bug (*real*, several causes) | Admin customer list repeats customers across pages; totals wrong | API treats page as an offset; repository over-fetches; facade sets no totals |
+| `NOTFOUND` | Bug (*real*) | Missing manufacturer answers 503, missing product 400 | API catch-all; service throws instead of returning nothing |
+| `MANINUSE` | Bug (*real*) | Deleting a manufacturer still used by products answers 503 | No usage check before delete |
+| `CATDUP` | Bug (*real*) | A duplicate category code (create or rename) answers 500 with a raw SQL error | No uniqueness check; no 409 mapping |
+| `CARTCALC` | Bug (planted, two causes) | Line subtotals and cart totals ignore quantities | Two independent slips: cart mapper (line subtotal) and core order service (cart subtotal) |
+| `TAXRATE` | Validation feature | Tax rates must be 0 to 100 on create and update (400, nothing stored) | The error handler crashes on a `ServiceRuntimeException` with no cause, so the obvious exception gives 500 |
+| `REVIEW` | Validation feature | Review rating 1 to 5 (400), one review per customer (409) | Wrong status codes and a missing lower bound |
+| `CATCOUNT` | Feature | Category `productCount` counts products in the category and its subcategories, each once | New repository query, service, facade |
+| `MANORDER` | Feature | Store and return manufacturer `order`; list sorted by order, then code, across pages | Populator drops the field; paged query unsorted |
+| `CUSTSEARCH` | Feature | Admin customer list filters: email, name and country, case-insensitive, combinable | API parameters; the repository's name clause lacks parentheses, so its `or` breaks combined filters |
+| `TAXPAGE` | Feature | Tax rate list honours page and count, sorted by code, with correct totals | Facade overload and API wiring |
+
+How each task is checked (`scripts/validate.py`, results in `tasks/<ID>/validation.json`):
+
+- The hidden test fails on the starting code and passes with the reference.
+- With the reference applied, the full reactor suite passes, including the hidden test.
+- For the planted task, the existing suite still passes with the plant, so the plant gives no visible hint.
+
+Three tests were strengthened after a deliberately wrong fix passed them; this is recorded in the amendment log.
+
+**Selection (fixed before calibration):** `none` runs each candidate twice in calibration, and those runs are discarded. The 16 candidates with the lowest calibration pass rate are kept, with ties broken by alphabetical task id.
 
 ## Size and cost
 
-16 tasks × 4 arms × 2 runs = **128 runs**, plus 40 calibration runs. At skills-impact's measured Codex cost ($0.08 a run without skills, $0.18 with Superpowers), that is about **$15 to $20**.
+16 tasks × 4 arms × 2 runs = **128 runs**, plus 34 calibration runs. At skills-impact's measured Codex cost ($0.08 a run without skills, $0.18 with Superpowers), that is about **$15 to $20**.
 
 Two runs per task, not one, so that within-task noise can be estimated. The unit of analysis is the task.
 
@@ -69,3 +94,17 @@ Two runs per task, not one, so that within-task noise can be estimated. The unit
 ## Amendment log
 
 - 2026-10-21: draft written at the user's request ("increase the number of different tests, not the number of runs"; Codex only).
+- 2026-10-21 (before calibration), tasks built:
+  - 17 candidates instead of the planned ~20. Probing turned up enough real upstream defects that planted bugs were needed for only one task.
+  - Dropped during building:
+    - `PROMO`: applying any promo code fails under JDK 21 because of a reflection error in the rules engine, so the task could not be graded;
+    - `PRICEPATCH`: it depended on a second, unrelated defect;
+    - `CATVIS` and `STOREPAGE`: not real defects, or not testable without heavy setup.
+  - Tests changed while building:
+    - `CATCOUNT` dropped its availability rule, because product creation ignores `available`, which is task `AVAIL`.
+    - `CATCOUNT` reads counts through the category list, because `GET /category/{id}` is broken (task `AMBIG`).
+    - `CUSTSEARCH` gained combined-filter cases after a version of the fix without the parentheses passed the first draft of the test.
+    - `MANORDER`'s test had a prefix clash in its own data, which was fixed.
+  - The arms are byte-identical to skills-impact's, rebuilt from the same pinned commits. `trial.toml` and `calibration.toml` are generated by `scripts/make_trial.py`.
+  - `CARTCALC` was re-planted. Its first plant (a cart item count of lines instead of units) broke an existing cart test, so the agent would have seen it. The second slip is now in the line subtotal, which no existing test covers, and the full suite passes with the plant.
+
