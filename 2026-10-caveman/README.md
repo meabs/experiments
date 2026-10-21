@@ -54,13 +54,13 @@ Prediction, written now: C1 holds, C2 fails (input dominates), C3 holds on `QA`,
 
 ## Size, cost and time
 
-3 tasks × 2 arms × 2 agents × 6 runs = **72 runs**. Estimated cost, from Experiment 3's token counts:
+3 tasks × 2 arms × 2 agents × 6 runs = **72 runs**. Estimated cost, re-costed from the `none` runs measured in skills-impact (2026-10-21), with caveman assumed to cost the same as `none`:
 
-- Codex: about $2.
-- Cursor change runs: $1.50 to $4.
-- Cursor `QA` runs: $6 to $12.
+- Codex: about $2.50 (BUG $0.04, FEAT $0.10 and QA about $0.05 a run).
+- Cursor `BUG` and `FEAT`: $30 if cache reads pay the full $2 per million, and $7 to $11 at typical cached-input rates (0.4M to 0.8M tokens a run, about 88% cache reads).
+- Cursor `QA`: $6 to $12, from Experiment 3.
 
-That is about **$10 to $18** in total, and about 3 hours at `parallel = 3`. Stage 2 adds runs only where `trialrig plan` marks a cell open, up to 12 a cell.
+That is about **$15 to $45** in total, and about 3 hours at `parallel = 3`. Stage 2 adds runs only where `trialrig plan` marks a cell open, up to 12 a cell.
 
 ## Layout
 
@@ -70,3 +70,4 @@ That is about **$10 to $18** in total, and about 3 hours at `parallel = 3`. Stag
 
 - 2026-10-21: design written, split out of skills-impact at the user's request.
 - 2026-10-21: source chosen by the user: Matt Pocock's own `caveman`, taken from `mattpocock/skills` history at `skills/productivity/caveman/SKILL.md`, commit `0a4b76776dfd9979bfe013d99b5562a03b743839` (2026-05-31), the last commit before it was removed (`7d3ada9`). It is no longer in the published pack, so the arm tests the skill as it last shipped.
+- 2026-10-21: cost re-estimated from skills-impact's measured Cursor change runs, which used about 10 times the tokens first assumed. $10 to $18 becomes $15 to $45.
