@@ -3,7 +3,9 @@ package com.salesmanager.test.shop.hidden;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.context.SpringBootTest.WebEnvironment;
@@ -13,6 +15,10 @@ import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.test.context.junit.jupiter.SpringExtension;
 
+import com.salesmanager.core.business.services.system.MerchantConfigurationService;
+import com.salesmanager.core.business.services.merchant.MerchantStoreService;
+import com.salesmanager.core.model.merchant.MerchantStore;
+import com.salesmanager.core.model.system.MerchantConfiguration;
 import com.salesmanager.shop.application.ShopApplication;
 import com.salesmanager.shop.model.catalog.product.ReadableProduct;
 import com.salesmanager.shop.model.shoppingcart.PersistableShoppingCartItem;
@@ -97,5 +103,68 @@ public class HiddenCartQuantityLimitTest extends ServicesTestSupport {
 		assertTrue(put(code, a.getSku(), 0).getStatusCode().is2xxSuccessful());
 		assertEquals(0, qty(code, a.getSku()));
 		assertEquals(2, qty(code, b.getSku()));
+	}
+
+	@Autowired
+	private MerchantConfigurationService configurations;
+
+	@Autowired
+	private MerchantStoreService stores;
+
+	private static final String KEY = "CART_MAX_LINE_QUANTITY";
+
+	private void setLimit(String value) throws Exception {
+		MerchantStore store = stores.getByCode("DEFAULT");
+		MerchantConfiguration c = configurations.getMerchantConfiguration(KEY, store);
+		if (c == null) {
+			c = new MerchantConfiguration();
+			c.setKey(KEY);
+			c.setMerchantStore(store);
+		}
+		c.setValue(value);
+		configurations.saveOrUpdate(c);
+	}
+
+	@AfterEach
+	public void removeLimit() throws Exception {
+		MerchantConfiguration c = configurations.getMerchantConfiguration(KEY, stores.getByCode("DEFAULT"));
+		if (c != null) {
+			configurations.delete(c);
+		}
+	}
+
+	@Test
+	public void configuredLimitAppliesOnEveryPath() throws Exception {
+		setLimit("5");
+		ReadableProduct a = sampleProduct("hqlCfgA");
+		ReadableProduct b = sampleProduct("hqlCfgB");
+		assertEquals(HttpStatus.BAD_REQUEST, create(a.getSku(), 6).getStatusCode());
+		String code = create(a.getSku(), 5).getBody().getCode();
+		assertEquals(5, qty(code, a.getSku()));
+		assertEquals(HttpStatus.BAD_REQUEST, put(code, a.getSku(), 6).getStatusCode());
+		assertEquals(5, qty(code, a.getSku()));
+		assertEquals(HttpStatus.BAD_REQUEST, multi(code, item(a.getSku(), 2), item(b.getSku(), 6)).getStatusCode());
+		assertEquals(5, qty(code, a.getSku()));
+		assertEquals(0, qty(code, b.getSku()));
+	}
+
+	@Test
+	public void configuredLimitCanBeAboveNinetyNine() throws Exception {
+		setLimit("150");
+		ReadableProduct a = sampleProduct("hqlCfgHigh");
+		ResponseEntity<ReadableShoppingCart> ok = create(a.getSku(), 120);
+		assertEquals(HttpStatus.CREATED, ok.getStatusCode());
+		assertEquals(120, qty(ok.getBody().getCode(), a.getSku()));
+		assertEquals(HttpStatus.BAD_REQUEST, create(a.getSku(), 151).getStatusCode());
+	}
+
+	@Test
+	public void limitChangesTakeEffectWithoutRestart() throws Exception {
+		ReadableProduct a = sampleProduct("hqlCfgLive");
+		assertEquals(HttpStatus.CREATED, create(a.getSku(), 50).getStatusCode());
+		setLimit("10");
+		assertEquals(HttpStatus.BAD_REQUEST, create(a.getSku(), 50).getStatusCode());
+		removeLimit();
+		assertEquals(HttpStatus.CREATED, create(a.getSku(), 50).getStatusCode());
 	}
 }
