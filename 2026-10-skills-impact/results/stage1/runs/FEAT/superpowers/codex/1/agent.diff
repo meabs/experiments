@@ -1,0 +1,419 @@
+diff --git a/sm-shop/src/main/java/com/salesmanager/shop/store/controller/shoppingCart/CartQuantityLimitService.java b/sm-shop/src/main/java/com/salesmanager/shop/store/controller/shoppingCart/CartQuantityLimitService.java
+new file mode 100644
+index 0000000..5d5f0bd
+--- /dev/null
++++ b/sm-shop/src/main/java/com/salesmanager/shop/store/controller/shoppingCart/CartQuantityLimitService.java
+@@ -0,0 +1,84 @@
++package com.salesmanager.shop.store.controller.shoppingCart;
++
++import javax.inject.Inject;
++
++import org.apache.commons.lang3.StringUtils;
++import org.springframework.stereotype.Service;
++
++import com.salesmanager.core.business.exception.ServiceException;
++import com.salesmanager.core.business.services.system.MerchantConfigurationService;
++import com.salesmanager.core.model.merchant.MerchantStore;
++import com.salesmanager.core.model.shoppingcart.ShoppingCart;
++import com.salesmanager.core.model.shoppingcart.ShoppingCartItem;
++import com.salesmanager.core.model.system.MerchantConfiguration;
++import com.salesmanager.shop.model.shoppingcart.CartModificationException;
++
++@Service
++public class CartQuantityLimitService {
++
++    public static final String CART_MAX_LINE_QUANTITY = "CART_MAX_LINE_QUANTITY";
++    private static final int DEFAULT_MAX_LINE_QUANTITY = 99;
++
++    private final MerchantConfigurationService merchantConfigurationService;
++
++    @Inject
++    public CartQuantityLimitService(MerchantConfigurationService merchantConfigurationService) {
++        this.merchantConfigurationService = merchantConfigurationService;
++    }
++
++    public void validate(long quantity, MerchantStore store) throws ServiceException, CartModificationException {
++        if (quantity <= 0) {
++            return;
++        }
++
++        validateAgainstMaximum(quantity, getMaximum(store));
++    }
++
++    public void validateAddition(long quantity, String productSku, boolean hasAttributes, ShoppingCart cart,
++            MerchantStore store) throws ServiceException, CartModificationException {
++        if (quantity <= 0) {
++            return;
++        }
++
++        int maximum = getMaximum(store);
++        validateAgainstMaximum(quantity, maximum);
++
++        if (hasAttributes || cart == null || cart.getLineItems() == null) {
++            return;
++        }
++
++        for (ShoppingCartItem existingItem : cart.getLineItems()) {
++            if (StringUtils.equals(existingItem.getSku(), productSku)
++                    && (existingItem.getAttributes() == null || existingItem.getAttributes().isEmpty())) {
++                int existingQuantity = existingItem.getQuantity() == null ? 0 : existingItem.getQuantity();
++                if (existingQuantity > maximum || quantity > maximum - existingQuantity) {
++                    throw new CartModificationException(
++                            "Quantity must not exceed " + maximum + " units for a cart line");
++                }
++                break;
++            }
++        }
++    }
++
++    private void validateAgainstMaximum(long quantity, int maximum) throws CartModificationException {
++        if (quantity > maximum) {
++            throw new CartModificationException(
++                    "Quantity must not exceed " + maximum + " units for a cart line");
++        }
++    }
++
++    private int getMaximum(MerchantStore store) throws ServiceException {
++        MerchantConfiguration configuration = merchantConfigurationService
++                .getMerchantConfiguration(CART_MAX_LINE_QUANTITY, store);
++        if (configuration == null || StringUtils.isBlank(configuration.getValue())) {
++            return DEFAULT_MAX_LINE_QUANTITY;
++        }
++
++        try {
++            int maximum = Integer.parseInt(configuration.getValue().trim());
++            return maximum >= 0 ? maximum : DEFAULT_MAX_LINE_QUANTITY;
++        } catch (NumberFormatException e) {
++            return DEFAULT_MAX_LINE_QUANTITY;
++        }
++    }
++}
+diff --git a/sm-shop/src/main/java/com/salesmanager/shop/store/controller/shoppingCart/facade/ShoppingCartFacadeImpl.java b/sm-shop/src/main/java/com/salesmanager/shop/store/controller/shoppingCart/facade/ShoppingCartFacadeImpl.java
+index 7fdc139..e995f01 100755
+--- a/sm-shop/src/main/java/com/salesmanager/shop/store/controller/shoppingCart/facade/ShoppingCartFacadeImpl.java
++++ b/sm-shop/src/main/java/com/salesmanager/shop/store/controller/shoppingCart/facade/ShoppingCartFacadeImpl.java
+@@ -58,6 +58,7 @@ import com.salesmanager.shop.model.shoppingcart.ShoppingCartItem;
+ import com.salesmanager.shop.populator.shoppingCart.ShoppingCartDataPopulator;
+ import com.salesmanager.shop.store.api.exception.ResourceNotFoundException;
+ import com.salesmanager.shop.store.api.exception.ServiceRuntimeException;
++import com.salesmanager.shop.store.controller.shoppingCart.CartQuantityLimitService;
+ import com.salesmanager.shop.utils.DateUtil;
+ import com.salesmanager.shop.utils.ImageFilePath;
+ 
+@@ -95,6 +96,9 @@ public class ShoppingCartFacadeImpl implements ShoppingCartFacade {
+ 	@Autowired
+ 	private ReadableShoppingCartMapper readableShoppingCartMapper;
+ 
++	@Inject
++	private CartQuantityLimitService cartQuantityLimitService;
++
+ 	public void deleteShoppingCart(final Long id, final MerchantStore store) throws Exception {
+ 		ShoppingCart cart = shoppingCartService.getById(id, store);
+ 		if (cart != null) {
+@@ -114,7 +118,7 @@ public class ShoppingCartFacadeImpl implements ShoppingCartFacade {
+ 	// REMOVE
+ 	public ShoppingCartData addItemsToShoppingCart(final ShoppingCartData shoppingCartData, final ShoppingCartItem item,
+ 			final MerchantStore store, final Language language, final Customer customer) throws Exception {
+-
++		cartQuantityLimitService.validate(item.getQuantity(), store);
+ 		ShoppingCart cartModel = null;
+ 
+ 		/**
+@@ -144,6 +148,8 @@ public class ShoppingCartFacadeImpl implements ShoppingCartFacade {
+ 			cartModel = createCartModel(shoppingCartCode, store, customer);
+ 
+ 		}
++		cartQuantityLimitService.validateAddition(item.getQuantity(), item.getSku(),
++				CollectionUtils.isEmpty(item.getShoppingCartAttributes()), cartModel, store);
+ 		com.salesmanager.core.model.shoppingcart.ShoppingCartItem shoppingCartItem = createCartItem(cartModel, item,
+ 				store);
+ 
+@@ -582,6 +588,7 @@ public class ShoppingCartFacadeImpl implements ShoppingCartFacade {
+ 	// DELETE
+ 	public ShoppingCartData updateCartItem(final Long itemID, final String cartId, final long newQuantity,
+ 			final MerchantStore store, final Language language) throws Exception {
++		cartQuantityLimitService.validate(newQuantity, store);
+ 		if (newQuantity < 1) {
+ 			throw new CartModificationException("Quantity must not be less than one");
+ 		}
+@@ -625,6 +632,9 @@ public class ShoppingCartFacadeImpl implements ShoppingCartFacade {
+ 			final MerchantStore store, final Language language) throws Exception {
+ 
+ 		Validate.notEmpty(shoppingCartItems, "shoppingCartItems null or empty");
++		for (ShoppingCartItem item : shoppingCartItems) {
++			cartQuantityLimitService.validate(item.getQuantity(), store);
++		}
+ 		ShoppingCart cartModel = null;
+ 		Set<com.salesmanager.core.model.shoppingcart.ShoppingCartItem> cartItems = new HashSet<com.salesmanager.core.model.shoppingcart.ShoppingCartItem>();
+ 		for (ShoppingCartItem item : shoppingCartItems) {
+@@ -768,6 +778,13 @@ public class ShoppingCartFacadeImpl implements ShoppingCartFacade {
+ 			cartModel.setPromoAdded(new Date());
+ 		}
+ 
++		try {
++			cartQuantityLimitService.validateAddition(item.getQuantity(), item.getProduct(),
++					CollectionUtils.isEmpty(item.getAttributes()), cartModel, store);
++		} catch (Exception e) {
++			throw new ServiceRuntimeException(e.getMessage(), e);
++		}
++
+ 		try {
+ 			return readableShoppingCart(cartModel, item, store, language);
+ 		} catch (Exception e) {
+@@ -1038,6 +1055,8 @@ public class ShoppingCartFacadeImpl implements ShoppingCartFacade {
+ 			cartModel.setMerchantStore(store);
+ 			cartModel.setShoppingCartCode(uniqueShoppingCartCode());
+ 		}
++		cartQuantityLimitService.validateAddition(item.getQuantity(), item.getProduct(),
++				CollectionUtils.isEmpty(item.getAttributes()), cartModel, store);
+ 
+ 		return readableShoppingCart(cartModel, item, store, language);
+ 	}
+@@ -1049,6 +1068,7 @@ public class ShoppingCartFacadeImpl implements ShoppingCartFacade {
+ 
+ 		Validate.notNull(cartCode, "String cart code cannot be null");
+ 		Validate.notNull(item, "PersistableShoppingCartItem cannot be null");
++		cartQuantityLimitService.validate(item.getQuantity(), store);
+ 
+ 		ShoppingCart cartModel = getCartModel(cartCode, store);
+ 		if (cartModel == null) {
+@@ -1064,6 +1084,9 @@ public class ShoppingCartFacadeImpl implements ShoppingCartFacade {
+ 			MerchantStore store, Language language) throws Exception {
+ 		Validate.notNull(cartCode, "String cart code cannot be null");
+ 		Validate.notNull(items, "PersistableShoppingCartItem cannot be null");
++		for (PersistableShoppingCartItem item : items) {
++			cartQuantityLimitService.validate(item.getQuantity(), store);
++		}
+ 
+ 		ShoppingCart cartModel = this.getCartModel(cartCode, store);
+ 		if (cartModel == null) {
+diff --git a/sm-shop/src/test/java/com/salesmanager/test/shop/integration/cart/CartQuantityLimitServiceTest.java b/sm-shop/src/test/java/com/salesmanager/test/shop/integration/cart/CartQuantityLimitServiceTest.java
+new file mode 100644
+index 0000000..443a7b7
+--- /dev/null
++++ b/sm-shop/src/test/java/com/salesmanager/test/shop/integration/cart/CartQuantityLimitServiceTest.java
+@@ -0,0 +1,59 @@
++package com.salesmanager.test.shop.integration.cart;
++
++import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
++import static org.junit.jupiter.api.Assertions.assertThrows;
++import static org.mockito.Mockito.mock;
++import static org.mockito.Mockito.when;
++
++import org.junit.jupiter.api.Test;
++
++import com.salesmanager.core.business.services.system.MerchantConfigurationService;
++import com.salesmanager.core.model.catalog.product.Product;
++import com.salesmanager.core.model.merchant.MerchantStore;
++import com.salesmanager.core.model.system.MerchantConfiguration;
++import com.salesmanager.core.model.shoppingcart.ShoppingCart;
++import com.salesmanager.core.model.shoppingcart.ShoppingCartItem;
++import com.salesmanager.shop.model.shoppingcart.CartModificationException;
++import com.salesmanager.shop.store.controller.shoppingCart.CartQuantityLimitService;
++
++class CartQuantityLimitServiceTest {
++
++    @Test
++    void readsTheCurrentStoreLimitAndDefaultsTo99WhenMissing() throws Exception {
++        MerchantConfigurationService configurationService = mock(MerchantConfigurationService.class);
++        MerchantStore store = new MerchantStore();
++        MerchantConfiguration configuration = new MerchantConfiguration();
++        configuration.setValue("3");
++        when(configurationService.getMerchantConfiguration("CART_MAX_LINE_QUANTITY", store))
++                .thenReturn(configuration)
++                .thenReturn(null);
++
++        CartQuantityLimitService limitService = new CartQuantityLimitService(configurationService);
++
++        assertThrows(CartModificationException.class, () -> limitService.validate(4, store));
++        assertDoesNotThrow(() -> limitService.validate(99, store));
++        assertThrows(CartModificationException.class, () -> limitService.validate(100, store));
++    }
++
++    @Test
++    void validatesTheResultingQuantityWhenAnAddMergesWithAnExistingLine() throws Exception {
++        MerchantConfigurationService configurationService = mock(MerchantConfigurationService.class);
++        MerchantStore store = new MerchantStore();
++        MerchantConfiguration configuration = new MerchantConfiguration();
++        configuration.setValue("2");
++        when(configurationService.getMerchantConfiguration("CART_MAX_LINE_QUANTITY", store))
++                .thenReturn(configuration);
++
++        Product product = new Product();
++        product.setSku("sku");
++        ShoppingCart cart = new ShoppingCart();
++        ShoppingCartItem existingItem = new ShoppingCartItem(product);
++        existingItem.setQuantity(2);
++        cart.getLineItems().add(existingItem);
++
++        CartQuantityLimitService limitService = new CartQuantityLimitService(configurationService);
++
++        assertThrows(CartModificationException.class,
++                () -> limitService.validateAddition(1, "sku", false, cart, store));
++    }
++}
+diff --git a/sm-shop/src/test/java/com/salesmanager/test/shop/integration/cart/ShoppingCartAPIIntegrationTest.java b/sm-shop/src/test/java/com/salesmanager/test/shop/integration/cart/ShoppingCartAPIIntegrationTest.java
+index b34310a..1118cfe 100755
+--- a/sm-shop/src/test/java/com/salesmanager/test/shop/integration/cart/ShoppingCartAPIIntegrationTest.java
++++ b/sm-shop/src/test/java/com/salesmanager/test/shop/integration/cart/ShoppingCartAPIIntegrationTest.java
+@@ -6,11 +6,13 @@ import static org.junit.Assert.assertNotNull;
+ import static org.junit.Assert.assertNull;
+ import static org.junit.Assert.assertThat;
+ import static org.springframework.http.HttpStatus.CREATED;
++import static org.springframework.http.HttpStatus.BAD_REQUEST;
+ import static org.springframework.http.HttpStatus.NOT_FOUND;
+ import static org.springframework.http.HttpStatus.NO_CONTENT;
+ import static org.springframework.http.HttpStatus.OK;
+ 
+ import org.junit.jupiter.api.MethodOrderer;
++import org.junit.jupiter.api.BeforeEach;
+ import org.junit.jupiter.api.Order;
+ import org.junit.jupiter.api.Test;
+ import org.junit.jupiter.api.TestMethodOrder;
+@@ -29,6 +31,11 @@ import com.salesmanager.shop.model.catalog.product.ReadableProduct;
+ import com.salesmanager.shop.model.shoppingcart.PersistableShoppingCartItem;
+ import com.salesmanager.shop.model.shoppingcart.ReadableShoppingCart;
+ import com.salesmanager.test.shop.common.ServicesTestSupport;
++import com.salesmanager.core.business.services.merchant.MerchantStoreService;
++import com.salesmanager.core.business.services.system.MerchantConfigurationService;
++import com.salesmanager.core.model.merchant.MerchantStore;
++import com.salesmanager.core.model.system.MerchantConfiguration;
++import com.salesmanager.core.model.system.MerchantConfigurationType;
+ 
+ @SpringBootTest(classes = ShopApplication.class, webEnvironment = WebEnvironment.RANDOM_PORT)
+ @ExtendWith(SpringExtension.class)
+@@ -38,8 +45,29 @@ public class ShoppingCartAPIIntegrationTest extends ServicesTestSupport {
+     @Autowired
+     private TestRestTemplate testRestTemplate;
+ 
++    @Autowired
++    private MerchantStoreService merchantStoreService;
++
++    @Autowired
++    private MerchantConfigurationService merchantConfigurationService;
++
+     private static CartTestBean data = new CartTestBean();
+ 
++    @BeforeEach
++    public void configureCartQuantityLimit() throws Exception {
++        MerchantStore store = merchantStoreService.getByCode(MerchantStore.DEFAULT_STORE);
++        MerchantConfiguration configuration = merchantConfigurationService
++                .getMerchantConfiguration("CART_MAX_LINE_QUANTITY", store);
++        if (configuration == null) {
++            configuration = new MerchantConfiguration();
++            configuration.setMerchantStore(store);
++            configuration.setKey("CART_MAX_LINE_QUANTITY");
++            configuration.setMerchantConfigurationType(MerchantConfigurationType.CONFIG);
++        }
++        configuration.setValue("2");
++        merchantConfigurationService.saveOrUpdate(configuration);
++    }
++
+ 
+     /**
+      * Add an Item & Create cart, would give HTTP 201 & 1 qty
+@@ -104,6 +132,68 @@ public class ShoppingCartAPIIntegrationTest extends ServicesTestSupport {
+      */
+     @Test
+     @Order(3)
++    public void rejectTooManyUnitsWhenCreatingCart() throws Exception {
++        ReadableProduct product = sampleProduct("tooManyNewCart");
++        data.getProducts().add(product);
++        PersistableShoppingCartItem cartItem = new PersistableShoppingCartItem();
++        cartItem.setProduct(product.getSku());
++        cartItem.setQuantity(3);
++
++        ResponseEntity<ReadableShoppingCart> response = testRestTemplate.postForEntity(
++                "/api/v1/cart/", new HttpEntity<>(cartItem, getHeader()), ReadableShoppingCart.class);
++
++        assertThat(response.getStatusCode(), is(BAD_REQUEST));
++    }
++
++    @Test
++    @Order(4)
++    public void rejectTooManyUnitsWithoutChangingExistingCart() throws Exception {
++        PersistableShoppingCartItem cartItem = new PersistableShoppingCartItem();
++        cartItem.setProduct(data.getProducts().get(0).getSku());
++        cartItem.setQuantity(3);
++
++        ResponseEntity<ReadableShoppingCart> rejected = testRestTemplate.exchange(
++                "/api/v1/cart/" + data.getCartId(), HttpMethod.PUT,
++                new HttpEntity<>(cartItem, getHeader()), ReadableShoppingCart.class);
++        assertThat(rejected.getStatusCode(), is(BAD_REQUEST));
++
++        ResponseEntity<ReadableShoppingCart> unchanged = testRestTemplate.exchange(
++                "/api/v1/cart/" + data.getCartId(), HttpMethod.GET,
++                new HttpEntity<>(getHeader()), ReadableShoppingCart.class);
++        assertThat(unchanged.getStatusCode(), is(OK));
++        assertEquals(2, unchanged.getBody().getQuantity());
++    }
++
++    @Test
++    @Order(5)
++    public void rejectMultiItemRequestAtomically() throws Exception {
++        PersistableShoppingCartItem validItem = new PersistableShoppingCartItem();
++        validItem.setProduct(data.getProducts().get(0).getSku());
++        validItem.setQuantity(1);
++
++        PersistableShoppingCartItem invalidItem = new PersistableShoppingCartItem();
++        invalidItem.setProduct(data.getProducts().get(2).getSku());
++        invalidItem.setQuantity(3);
++
++        ResponseEntity<ReadableShoppingCart> rejected = testRestTemplate.exchange(
++                "/api/v1/cart/" + data.getCartId() + "/multi", HttpMethod.POST,
++                new HttpEntity<>(new PersistableShoppingCartItem[] { validItem, invalidItem }, getHeader()),
++                ReadableShoppingCart.class);
++        assertThat(rejected.getStatusCode(), is(BAD_REQUEST));
++
++        ResponseEntity<ReadableShoppingCart> unchanged = testRestTemplate.exchange(
++                "/api/v1/cart/" + data.getCartId(), HttpMethod.GET,
++                new HttpEntity<>(getHeader()), ReadableShoppingCart.class);
++        assertEquals(2, unchanged.getBody().getQuantity());
++    }
++
++    /**
++     * Add an other item to cart which then does not exist which should return HTTP 404
++     *
++     * @throws Exception
++     */
++    @Test
++    @Order(6)
+     public void addToWrongToCartId() throws Exception {
+ 
+         ReadableProduct product = sampleProduct("add3Cart");
+@@ -132,7 +222,7 @@ public class ShoppingCartAPIIntegrationTest extends ServicesTestSupport {
+      * @throws Exception
+      */
+     @Test
+-    @Order(4)
++    @Order(7)
+     public void updateMultiWCartId() throws Exception {
+ 
+         PersistableShoppingCartItem cartItem1 = new PersistableShoppingCartItem();
+@@ -165,7 +255,7 @@ public class ShoppingCartAPIIntegrationTest extends ServicesTestSupport {
+      * @throws Exception
+      */
+     @Test
+-    @Order(5)
++    @Order(8)
+     public void updateMultiWZeroOnOneProd() throws Exception {
+ 
+         PersistableShoppingCartItem cartItem1 = new PersistableShoppingCartItem();
+@@ -193,7 +283,7 @@ public class ShoppingCartAPIIntegrationTest extends ServicesTestSupport {
+      * @throws Exception
+      */
+     @Test
+-    @Order(6)
++    @Order(9)
+     public void deleteCartItem() throws Exception {
+ 
+         final ResponseEntity<ReadableShoppingCart> response =
+@@ -213,7 +303,7 @@ public class ShoppingCartAPIIntegrationTest extends ServicesTestSupport {
+      * @throws Exception
+      */
+     @Test
+-    @Order(7)
++    @Order(10)
+     public void deleteCartItemWithBody() throws Exception {
+ 
+         final ResponseEntity<ReadableShoppingCart> response =

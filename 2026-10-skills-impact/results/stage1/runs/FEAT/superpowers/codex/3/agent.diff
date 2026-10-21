@@ -1,0 +1,331 @@
+diff --git a/sm-shop/src/main/java/com/salesmanager/shop/store/controller/shoppingCart/CartLineQuantityValidator.java b/sm-shop/src/main/java/com/salesmanager/shop/store/controller/shoppingCart/CartLineQuantityValidator.java
+new file mode 100644
+index 0000000..0a0b800
+--- /dev/null
++++ b/sm-shop/src/main/java/com/salesmanager/shop/store/controller/shoppingCart/CartLineQuantityValidator.java
+@@ -0,0 +1,76 @@
++package com.salesmanager.shop.store.controller.shoppingCart;
++
++import javax.inject.Inject;
++
++import org.apache.commons.lang3.StringUtils;
++import org.springframework.stereotype.Service;
++
++import com.salesmanager.core.business.exception.ServiceException;
++import com.salesmanager.core.business.services.system.MerchantConfigurationService;
++import com.salesmanager.core.model.merchant.MerchantStore;
++import com.salesmanager.core.model.system.MerchantConfiguration;
++import com.salesmanager.shop.store.api.exception.RestApiException;
++
++@Service
++public class CartLineQuantityValidator {
++
++    static final String CART_MAX_LINE_QUANTITY = "CART_MAX_LINE_QUANTITY";
++    static final int DEFAULT_MAX_LINE_QUANTITY = 99;
++
++    private final MerchantConfigurationService merchantConfigurationService;
++
++    @Inject
++    public CartLineQuantityValidator(MerchantConfigurationService merchantConfigurationService) {
++        this.merchantConfigurationService = merchantConfigurationService;
++    }
++
++    public int getMaxLineQuantity(MerchantStore store) throws ServiceException {
++        MerchantConfiguration configuration = merchantConfigurationService
++                .getMerchantConfiguration(CART_MAX_LINE_QUANTITY, store);
++        if (configuration == null || StringUtils.isBlank(configuration.getValue())) {
++            return DEFAULT_MAX_LINE_QUANTITY;
++        }
++
++        try {
++            int maxQuantity = Integer.parseInt(configuration.getValue().trim());
++            if (maxQuantity < 0) {
++                throw new NumberFormatException("negative quantity");
++            }
++            return maxQuantity;
++        } catch (NumberFormatException e) {
++            throw new RestApiException("Invalid " + CART_MAX_LINE_QUANTITY + " configuration");
++        }
++    }
++
++    public void validate(long quantity, MerchantStore store) throws ServiceException {
++        if (quantity < 0) {
++            throw new CartLineQuantityInvalidException();
++        }
++        if (quantity == 0) {
++            return;
++        }
++
++        int maxQuantity = getMaxLineQuantity(store);
++        if (quantity > maxQuantity) {
++            throw new CartLineQuantityExceededException(maxQuantity);
++        }
++    }
++
++    public static class CartLineQuantityExceededException extends RestApiException {
++
++        private static final long serialVersionUID = 1L;
++
++        CartLineQuantityExceededException(int maxQuantity) {
++            super("Cart line quantity cannot exceed " + maxQuantity);
++        }
++    }
++
++    public static class CartLineQuantityInvalidException extends RestApiException {
++
++        private static final long serialVersionUID = 1L;
++
++        CartLineQuantityInvalidException() {
++            super("Cart line quantity cannot be negative");
++        }
++    }
++}
+diff --git a/sm-shop/src/main/java/com/salesmanager/shop/store/controller/shoppingCart/facade/ShoppingCartFacadeImpl.java b/sm-shop/src/main/java/com/salesmanager/shop/store/controller/shoppingCart/facade/ShoppingCartFacadeImpl.java
+index 7fdc139..7b020f0 100755
+--- a/sm-shop/src/main/java/com/salesmanager/shop/store/controller/shoppingCart/facade/ShoppingCartFacadeImpl.java
++++ b/sm-shop/src/main/java/com/salesmanager/shop/store/controller/shoppingCart/facade/ShoppingCartFacadeImpl.java
+@@ -58,6 +58,7 @@ import com.salesmanager.shop.model.shoppingcart.ShoppingCartItem;
+ import com.salesmanager.shop.populator.shoppingCart.ShoppingCartDataPopulator;
+ import com.salesmanager.shop.store.api.exception.ResourceNotFoundException;
+ import com.salesmanager.shop.store.api.exception.ServiceRuntimeException;
++import com.salesmanager.shop.store.controller.shoppingCart.CartLineQuantityValidator;
+ import com.salesmanager.shop.utils.DateUtil;
+ import com.salesmanager.shop.utils.ImageFilePath;
+ 
+@@ -95,6 +96,9 @@ public class ShoppingCartFacadeImpl implements ShoppingCartFacade {
+ 	@Autowired
+ 	private ReadableShoppingCartMapper readableShoppingCartMapper;
+ 
++	@Inject
++	private CartLineQuantityValidator cartLineQuantityValidator;
++
+ 	public void deleteShoppingCart(final Long id, final MerchantStore store) throws Exception {
+ 		ShoppingCart cart = shoppingCartService.getById(id, store);
+ 		if (cart != null) {
+@@ -831,6 +835,7 @@ public class ShoppingCartFacadeImpl implements ShoppingCartFacade {
+ 			MerchantStore store, Language language) throws Exception {
+ 
+ 		com.salesmanager.core.model.shoppingcart.ShoppingCartItem itemModel = createCartItem(cartModel, item, store);
++		validateAddQuantity(cartModel, item, itemModel, store);
+ 
+ 		// need to check if the item is already in the cart
+ 		boolean duplicateFound = false;
+@@ -853,7 +858,7 @@ public class ShoppingCartFacadeImpl implements ShoppingCartFacade {
+ 			}
+ 		}
+ 
+-		if (!duplicateFound) {
++		if (!duplicateFound && item.getQuantity() > 0) {
+ 			cartModel.getLineItems().add(itemModel);
+ 		}
+ 
+@@ -867,6 +872,25 @@ public class ShoppingCartFacadeImpl implements ShoppingCartFacade {
+ 
+ 	}
+ 
++	private void validateAddQuantity(ShoppingCart cartModel, PersistableShoppingCartItem item,
++			com.salesmanager.core.model.shoppingcart.ShoppingCartItem itemModel, MerchantStore store)
++			throws ServiceException {
++		cartLineQuantityValidator.validate(item.getQuantity(), store);
++
++		if (item.getQuantity() <= 0 || !CollectionUtils.isEmpty(item.getAttributes())) {
++			return;
++		}
++
++		for (com.salesmanager.core.model.shoppingcart.ShoppingCartItem cartItem : cartModel.getLineItems()) {
++			if (cartItem.getProduct().getId().longValue() == itemModel.getProduct().getId().longValue()
++					&& CollectionUtils.isEmpty(cartItem.getAttributes()) && !itemModel.isProductVirtual()) {
++				long newQuantity = (long) cartItem.getQuantity() + item.getQuantity();
++				cartLineQuantityValidator.validate(newQuantity, store);
++				return;
++			}
++		}
++	}
++
+ 	@Override
+ 	// KEEP
+ 	public ReadableShoppingCart readableCart(ShoppingCart cart, MerchantStore store, Language language) {
+@@ -910,7 +934,7 @@ public class ShoppingCartFacadeImpl implements ShoppingCartFacade {
+ 
+ 			}
+ 
+-			if (!itemModified) {
++			if (!itemModified && item.getQuantity() > 0) {
+ 				newItems.add(itemModel);
+ 			}
+ 
+@@ -999,7 +1023,7 @@ public class ShoppingCartFacadeImpl implements ShoppingCartFacade {
+ 				// update qty
+ 				oldCartItem.setQuantity(newItemValue.getQuantity());
+ 				++itemUpdatedCnt;
+-			} else {
++			} else if (newItemValue.getQuantity() > 0) {
+ 				// addition of new item
+ 				cartModel.getLineItems().add(newItemValue);
+ 				++itemUpdatedCnt;
+@@ -1049,6 +1073,7 @@ public class ShoppingCartFacadeImpl implements ShoppingCartFacade {
+ 
+ 		Validate.notNull(cartCode, "String cart code cannot be null");
+ 		Validate.notNull(item, "PersistableShoppingCartItem cannot be null");
++		cartLineQuantityValidator.validate(item.getQuantity(), store);
+ 
+ 		ShoppingCart cartModel = getCartModel(cartCode, store);
+ 		if (cartModel == null) {
+@@ -1064,6 +1089,9 @@ public class ShoppingCartFacadeImpl implements ShoppingCartFacade {
+ 			MerchantStore store, Language language) throws Exception {
+ 		Validate.notNull(cartCode, "String cart code cannot be null");
+ 		Validate.notNull(items, "PersistableShoppingCartItem cannot be null");
++		for (PersistableShoppingCartItem item : items) {
++			cartLineQuantityValidator.validate(item.getQuantity(), store);
++		}
+ 
+ 		ShoppingCart cartModel = this.getCartModel(cartCode, store);
+ 		if (cartModel == null) {
+diff --git a/sm-shop/src/test/java/com/salesmanager/test/shop/cart/CartLineQuantityValidatorTest.java b/sm-shop/src/test/java/com/salesmanager/test/shop/cart/CartLineQuantityValidatorTest.java
+new file mode 100644
+index 0000000..23ff98c
+--- /dev/null
++++ b/sm-shop/src/test/java/com/salesmanager/test/shop/cart/CartLineQuantityValidatorTest.java
+@@ -0,0 +1,65 @@
++package com.salesmanager.test.shop.cart;
++
++import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
++import static org.junit.jupiter.api.Assertions.assertEquals;
++import static org.junit.jupiter.api.Assertions.assertThrows;
++import static org.mockito.Mockito.mock;
++import static org.mockito.Mockito.when;
++
++import org.junit.jupiter.api.Test;
++
++import com.salesmanager.core.business.services.system.MerchantConfigurationService;
++import com.salesmanager.core.model.merchant.MerchantStore;
++import com.salesmanager.core.model.system.MerchantConfiguration;
++import com.salesmanager.shop.store.controller.shoppingCart.CartLineQuantityValidator;
++
++class CartLineQuantityValidatorTest {
++
++    private final MerchantConfigurationService merchantConfigurationService = mock(MerchantConfigurationService.class);
++    private final MerchantStore store = new MerchantStore(1, "store", "Store");
++    private final CartLineQuantityValidator validator = new CartLineQuantityValidator(merchantConfigurationService);
++
++    @Test
++    void usesNinetyNineWhenConfigurationIsAbsent() throws Exception {
++        when(merchantConfigurationService.getMerchantConfiguration("CART_MAX_LINE_QUANTITY", store))
++                .thenReturn(null);
++
++        assertEquals(99, validator.getMaxLineQuantity(store));
++    }
++
++    @Test
++    void readsTheCurrentConfigurationOnEveryValidation() throws Exception {
++        MerchantConfiguration configuration = new MerchantConfiguration();
++        configuration.setKey("CART_MAX_LINE_QUANTITY");
++        configuration.setValue("4");
++        when(merchantConfigurationService.getMerchantConfiguration("CART_MAX_LINE_QUANTITY", store))
++                .thenReturn(configuration);
++
++        assertDoesNotThrow(() -> validator.validate(4, store));
++
++        configuration.setValue("2");
++
++        assertThrows(CartLineQuantityValidator.CartLineQuantityExceededException.class,
++                () -> validator.validate(3, store));
++    }
++
++    @Test
++    void allowsTheLimitAndZeroButRejectsQuantitiesAboveIt() throws Exception {
++        MerchantConfiguration configuration = new MerchantConfiguration();
++        configuration.setKey("CART_MAX_LINE_QUANTITY");
++        configuration.setValue("3");
++        when(merchantConfigurationService.getMerchantConfiguration("CART_MAX_LINE_QUANTITY", store))
++                .thenReturn(configuration);
++
++        assertDoesNotThrow(() -> validator.validate(0, store));
++        assertDoesNotThrow(() -> validator.validate(3, store));
++        assertThrows(CartLineQuantityValidator.CartLineQuantityExceededException.class,
++                () -> validator.validate(4, store));
++    }
++
++    @Test
++    void rejectsNegativeQuantities() throws Exception {
++        assertThrows(CartLineQuantityValidator.CartLineQuantityInvalidException.class,
++                () -> validator.validate(-1, store));
++    }
++}
+diff --git a/sm-shop/src/test/java/com/salesmanager/test/shop/cart/ShoppingCartFacadeQuantityValidationTest.java b/sm-shop/src/test/java/com/salesmanager/test/shop/cart/ShoppingCartFacadeQuantityValidationTest.java
+new file mode 100644
+index 0000000..2e32066
+--- /dev/null
++++ b/sm-shop/src/test/java/com/salesmanager/test/shop/cart/ShoppingCartFacadeQuantityValidationTest.java
+@@ -0,0 +1,71 @@
++package com.salesmanager.test.shop.cart;
++
++import static org.junit.jupiter.api.Assertions.assertThrows;
++import static org.mockito.Mockito.doThrow;
++import static org.mockito.Mockito.doNothing;
++import static org.mockito.Mockito.verifyNoInteractions;
++
++import java.util.Arrays;
++
++import org.junit.jupiter.api.Test;
++import org.junit.jupiter.api.extension.ExtendWith;
++import org.mockito.InjectMocks;
++import org.mockito.Mock;
++import org.mockito.junit.jupiter.MockitoExtension;
++
++import com.salesmanager.core.business.services.shoppingcart.ShoppingCartService;
++import com.salesmanager.core.model.merchant.MerchantStore;
++import com.salesmanager.shop.model.shoppingcart.PersistableShoppingCartItem;
++import com.salesmanager.shop.store.api.exception.RestApiException;
++import com.salesmanager.shop.store.controller.shoppingCart.CartLineQuantityValidator;
++import com.salesmanager.shop.store.controller.shoppingCart.facade.ShoppingCartFacadeImpl;
++
++@ExtendWith(MockitoExtension.class)
++class ShoppingCartFacadeQuantityValidationTest {
++
++    @Mock
++    private ShoppingCartService shoppingCartService;
++
++    @Mock
++    private CartLineQuantityValidator cartLineQuantityValidator;
++
++    @InjectMocks
++    private ShoppingCartFacadeImpl shoppingCartFacade;
++
++    private final MerchantStore store = new MerchantStore(1, "store", "Store");
++
++    @Test
++    void rejectsAnOverLimitSingleUpdateBeforeLoadingTheCart() throws Exception {
++        doThrow(new RestApiException("Cart line quantity cannot exceed 99"))
++                .when(cartLineQuantityValidator).validate(100, store);
++
++        PersistableShoppingCartItem item = item("sku", 100);
++
++        assertThrows(RestApiException.class,
++                () -> shoppingCartFacade.modifyCart("cart-code", item, store, null));
++
++        verifyNoInteractions(shoppingCartService);
++    }
++
++    @Test
++    void rejectsEveryOverLimitMultiItemBeforeLoadingTheCart() throws Exception {
++        doNothing().when(cartLineQuantityValidator).validate(1, store);
++        doThrow(new RestApiException("Cart line quantity cannot exceed 99"))
++                .when(cartLineQuantityValidator).validate(100, store);
++
++        PersistableShoppingCartItem first = item("duplicate-sku", 1);
++        PersistableShoppingCartItem second = item("duplicate-sku", 100);
++
++        assertThrows(RestApiException.class,
++                () -> shoppingCartFacade.modifyCartMulti("cart-code", Arrays.asList(first, second), store, null));
++
++        verifyNoInteractions(shoppingCartService);
++    }
++
++    private PersistableShoppingCartItem item(String sku, int quantity) {
++        PersistableShoppingCartItem item = new PersistableShoppingCartItem();
++        item.setProduct(sku);
++        item.setQuantity(quantity);
++        return item;
++    }
++}

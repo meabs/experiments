@@ -1,0 +1,243 @@
+diff --git a/sm-shop/src/main/java/com/salesmanager/shop/store/api/v1/shoppingCart/ShoppingCartApi.java b/sm-shop/src/main/java/com/salesmanager/shop/store/api/v1/shoppingCart/ShoppingCartApi.java
+index 7c300f2..1f50491 100755
+--- a/sm-shop/src/main/java/com/salesmanager/shop/store/api/v1/shoppingCart/ShoppingCartApi.java
++++ b/sm-shop/src/main/java/com/salesmanager/shop/store/api/v1/shoppingCart/ShoppingCartApi.java
+@@ -36,6 +36,7 @@ import com.salesmanager.shop.model.shoppingcart.PersistableShoppingCartItem;
+ import com.salesmanager.shop.model.shoppingcart.ReadableShoppingCart;
+ import com.salesmanager.shop.store.api.exception.OperationNotAllowedException;
+ import com.salesmanager.shop.store.api.exception.ResourceNotFoundException;
++import com.salesmanager.shop.store.api.exception.RestApiException;
+ import com.salesmanager.shop.store.api.exception.ServiceRuntimeException;
+ import com.salesmanager.shop.store.controller.customer.facade.v1.CustomerFacade;
+ import com.salesmanager.shop.store.controller.shoppingCart.facade.ShoppingCartFacade;
+@@ -104,6 +105,8 @@ public class ShoppingCartApi {
+ 
+ 			return new ResponseEntity<>(cart, HttpStatus.CREATED);
+ 
++		} catch (RestApiException e) {
++			throw e;
+ 		} catch (Exception e) {
+ 			if(e instanceof ResourceNotFoundException) {
+ 				throw (ResourceNotFoundException)e;
+@@ -162,6 +165,8 @@ public class ShoppingCartApi {
+ 
+ 			return new ResponseEntity<>(cart, HttpStatus.CREATED);
+ 
++		} catch (RestApiException e) {
++			throw e;
+ 		} catch (Exception e) {
+ 			if(e instanceof ResourceNotFoundException) {
+ 				throw (ResourceNotFoundException)e;
+diff --git a/sm-shop/src/main/java/com/salesmanager/shop/store/controller/shoppingCart/CartLineQuantityLimits.java b/sm-shop/src/main/java/com/salesmanager/shop/store/controller/shoppingCart/CartLineQuantityLimits.java
+new file mode 100644
+index 0000000..c1164a5
+--- /dev/null
++++ b/sm-shop/src/main/java/com/salesmanager/shop/store/controller/shoppingCart/CartLineQuantityLimits.java
+@@ -0,0 +1,72 @@
++package com.salesmanager.shop.store.controller.shoppingCart;
++
++import javax.inject.Inject;
++
++import org.springframework.stereotype.Component;
++
++import com.salesmanager.core.business.exception.ServiceException;
++import com.salesmanager.core.business.services.system.MerchantConfigurationService;
++import com.salesmanager.core.model.merchant.MerchantStore;
++import com.salesmanager.core.model.system.MerchantConfiguration;
++import com.salesmanager.shop.store.api.exception.RestApiException;
++import com.salesmanager.shop.store.api.exception.ServiceRuntimeException;
++
++/**
++ * Per-store cap on units of one cart line. Read on each cart write so a
++ * configuration change applies without a restart.
++ */
++@Component
++public class CartLineQuantityLimits {
++
++	public static final String CONFIG_KEY = "CART_MAX_LINE_QUANTITY";
++
++	public static final int DEFAULT_MAX = 99;
++
++	private final MerchantConfigurationService merchantConfigurationService;
++
++	@Inject
++	public CartLineQuantityLimits(MerchantConfigurationService merchantConfigurationService) {
++		this.merchantConfigurationService = merchantConfigurationService;
++	}
++
++	public int maxFor(MerchantStore store) {
++		try {
++			MerchantConfiguration configuration = merchantConfigurationService.getMerchantConfiguration(CONFIG_KEY, store);
++			if (configuration == null) {
++				return DEFAULT_MAX;
++			}
++			return parse(configuration.getValue());
++		} catch (ServiceException e) {
++			throw new ServiceRuntimeException("Cannot read " + CONFIG_KEY, e);
++		}
++	}
++
++	/**
++	 * A missing or non-numeric value uses {@link #DEFAULT_MAX}. A stored whole number is used as-is.
++	 */
++	public static int parse(String raw) {
++		if (raw == null) {
++			return DEFAULT_MAX;
++		}
++		String trimmed = raw.trim();
++		if (trimmed.isEmpty()) {
++			return DEFAULT_MAX;
++		}
++		try {
++			return Integer.parseInt(trimmed);
++		} catch (NumberFormatException ex) {
++			return DEFAULT_MAX;
++		}
++	}
++
++	public void rejectIfAboveMax(MerchantStore store, int quantity) {
++		reject(maxFor(store), quantity);
++	}
++
++	public void reject(int maxUnits, int quantity) {
++		if (quantity > maxUnits) {
++			throw new RestApiException("400",
++					"Cart line quantity " + quantity + " exceeds the store maximum of " + maxUnits);
++		}
++	}
++}
+diff --git a/sm-shop/src/main/java/com/salesmanager/shop/store/controller/shoppingCart/facade/ShoppingCartFacadeImpl.java b/sm-shop/src/main/java/com/salesmanager/shop/store/controller/shoppingCart/facade/ShoppingCartFacadeImpl.java
+index 7fdc139..5908596 100755
+--- a/sm-shop/src/main/java/com/salesmanager/shop/store/controller/shoppingCart/facade/ShoppingCartFacadeImpl.java
++++ b/sm-shop/src/main/java/com/salesmanager/shop/store/controller/shoppingCart/facade/ShoppingCartFacadeImpl.java
+@@ -57,7 +57,9 @@ import com.salesmanager.shop.model.shoppingcart.ShoppingCartData;
+ import com.salesmanager.shop.model.shoppingcart.ShoppingCartItem;
+ import com.salesmanager.shop.populator.shoppingCart.ShoppingCartDataPopulator;
+ import com.salesmanager.shop.store.api.exception.ResourceNotFoundException;
++import com.salesmanager.shop.store.api.exception.RestApiException;
+ import com.salesmanager.shop.store.api.exception.ServiceRuntimeException;
++import com.salesmanager.shop.store.controller.shoppingCart.CartLineQuantityLimits;
+ import com.salesmanager.shop.utils.DateUtil;
+ import com.salesmanager.shop.utils.ImageFilePath;
+ 
+@@ -95,6 +97,9 @@ public class ShoppingCartFacadeImpl implements ShoppingCartFacade {
+ 	@Autowired
+ 	private ReadableShoppingCartMapper readableShoppingCartMapper;
+ 
++	@Inject
++	private CartLineQuantityLimits cartLineQuantityLimits;
++
+ 	public void deleteShoppingCart(final Long id, final MerchantStore store) throws Exception {
+ 		ShoppingCart cart = shoppingCartService.getById(id, store);
+ 		if (cart != null) {
+@@ -770,6 +775,8 @@ public class ShoppingCartFacadeImpl implements ShoppingCartFacade {
+ 
+ 		try {
+ 			return readableShoppingCart(cartModel, item, store, language);
++		} catch (RestApiException e) {
++			throw e;
+ 		} catch (Exception e) {
+ 			if (e instanceof ResourceNotFoundException) {
+ 				throw (ResourceNotFoundException) e;
+@@ -834,6 +841,7 @@ public class ShoppingCartFacadeImpl implements ShoppingCartFacade {
+ 
+ 		// need to check if the item is already in the cart
+ 		boolean duplicateFound = false;
++		com.salesmanager.core.model.shoppingcart.ShoppingCartItem matched = null;
+ 		// only if item has no attributes
+ 		if (CollectionUtils.isEmpty(item.getAttributes())) {// increment quantity
+ 			// get duplicate item from the cart
+@@ -842,9 +850,7 @@ public class ShoppingCartFacadeImpl implements ShoppingCartFacade {
+ 				if (cartItem.getProduct().getSku().equals(item.getProduct())) {
+ 					if (CollectionUtils.isEmpty(cartItem.getAttributes())) {
+ 						if (!duplicateFound) {
+-							if (!itemModel.isProductVirtual()) {
+-								cartItem.setQuantity(cartItem.getQuantity() + item.getQuantity());
+-							}
++							matched = cartItem;
+ 							duplicateFound = true;
+ 							break;
+ 						}
+@@ -853,7 +859,18 @@ public class ShoppingCartFacadeImpl implements ShoppingCartFacade {
+ 			}
+ 		}
+ 
+-		if (!duplicateFound) {
++		if (duplicateFound && matched != null && !itemModel.isProductVirtual()) {
++			int current = matched.getQuantity() == null ? 0 : matched.getQuantity();
++			int resultingQuantity;
++			try {
++				resultingQuantity = Math.addExact(current, item.getQuantity());
++			} catch (ArithmeticException overflow) {
++				resultingQuantity = Integer.MAX_VALUE;
++			}
++			cartLineQuantityLimits.rejectIfAboveMax(store, resultingQuantity);
++			matched.setQuantity(resultingQuantity);
++		} else if (!duplicateFound) {
++			cartLineQuantityLimits.rejectIfAboveMax(store, item.getQuantity());
+ 			cartModel.getLineItems().add(itemModel);
+ 		}
+ 
+@@ -877,6 +894,8 @@ public class ShoppingCartFacadeImpl implements ShoppingCartFacade {
+ 	private ReadableShoppingCart modifyCart(ShoppingCart cartModel, PersistableShoppingCartItem item,
+ 			MerchantStore store, Language language) throws Exception {
+ 
++		cartLineQuantityLimits.rejectIfAboveMax(store, item.getQuantity());
++
+ 		com.salesmanager.core.model.shoppingcart.ShoppingCartItem itemModel = createCartItem(cartModel, item, store);
+ 
+ 		boolean itemModified = false;
+@@ -968,6 +987,11 @@ public class ShoppingCartFacadeImpl implements ShoppingCartFacade {
+ 	private ReadableShoppingCart modifyCartMulti(ShoppingCart cartModel, List<PersistableShoppingCartItem> cartItems,
+ 			MerchantStore store, Language language) throws Exception {
+ 
++		int maxUnits = cartLineQuantityLimits.maxFor(store);
++		for (PersistableShoppingCartItem incoming : cartItems) {
++			cartLineQuantityLimits.reject(maxUnits, incoming.getQuantity());
++		}
++
+ 		int itemUpdatedCnt = 0;
+ 		List<com.salesmanager.core.model.shoppingcart.ShoppingCartItem> inCartItemList = createCartItems(cartModel,
+ 				cartItems, store);
+diff --git a/sm-shop/src/test/java/com/salesmanager/shop/store/controller/shoppingCart/CartLineQuantityLimitsTest.java b/sm-shop/src/test/java/com/salesmanager/shop/store/controller/shoppingCart/CartLineQuantityLimitsTest.java
+new file mode 100644
+index 0000000..c7fdfef
+--- /dev/null
++++ b/sm-shop/src/test/java/com/salesmanager/shop/store/controller/shoppingCart/CartLineQuantityLimitsTest.java
+@@ -0,0 +1,36 @@
++package com.salesmanager.shop.store.controller.shoppingCart;
++
++import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
++import static org.junit.jupiter.api.Assertions.assertEquals;
++import static org.junit.jupiter.api.Assertions.assertThrows;
++
++import org.junit.jupiter.api.Test;
++
++import com.salesmanager.shop.store.api.exception.RestApiException;
++
++public class CartLineQuantityLimitsTest {
++
++	@Test
++	public void missingOrNonNumericValueUsesDefault() {
++		assertEquals(CartLineQuantityLimits.DEFAULT_MAX, CartLineQuantityLimits.parse(null));
++		assertEquals(CartLineQuantityLimits.DEFAULT_MAX, CartLineQuantityLimits.parse("  "));
++		assertEquals(CartLineQuantityLimits.DEFAULT_MAX, CartLineQuantityLimits.parse("99.5"));
++		assertEquals(99, CartLineQuantityLimits.DEFAULT_MAX);
++	}
++
++	@Test
++	public void storedWholeNumberIsUsed() {
++		assertEquals(5, CartLineQuantityLimits.parse("5"));
++		assertEquals(5, CartLineQuantityLimits.parse(" 5 "));
++		assertEquals(0, CartLineQuantityLimits.parse("0"));
++	}
++
++	@Test
++	public void quantityAboveMaxIsRejectedAndZeroIsAllowed() {
++		CartLineQuantityLimits limits = new CartLineQuantityLimits(null);
++		assertDoesNotThrow(() -> limits.reject(99, 0));
++		assertDoesNotThrow(() -> limits.reject(99, 99));
++		assertThrows(RestApiException.class, () -> limits.reject(99, 100));
++		assertThrows(RestApiException.class, () -> limits.reject(3, 4));
++	}
++}

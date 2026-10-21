@@ -1,0 +1,238 @@
+diff --git a/sm-shop/src/main/java/com/salesmanager/shop/constants/Constants.java b/sm-shop/src/main/java/com/salesmanager/shop/constants/Constants.java
+index de70533..27b2fb9 100755
+--- a/sm-shop/src/main/java/com/salesmanager/shop/constants/Constants.java
++++ b/sm-shop/src/main/java/com/salesmanager/shop/constants/Constants.java
+@@ -130,4 +130,6 @@ public class Constants {
+     
+     public final static String DEBUG_MODE = "debugMode";
+ 
++    public final static String CART_MAX_LINE_QUANTITY = "CART_MAX_LINE_QUANTITY";
++
+ }
+diff --git a/sm-shop/src/main/java/com/salesmanager/shop/store/controller/shoppingCart/facade/CartLineQuantityLimit.java b/sm-shop/src/main/java/com/salesmanager/shop/store/controller/shoppingCart/facade/CartLineQuantityLimit.java
+new file mode 100644
+index 0000000..08761d7
+--- /dev/null
++++ b/sm-shop/src/main/java/com/salesmanager/shop/store/controller/shoppingCart/facade/CartLineQuantityLimit.java
+@@ -0,0 +1,62 @@
++package com.salesmanager.shop.store.controller.shoppingCart.facade;
++
++/**
++ * Per-store cap on how many units one cart line may hold.
++ * A quantity of 0 is a removal and is never over the cap.
++ */
++public final class CartLineQuantityLimit {
++
++	public static final int DEFAULT_MAX = 99;
++
++	private CartLineQuantityLimit() {
++	}
++
++	public static int parseMax(String configuredValue) {
++		if (configuredValue == null) {
++			return DEFAULT_MAX;
++		}
++		String trimmed = configuredValue.trim();
++		if (trimmed.isEmpty()) {
++			return DEFAULT_MAX;
++		}
++		try {
++			int parsed = Integer.parseInt(trimmed);
++			if (parsed < 0) {
++				return DEFAULT_MAX;
++			}
++			return parsed;
++		} catch (NumberFormatException ex) {
++			return DEFAULT_MAX;
++		}
++	}
++
++	/**
++	 * Quantity the line would hold after this request.
++	 * When the line merges, non-virtual products add the request onto the current quantity.
++	 */
++	public static int resultingQuantity(Integer currentQuantity, int requestedQuantity, boolean merges,
++			boolean quantityChanges) {
++		if (!merges) {
++			return requestedQuantity;
++		}
++		int current = currentQuantity == null ? 0 : currentQuantity;
++		if (!quantityChanges) {
++			return current;
++		}
++		long sum = (long) current + requestedQuantity;
++		if (sum > Integer.MAX_VALUE) {
++			return Integer.MAX_VALUE;
++		}
++		if (sum < Integer.MIN_VALUE) {
++			return Integer.MIN_VALUE;
++		}
++		return (int) sum;
++	}
++
++	public static void rejectIfAbove(int resultingQuantity, int max) {
++		if (resultingQuantity > max) {
++			throw new IllegalArgumentException(
++					"Cart line quantity " + resultingQuantity + " exceeds the maximum of " + max);
++		}
++	}
++}
+diff --git a/sm-shop/src/main/java/com/salesmanager/shop/store/controller/shoppingCart/facade/ShoppingCartFacadeImpl.java b/sm-shop/src/main/java/com/salesmanager/shop/store/controller/shoppingCart/facade/ShoppingCartFacadeImpl.java
+index 7fdc139..f37296d 100755
+--- a/sm-shop/src/main/java/com/salesmanager/shop/store/controller/shoppingCart/facade/ShoppingCartFacadeImpl.java
++++ b/sm-shop/src/main/java/com/salesmanager/shop/store/controller/shoppingCart/facade/ShoppingCartFacadeImpl.java
+@@ -37,6 +37,8 @@ import com.salesmanager.core.business.services.catalog.product.ProductService;
+ import com.salesmanager.core.business.services.catalog.product.attribute.ProductAttributeService;
+ import com.salesmanager.core.business.services.shoppingcart.ShoppingCartCalculationService;
+ import com.salesmanager.core.business.services.shoppingcart.ShoppingCartService;
++import com.salesmanager.core.business.services.system.MerchantConfigurationService;
++import com.salesmanager.core.model.system.MerchantConfiguration;
+ //import com.salesmanager.core.business.utils.ProductPriceUtils;
+ import com.salesmanager.core.model.catalog.product.Product;
+ import com.salesmanager.core.model.catalog.product.attribute.ProductAttribute;
+@@ -95,6 +97,9 @@ public class ShoppingCartFacadeImpl implements ShoppingCartFacade {
+ 	@Autowired
+ 	private ReadableShoppingCartMapper readableShoppingCartMapper;
+ 
++	@Inject
++	private MerchantConfigurationService merchantConfigurationService;
++
+ 	public void deleteShoppingCart(final Long id, final MerchantStore store) throws Exception {
+ 		ShoppingCart cart = shoppingCartService.getById(id, store);
+ 		if (cart != null) {
+@@ -834,6 +839,7 @@ public class ShoppingCartFacadeImpl implements ShoppingCartFacade {
+ 
+ 		// need to check if the item is already in the cart
+ 		boolean duplicateFound = false;
++		com.salesmanager.core.model.shoppingcart.ShoppingCartItem matchedLine = null;
+ 		// only if item has no attributes
+ 		if (CollectionUtils.isEmpty(item.getAttributes())) {// increment quantity
+ 			// get duplicate item from the cart
+@@ -842,9 +848,7 @@ public class ShoppingCartFacadeImpl implements ShoppingCartFacade {
+ 				if (cartItem.getProduct().getSku().equals(item.getProduct())) {
+ 					if (CollectionUtils.isEmpty(cartItem.getAttributes())) {
+ 						if (!duplicateFound) {
+-							if (!itemModel.isProductVirtual()) {
+-								cartItem.setQuantity(cartItem.getQuantity() + item.getQuantity());
+-							}
++							matchedLine = cartItem;
+ 							duplicateFound = true;
+ 							break;
+ 						}
+@@ -853,6 +857,17 @@ public class ShoppingCartFacadeImpl implements ShoppingCartFacade {
+ 			}
+ 		}
+ 
++		int resulting = CartLineQuantityLimit.resultingQuantity(
++				matchedLine == null ? null : matchedLine.getQuantity(),
++				item.getQuantity(),
++				matchedLine != null,
++				matchedLine != null && !itemModel.isProductVirtual());
++		CartLineQuantityLimit.rejectIfAbove(resulting, maxLineQuantity(store));
++
++		if (matchedLine != null && !itemModel.isProductVirtual()) {
++			matchedLine.setQuantity(resulting);
++		}
++
+ 		if (!duplicateFound) {
+ 			cartModel.getLineItems().add(itemModel);
+ 		}
+@@ -879,6 +894,11 @@ public class ShoppingCartFacadeImpl implements ShoppingCartFacade {
+ 
+ 		com.salesmanager.core.model.shoppingcart.ShoppingCartItem itemModel = createCartItem(cartModel, item, store);
+ 
++		// Quantity 0 removes the line. Any other quantity is the line's new total.
++		if (item.getQuantity() != 0) {
++			CartLineQuantityLimit.rejectIfAbove(item.getQuantity(), maxLineQuantity(store));
++		}
++
+ 		boolean itemModified = false;
+ 		// check if existing product
+ 		Set<com.salesmanager.core.model.shoppingcart.ShoppingCartItem> items = cartModel.getLineItems();
+@@ -968,6 +988,13 @@ public class ShoppingCartFacadeImpl implements ShoppingCartFacade {
+ 	private ReadableShoppingCart modifyCartMulti(ShoppingCart cartModel, List<PersistableShoppingCartItem> cartItems,
+ 			MerchantStore store, Language language) throws Exception {
+ 
++		int max = maxLineQuantity(store);
++		for (PersistableShoppingCartItem incoming : cartItems) {
++			if (incoming.getQuantity() != 0) {
++				CartLineQuantityLimit.rejectIfAbove(incoming.getQuantity(), max);
++			}
++		}
++
+ 		int itemUpdatedCnt = 0;
+ 		List<com.salesmanager.core.model.shoppingcart.ShoppingCartItem> inCartItemList = createCartItems(cartModel,
+ 				cartItems, store);
+@@ -1081,6 +1108,19 @@ public class ShoppingCartFacadeImpl implements ShoppingCartFacade {
+ 		return UUID.randomUUID().toString().replaceAll("-", "");
+ 	}
+ 
++	private int maxLineQuantity(MerchantStore store) {
++		try {
++			MerchantConfiguration configuration = merchantConfigurationService
++					.getMerchantConfiguration(Constants.CART_MAX_LINE_QUANTITY, store);
++			if (configuration == null) {
++				return CartLineQuantityLimit.DEFAULT_MAX;
++			}
++			return CartLineQuantityLimit.parseMax(configuration.getValue());
++		} catch (ServiceException e) {
++			throw new ServiceRuntimeException("Cannot read cart line quantity limit", e);
++		}
++	}
++
+ 	@Override
+ 	public ReadableShoppingCart getById(Long shoppingCartId, MerchantStore store, Language language) throws Exception {
+ 
+diff --git a/sm-shop/src/test/java/com/salesmanager/shop/store/controller/shoppingCart/facade/CartLineQuantityLimitTest.java b/sm-shop/src/test/java/com/salesmanager/shop/store/controller/shoppingCart/facade/CartLineQuantityLimitTest.java
+new file mode 100644
+index 0000000..01eecfc
+--- /dev/null
++++ b/sm-shop/src/test/java/com/salesmanager/shop/store/controller/shoppingCart/facade/CartLineQuantityLimitTest.java
+@@ -0,0 +1,47 @@
++package com.salesmanager.shop.store.controller.shoppingCart.facade;
++
++import static org.junit.Assert.assertEquals;
++import static org.junit.Assert.fail;
++
++import org.junit.Test;
++
++public class CartLineQuantityLimitTest {
++
++	@Test
++	public void missingOrBlankConfigUsesDefault() {
++		assertEquals(99, CartLineQuantityLimit.parseMax(null));
++		assertEquals(99, CartLineQuantityLimit.parseMax(""));
++		assertEquals(99, CartLineQuantityLimit.parseMax("  "));
++		assertEquals(99, CartLineQuantityLimit.parseMax("nope"));
++		assertEquals(99, CartLineQuantityLimit.parseMax("-1"));
++	}
++
++	@Test
++	public void wholeNumberConfigIsTheCap() {
++		assertEquals(5, CartLineQuantityLimit.parseMax("5"));
++		assertEquals(0, CartLineQuantityLimit.parseMax(" 0 "));
++	}
++
++	@Test
++	public void zeroIsRemovalAndDoesNotExceed() {
++		CartLineQuantityLimit.rejectIfAbove(0, 99);
++		CartLineQuantityLimit.rejectIfAbove(99, 99);
++	}
++
++	@Test
++	public void quantityAboveCapIsRejected() {
++		try {
++			CartLineQuantityLimit.rejectIfAbove(100, 99);
++			fail("expected rejection");
++		} catch (IllegalArgumentException expected) {
++			assertEquals("Cart line quantity 100 exceeds the maximum of 99", expected.getMessage());
++		}
++	}
++
++	@Test
++	public void addMergesOntoTheExistingLine() {
++		assertEquals(12, CartLineQuantityLimit.resultingQuantity(10, 2, true, true));
++		assertEquals(2, CartLineQuantityLimit.resultingQuantity(null, 2, false, true));
++		assertEquals(10, CartLineQuantityLimit.resultingQuantity(10, 50, true, false));
++	}
++}

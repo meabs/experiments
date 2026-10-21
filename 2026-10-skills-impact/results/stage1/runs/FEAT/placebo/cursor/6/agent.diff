@@ -1,0 +1,201 @@
+diff --git a/sm-shop/src/main/java/com/salesmanager/shop/store/controller/shoppingCart/facade/CartLineQuantityPolicy.java b/sm-shop/src/main/java/com/salesmanager/shop/store/controller/shoppingCart/facade/CartLineQuantityPolicy.java
+new file mode 100644
+index 0000000..68c05db
+--- /dev/null
++++ b/sm-shop/src/main/java/com/salesmanager/shop/store/controller/shoppingCart/facade/CartLineQuantityPolicy.java
+@@ -0,0 +1,65 @@
++package com.salesmanager.shop.store.controller.shoppingCart.facade;
++
++import javax.inject.Inject;
++
++import org.apache.commons.lang3.StringUtils;
++import org.springframework.stereotype.Component;
++
++import com.salesmanager.core.business.exception.ServiceException;
++import com.salesmanager.core.business.services.system.MerchantConfigurationService;
++import com.salesmanager.core.model.merchant.MerchantStore;
++import com.salesmanager.core.model.system.MerchantConfiguration;
++import com.salesmanager.shop.store.api.exception.ServiceRuntimeException;
++
++/**
++ * Per-store cap on how many units a single cart line may hold.
++ * The value is read from merchant configuration on each check so a change
++ * applies without an application restart.
++ */
++@Component
++public class CartLineQuantityPolicy {
++
++	public static final String CONFIG_KEY = "CART_MAX_LINE_QUANTITY";
++
++	public static final int DEFAULT_MAX_LINE_QUANTITY = 99;
++
++	private final MerchantConfigurationService merchantConfigurationService;
++
++	@Inject
++	public CartLineQuantityPolicy(MerchantConfigurationService merchantConfigurationService) {
++		this.merchantConfigurationService = merchantConfigurationService;
++	}
++
++	/**
++	 * Quantity 0 is left alone: callers use it to remove a line.
++	 * A quantity above the store maximum is rejected before the cart is saved.
++	 */
++	public void check(int quantity, MerchantStore store) {
++		if (quantity <= 0) {
++			return;
++		}
++		int max = maxLineQuantity(store);
++		if (quantity > max) {
++			throw new IllegalArgumentException(
++					"Cart line quantity " + quantity + " exceeds the maximum of " + max);
++		}
++	}
++
++	public int maxLineQuantity(MerchantStore store) {
++		MerchantConfiguration configuration;
++		try {
++			configuration = merchantConfigurationService.getMerchantConfiguration(CONFIG_KEY, store);
++		} catch (ServiceException e) {
++			throw new ServiceRuntimeException("Cannot read " + CONFIG_KEY, e);
++		}
++		if (configuration == null || StringUtils.isBlank(configuration.getValue())) {
++			return DEFAULT_MAX_LINE_QUANTITY;
++		}
++		try {
++			return Integer.parseInt(configuration.getValue().trim());
++		} catch (NumberFormatException e) {
++			throw new IllegalArgumentException(
++					CONFIG_KEY + " must be a whole number but was '" + configuration.getValue() + "'");
++		}
++	}
++}
+diff --git a/sm-shop/src/main/java/com/salesmanager/shop/store/controller/shoppingCart/facade/ShoppingCartFacadeImpl.java b/sm-shop/src/main/java/com/salesmanager/shop/store/controller/shoppingCart/facade/ShoppingCartFacadeImpl.java
+index 7fdc139..bf4722d 100755
+--- a/sm-shop/src/main/java/com/salesmanager/shop/store/controller/shoppingCart/facade/ShoppingCartFacadeImpl.java
++++ b/sm-shop/src/main/java/com/salesmanager/shop/store/controller/shoppingCart/facade/ShoppingCartFacadeImpl.java
+@@ -95,6 +95,9 @@ public class ShoppingCartFacadeImpl implements ShoppingCartFacade {
+ 	@Autowired
+ 	private ReadableShoppingCartMapper readableShoppingCartMapper;
+ 
++	@Autowired
++	private CartLineQuantityPolicy cartLineQuantityPolicy;
++
+ 	public void deleteShoppingCart(final Long id, final MerchantStore store) throws Exception {
+ 		ShoppingCart cart = shoppingCartService.getById(id, store);
+ 		if (cart != null) {
+@@ -834,6 +837,7 @@ public class ShoppingCartFacadeImpl implements ShoppingCartFacade {
+ 
+ 		// need to check if the item is already in the cart
+ 		boolean duplicateFound = false;
++		int resultingQuantity = item.getQuantity();
+ 		// only if item has no attributes
+ 		if (CollectionUtils.isEmpty(item.getAttributes())) {// increment quantity
+ 			// get duplicate item from the cart
+@@ -843,7 +847,9 @@ public class ShoppingCartFacadeImpl implements ShoppingCartFacade {
+ 					if (CollectionUtils.isEmpty(cartItem.getAttributes())) {
+ 						if (!duplicateFound) {
+ 							if (!itemModel.isProductVirtual()) {
+-								cartItem.setQuantity(cartItem.getQuantity() + item.getQuantity());
++								resultingQuantity = cartItem.getQuantity() + item.getQuantity();
++							} else {
++								resultingQuantity = cartItem.getQuantity();
+ 							}
+ 							duplicateFound = true;
+ 							break;
+@@ -853,6 +859,20 @@ public class ShoppingCartFacadeImpl implements ShoppingCartFacade {
+ 			}
+ 		}
+ 
++		cartLineQuantityPolicy.check(resultingQuantity, store);
++
++		if (duplicateFound && CollectionUtils.isEmpty(item.getAttributes())) {
++			for (com.salesmanager.core.model.shoppingcart.ShoppingCartItem cartItem : cartModel.getLineItems()) {
++				if (cartItem.getProduct().getSku().equals(item.getProduct())
++						&& CollectionUtils.isEmpty(cartItem.getAttributes())) {
++					if (!itemModel.isProductVirtual()) {
++						cartItem.setQuantity(resultingQuantity);
++					}
++					break;
++				}
++			}
++		}
++
+ 		if (!duplicateFound) {
+ 			cartModel.getLineItems().add(itemModel);
+ 		}
+@@ -877,6 +897,8 @@ public class ShoppingCartFacadeImpl implements ShoppingCartFacade {
+ 	private ReadableShoppingCart modifyCart(ShoppingCart cartModel, PersistableShoppingCartItem item,
+ 			MerchantStore store, Language language) throws Exception {
+ 
++		cartLineQuantityPolicy.check(item.getQuantity(), store);
++
+ 		com.salesmanager.core.model.shoppingcart.ShoppingCartItem itemModel = createCartItem(cartModel, item, store);
+ 
+ 		boolean itemModified = false;
+@@ -969,6 +991,9 @@ public class ShoppingCartFacadeImpl implements ShoppingCartFacade {
+ 			MerchantStore store, Language language) throws Exception {
+ 
+ 		int itemUpdatedCnt = 0;
++		for (PersistableShoppingCartItem cartItem : cartItems) {
++			cartLineQuantityPolicy.check(cartItem.getQuantity(), store);
++		}
+ 		List<com.salesmanager.core.model.shoppingcart.ShoppingCartItem> inCartItemList = createCartItems(cartModel,
+ 				cartItems, store);
+ 
+diff --git a/sm-shop/src/test/java/com/salesmanager/shop/store/controller/shoppingCart/facade/CartLineQuantityPolicyTest.java b/sm-shop/src/test/java/com/salesmanager/shop/store/controller/shoppingCart/facade/CartLineQuantityPolicyTest.java
+new file mode 100644
+index 0000000..cca1c30
+--- /dev/null
++++ b/sm-shop/src/test/java/com/salesmanager/shop/store/controller/shoppingCart/facade/CartLineQuantityPolicyTest.java
+@@ -0,0 +1,51 @@
++package com.salesmanager.shop.store.controller.shoppingCart.facade;
++
++import static org.junit.Assert.assertEquals;
++import static org.junit.Assert.fail;
++
++import java.lang.reflect.Proxy;
++
++import org.junit.Test;
++
++import com.salesmanager.core.business.services.system.MerchantConfigurationService;
++import com.salesmanager.core.model.merchant.MerchantStore;
++import com.salesmanager.core.model.system.MerchantConfiguration;
++
++public class CartLineQuantityPolicyTest {
++
++	@Test
++	public void missingConfigurationUsesDefault() {
++		CartLineQuantityPolicy policy = policy(null);
++		assertEquals(CartLineQuantityPolicy.DEFAULT_MAX_LINE_QUANTITY, policy.maxLineQuantity(new MerchantStore()));
++		policy.check(99, new MerchantStore());
++	}
++
++	@Test
++	public void configuredMaximumIsReadEachCall() {
++		MerchantConfiguration configuration = new MerchantConfiguration();
++		configuration.setValue("4");
++		CartLineQuantityPolicy policy = policy(configuration);
++		assertEquals(4, policy.maxLineQuantity(new MerchantStore()));
++		policy.check(4, new MerchantStore());
++		policy.check(0, new MerchantStore());
++		try {
++			policy.check(5, new MerchantStore());
++			fail("quantity above the store maximum should be rejected");
++		} catch (IllegalArgumentException expected) {
++			assertEquals("Cart line quantity 5 exceeds the maximum of 4", expected.getMessage());
++		}
++	}
++
++	private CartLineQuantityPolicy policy(MerchantConfiguration configuration) {
++		MerchantConfigurationService service = (MerchantConfigurationService) Proxy.newProxyInstance(
++				MerchantConfigurationService.class.getClassLoader(),
++				new Class<?>[] { MerchantConfigurationService.class },
++				(proxy, method, args) -> {
++					if ("getMerchantConfiguration".equals(method.getName())) {
++						return configuration;
++					}
++					return null;
++				});
++		return new CartLineQuantityPolicy(service);
++	}
++}

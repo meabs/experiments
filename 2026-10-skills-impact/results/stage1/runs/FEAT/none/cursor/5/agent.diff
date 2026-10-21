@@ -1,0 +1,150 @@
+diff --git a/sm-shop/src/main/java/com/salesmanager/shop/store/api/v1/shoppingCart/ShoppingCartApi.java b/sm-shop/src/main/java/com/salesmanager/shop/store/api/v1/shoppingCart/ShoppingCartApi.java
+index 7c300f2..d9626cc 100755
+--- a/sm-shop/src/main/java/com/salesmanager/shop/store/api/v1/shoppingCart/ShoppingCartApi.java
++++ b/sm-shop/src/main/java/com/salesmanager/shop/store/api/v1/shoppingCart/ShoppingCartApi.java
+@@ -107,6 +107,8 @@ public class ShoppingCartApi {
+ 		} catch (Exception e) {
+ 			if(e instanceof ResourceNotFoundException) {
+ 				throw (ResourceNotFoundException)e;
++			} else if (e instanceof ServiceRuntimeException) {
++				throw (ServiceRuntimeException) e;
+ 			} else {
+ 				throw new ServiceRuntimeException(e);
+ 			}
+@@ -165,6 +167,8 @@ public class ShoppingCartApi {
+ 		} catch (Exception e) {
+ 			if(e instanceof ResourceNotFoundException) {
+ 				throw (ResourceNotFoundException)e;
++			} else if (e instanceof ServiceRuntimeException) {
++				throw (ServiceRuntimeException) e;
+ 			} else {
+ 				throw new ServiceRuntimeException(e);
+ 			}
+diff --git a/sm-shop/src/main/java/com/salesmanager/shop/store/controller/shoppingCart/facade/ShoppingCartFacadeImpl.java b/sm-shop/src/main/java/com/salesmanager/shop/store/controller/shoppingCart/facade/ShoppingCartFacadeImpl.java
+index 7fdc139..6f8ecc1 100755
+--- a/sm-shop/src/main/java/com/salesmanager/shop/store/controller/shoppingCart/facade/ShoppingCartFacadeImpl.java
++++ b/sm-shop/src/main/java/com/salesmanager/shop/store/controller/shoppingCart/facade/ShoppingCartFacadeImpl.java
+@@ -37,6 +37,7 @@ import com.salesmanager.core.business.services.catalog.product.ProductService;
+ import com.salesmanager.core.business.services.catalog.product.attribute.ProductAttributeService;
+ import com.salesmanager.core.business.services.shoppingcart.ShoppingCartCalculationService;
+ import com.salesmanager.core.business.services.shoppingcart.ShoppingCartService;
++import com.salesmanager.core.business.services.system.MerchantConfigurationService;
+ //import com.salesmanager.core.business.utils.ProductPriceUtils;
+ import com.salesmanager.core.model.catalog.product.Product;
+ import com.salesmanager.core.model.catalog.product.attribute.ProductAttribute;
+@@ -47,6 +48,7 @@ import com.salesmanager.core.model.customer.Customer;
+ import com.salesmanager.core.model.merchant.MerchantStore;
+ import com.salesmanager.core.model.reference.language.Language;
+ import com.salesmanager.core.model.shoppingcart.ShoppingCart;
++import com.salesmanager.core.model.system.MerchantConfiguration;
+ import com.salesmanager.shop.constants.Constants;
+ import com.salesmanager.shop.mapper.cart.ReadableShoppingCartMapper;
+ import com.salesmanager.shop.model.shoppingcart.CartModificationException;
+@@ -72,9 +74,17 @@ public class ShoppingCartFacadeImpl implements ShoppingCartFacade {
+ 
+ 	private static final Logger LOG = LoggerFactory.getLogger(ShoppingCartFacadeImpl.class);
+ 
++	/** Per-store merchant configuration key. Read on each cart change so updates apply without a restart. */
++	static final String CART_MAX_LINE_QUANTITY = "CART_MAX_LINE_QUANTITY";
++
++	static final int DEFAULT_CART_MAX_LINE_QUANTITY = 99;
++
+ 	@Inject
+ 	private ShoppingCartService shoppingCartService;
+ 
++	@Inject
++	private MerchantConfigurationService merchantConfigurationService;
++
+ 	@Inject
+ 	private ShoppingCartCalculationService shoppingCartCalculationService;
+ 
+@@ -773,6 +783,8 @@ public class ShoppingCartFacadeImpl implements ShoppingCartFacade {
+ 		} catch (Exception e) {
+ 			if (e instanceof ResourceNotFoundException) {
+ 				throw (ResourceNotFoundException) e;
++			} else if (e instanceof ServiceRuntimeException) {
++				throw (ServiceRuntimeException) e;
+ 			} else {
+ 				throw new ServiceRuntimeException(e.getMessage(),e);
+ 			}
+@@ -843,7 +855,9 @@ public class ShoppingCartFacadeImpl implements ShoppingCartFacade {
+ 					if (CollectionUtils.isEmpty(cartItem.getAttributes())) {
+ 						if (!duplicateFound) {
+ 							if (!itemModel.isProductVirtual()) {
+-								cartItem.setQuantity(cartItem.getQuantity() + item.getQuantity());
++								int nextQuantity = cartItem.getQuantity() + item.getQuantity();
++								assertLineQuantityWithinLimit(nextQuantity, store);
++								cartItem.setQuantity(nextQuantity);
+ 							}
+ 							duplicateFound = true;
+ 							break;
+@@ -854,6 +868,7 @@ public class ShoppingCartFacadeImpl implements ShoppingCartFacade {
+ 		}
+ 
+ 		if (!duplicateFound) {
++			assertLineQuantityWithinLimit(itemModel.getQuantity(), store);
+ 			cartModel.getLineItems().add(itemModel);
+ 		}
+ 
+@@ -877,6 +892,10 @@ public class ShoppingCartFacadeImpl implements ShoppingCartFacade {
+ 	private ReadableShoppingCart modifyCart(ShoppingCart cartModel, PersistableShoppingCartItem item,
+ 			MerchantStore store, Language language) throws Exception {
+ 
++		// Reject before any line is removed or updated so a failed request leaves the cart unchanged.
++		// Quantity 0 still means remove the line.
++		assertLineQuantityWithinLimit(item.getQuantity(), store);
++
+ 		com.salesmanager.core.model.shoppingcart.ShoppingCartItem itemModel = createCartItem(cartModel, item, store);
+ 
+ 		boolean itemModified = false;
+@@ -972,6 +991,11 @@ public class ShoppingCartFacadeImpl implements ShoppingCartFacade {
+ 		List<com.salesmanager.core.model.shoppingcart.ShoppingCartItem> inCartItemList = createCartItems(cartModel,
+ 				cartItems, store);
+ 
++		// Validate every requested line before deleting or updating so the cart is unchanged on failure.
++		for (com.salesmanager.core.model.shoppingcart.ShoppingCartItem requested : inCartItemList) {
++			assertLineQuantityWithinLimit(requested.getQuantity(), store);
++		}
++
+ 		Set<com.salesmanager.core.model.shoppingcart.ShoppingCartItem> existingItems = cartModel.getLineItems();
+ 		// loop over incoming items since they drive changes
+ 		for (com.salesmanager.core.model.shoppingcart.ShoppingCartItem newItemValue : inCartItemList) {
+@@ -1077,6 +1101,38 @@ public class ShoppingCartFacadeImpl implements ShoppingCartFacade {
+ 		shoppingCartService.save(shoppingCart);
+ 	}
+ 
++	/**
++	 * A line may hold at most the store's CART_MAX_LINE_QUANTITY (default 99).
++	 * Zero and negative quantities are left to existing cart behaviour (zero removes a line).
++	 */
++	private void assertLineQuantityWithinLimit(int quantity, MerchantStore store) {
++		if (quantity <= 0) {
++			return;
++		}
++		int max = cartMaxLineQuantity(store);
++		if (quantity > max) {
++			String message = "Cart line quantity " + quantity + " exceeds the maximum of " + max;
++			throw new ServiceRuntimeException("400", message, new IllegalArgumentException(message));
++		}
++	}
++
++	private int cartMaxLineQuantity(MerchantStore store) {
++		try {
++			MerchantConfiguration configuration = merchantConfigurationService
++					.getMerchantConfiguration(CART_MAX_LINE_QUANTITY, store);
++			if (configuration == null || StringUtils.isBlank(configuration.getValue())) {
++				return DEFAULT_CART_MAX_LINE_QUANTITY;
++			}
++			return Integer.parseInt(configuration.getValue().trim());
++		} catch (NumberFormatException e) {
++			LOG.warn("CART_MAX_LINE_QUANTITY for store {} is not a whole number, using {}", store.getCode(),
++					DEFAULT_CART_MAX_LINE_QUANTITY);
++			return DEFAULT_CART_MAX_LINE_QUANTITY;
++		} catch (ServiceException e) {
++			throw new ServiceRuntimeException("400", "Unable to read cart line quantity limit", e);
++		}
++	}
++
+ 	private String uniqueShoppingCartCode() {
+ 		return UUID.randomUUID().toString().replaceAll("-", "");
+ 	}

@@ -1,0 +1,153 @@
+diff --git a/sm-shop/src/main/java/com/salesmanager/shop/store/controller/shoppingCart/facade/ShoppingCartFacadeImpl.java b/sm-shop/src/main/java/com/salesmanager/shop/store/controller/shoppingCart/facade/ShoppingCartFacadeImpl.java
+index 7fdc139..fe0accc 100755
+--- a/sm-shop/src/main/java/com/salesmanager/shop/store/controller/shoppingCart/facade/ShoppingCartFacadeImpl.java
++++ b/sm-shop/src/main/java/com/salesmanager/shop/store/controller/shoppingCart/facade/ShoppingCartFacadeImpl.java
+@@ -37,6 +37,7 @@ import com.salesmanager.core.business.services.catalog.product.ProductService;
+ import com.salesmanager.core.business.services.catalog.product.attribute.ProductAttributeService;
+ import com.salesmanager.core.business.services.shoppingcart.ShoppingCartCalculationService;
+ import com.salesmanager.core.business.services.shoppingcart.ShoppingCartService;
++import com.salesmanager.core.business.services.system.MerchantConfigurationService;
+ //import com.salesmanager.core.business.utils.ProductPriceUtils;
+ import com.salesmanager.core.model.catalog.product.Product;
+ import com.salesmanager.core.model.catalog.product.attribute.ProductAttribute;
+@@ -47,6 +48,7 @@ import com.salesmanager.core.model.customer.Customer;
+ import com.salesmanager.core.model.merchant.MerchantStore;
+ import com.salesmanager.core.model.reference.language.Language;
+ import com.salesmanager.core.model.shoppingcart.ShoppingCart;
++import com.salesmanager.core.model.system.MerchantConfiguration;
+ import com.salesmanager.shop.constants.Constants;
+ import com.salesmanager.shop.mapper.cart.ReadableShoppingCartMapper;
+ import com.salesmanager.shop.model.shoppingcart.CartModificationException;
+@@ -56,6 +58,7 @@ import com.salesmanager.shop.model.shoppingcart.ShoppingCartAttribute;
+ import com.salesmanager.shop.model.shoppingcart.ShoppingCartData;
+ import com.salesmanager.shop.model.shoppingcart.ShoppingCartItem;
+ import com.salesmanager.shop.populator.shoppingCart.ShoppingCartDataPopulator;
++import com.salesmanager.shop.store.api.exception.RestApiException;
+ import com.salesmanager.shop.store.api.exception.ResourceNotFoundException;
+ import com.salesmanager.shop.store.api.exception.ServiceRuntimeException;
+ import com.salesmanager.shop.utils.DateUtil;
+@@ -71,6 +74,8 @@ import com.salesmanager.shop.utils.ImageFilePath;
+ public class ShoppingCartFacadeImpl implements ShoppingCartFacade {
+ 
+ 	private static final Logger LOG = LoggerFactory.getLogger(ShoppingCartFacadeImpl.class);
++	private static final String CART_MAX_LINE_QUANTITY = "CART_MAX_LINE_QUANTITY";
++	private static final int DEFAULT_CART_MAX_LINE_QUANTITY = 99;
+ 
+ 	@Inject
+ 	private ShoppingCartService shoppingCartService;
+@@ -88,6 +93,9 @@ public class ShoppingCartFacadeImpl implements ShoppingCartFacade {
+ 	@Inject
+ 	private ProductAttributeService productAttributeService;
+ 
++	@Inject
++	private MerchantConfigurationService merchantConfigurationService;
++
+ 	@Inject
+ 	@Qualifier("img")
+ 	private ImageFilePath imageUtils;
+@@ -831,6 +839,8 @@ public class ShoppingCartFacadeImpl implements ShoppingCartFacade {
+ 			MerchantStore store, Language language) throws Exception {
+ 
+ 		com.salesmanager.core.model.shoppingcart.ShoppingCartItem itemModel = createCartItem(cartModel, item, store);
++		validateCartLineQuantityForAdd(cartModel, itemModel, item.getQuantity(),
++				CollectionUtils.isEmpty(item.getAttributes()), store);
+ 
+ 		// need to check if the item is already in the cart
+ 		boolean duplicateFound = false;
+@@ -877,6 +887,8 @@ public class ShoppingCartFacadeImpl implements ShoppingCartFacade {
+ 	private ReadableShoppingCart modifyCart(ShoppingCart cartModel, PersistableShoppingCartItem item,
+ 			MerchantStore store, Language language) throws Exception {
+ 
++		validateRequestedQuantity(item.getQuantity(), store);
++
+ 		com.salesmanager.core.model.shoppingcart.ShoppingCartItem itemModel = createCartItem(cartModel, item, store);
+ 
+ 		boolean itemModified = false;
+@@ -968,6 +980,8 @@ public class ShoppingCartFacadeImpl implements ShoppingCartFacade {
+ 	private ReadableShoppingCart modifyCartMulti(ShoppingCart cartModel, List<PersistableShoppingCartItem> cartItems,
+ 			MerchantStore store, Language language) throws Exception {
+ 
++		validateRequestedQuantities(cartItems, store);
++
+ 		int itemUpdatedCnt = 0;
+ 		List<com.salesmanager.core.model.shoppingcart.ShoppingCartItem> inCartItemList = createCartItems(cartModel,
+ 				cartItems, store);
+@@ -1077,6 +1091,78 @@ public class ShoppingCartFacadeImpl implements ShoppingCartFacade {
+ 		shoppingCartService.save(shoppingCart);
+ 	}
+ 
++	private void validateRequestedQuantities(List<PersistableShoppingCartItem> items, MerchantStore store)
++			throws ServiceException {
++		Integer maxQuantity = null;
++		for (PersistableShoppingCartItem item : items) {
++			if (item.getQuantity() > 0) {
++				if (maxQuantity == null) {
++					maxQuantity = getCartMaxLineQuantity(store);
++				}
++				validateRequestedQuantity(item.getQuantity(), maxQuantity);
++			}
++		}
++	}
++
++	private void validateRequestedQuantity(int quantity, MerchantStore store) throws ServiceException {
++		if (quantity > 0) {
++			validateRequestedQuantity(quantity, getCartMaxLineQuantity(store));
++		}
++	}
++
++	private void validateRequestedQuantity(int quantity, int maxQuantity) {
++		if (quantity > maxQuantity) {
++			throw new RestApiException("400",
++					"Cart line quantity cannot exceed " + maxQuantity + " units");
++		}
++	}
++
++	private void validateCartLineQuantityForAdd(ShoppingCart cartModel,
++			com.salesmanager.core.model.shoppingcart.ShoppingCartItem item, int quantity,
++			boolean withoutAttributes, MerchantStore store) throws ServiceException {
++		if (quantity <= 0) {
++			return;
++		}
++
++		int maxQuantity = getCartMaxLineQuantity(store);
++		validateRequestedQuantity(quantity, maxQuantity);
++
++		if (!withoutAttributes) {
++			return;
++		}
++
++		for (com.salesmanager.core.model.shoppingcart.ShoppingCartItem existingItem : cartModel.getLineItems()) {
++			if (existingItem.getProduct().getId().longValue() == item.getProduct().getId().longValue()
++					&& CollectionUtils.isEmpty(existingItem.getAttributes())) {
++				if (!item.isProductVirtual()
++						&& ((long) existingItem.getQuantity() + quantity) > maxQuantity) {
++					throw new RestApiException("400",
++							"Cart line quantity cannot exceed " + maxQuantity + " units");
++				}
++				return;
++			}
++		}
++	}
++
++	private int getCartMaxLineQuantity(MerchantStore store) throws ServiceException {
++		MerchantConfiguration configuration = merchantConfigurationService
++				.getMerchantConfiguration(CART_MAX_LINE_QUANTITY, store);
++		if (configuration == null || StringUtils.isBlank(configuration.getValue())) {
++			return DEFAULT_CART_MAX_LINE_QUANTITY;
++		}
++
++		try {
++			int configuredQuantity = Integer.parseInt(configuration.getValue().trim());
++			if (configuredQuantity >= 0) {
++				return configuredQuantity;
++			}
++		} catch (NumberFormatException e) {
++			LOG.warn("Invalid {} configuration for store {}. Using default {}", CART_MAX_LINE_QUANTITY,
++					store.getId(), DEFAULT_CART_MAX_LINE_QUANTITY);
++		}
++		return DEFAULT_CART_MAX_LINE_QUANTITY;
++	}
++
+ 	private String uniqueShoppingCartCode() {
+ 		return UUID.randomUUID().toString().replaceAll("-", "");
+ 	}

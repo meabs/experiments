@@ -1,0 +1,122 @@
+diff --git a/sm-shop/src/main/java/com/salesmanager/shop/store/controller/shoppingCart/facade/ShoppingCartFacadeImpl.java b/sm-shop/src/main/java/com/salesmanager/shop/store/controller/shoppingCart/facade/ShoppingCartFacadeImpl.java
+index 7fdc139..f5369c0 100755
+--- a/sm-shop/src/main/java/com/salesmanager/shop/store/controller/shoppingCart/facade/ShoppingCartFacadeImpl.java
++++ b/sm-shop/src/main/java/com/salesmanager/shop/store/controller/shoppingCart/facade/ShoppingCartFacadeImpl.java
+@@ -37,6 +37,7 @@ import com.salesmanager.core.business.services.catalog.product.ProductService;
+ import com.salesmanager.core.business.services.catalog.product.attribute.ProductAttributeService;
+ import com.salesmanager.core.business.services.shoppingcart.ShoppingCartCalculationService;
+ import com.salesmanager.core.business.services.shoppingcart.ShoppingCartService;
++import com.salesmanager.core.business.services.system.MerchantConfigurationService;
+ //import com.salesmanager.core.business.utils.ProductPriceUtils;
+ import com.salesmanager.core.model.catalog.product.Product;
+ import com.salesmanager.core.model.catalog.product.attribute.ProductAttribute;
+@@ -47,6 +48,7 @@ import com.salesmanager.core.model.customer.Customer;
+ import com.salesmanager.core.model.merchant.MerchantStore;
+ import com.salesmanager.core.model.reference.language.Language;
+ import com.salesmanager.core.model.shoppingcart.ShoppingCart;
++import com.salesmanager.core.model.system.MerchantConfiguration;
+ import com.salesmanager.shop.constants.Constants;
+ import com.salesmanager.shop.mapper.cart.ReadableShoppingCartMapper;
+ import com.salesmanager.shop.model.shoppingcart.CartModificationException;
+@@ -70,6 +72,9 @@ import com.salesmanager.shop.utils.ImageFilePath;
+ @Service(value = "shoppingCartFacade")
+ public class ShoppingCartFacadeImpl implements ShoppingCartFacade {
+ 
++	static final String CART_MAX_LINE_QUANTITY = "CART_MAX_LINE_QUANTITY";
++	static final int DEFAULT_CART_MAX_LINE_QUANTITY = 99;
++
+ 	private static final Logger LOG = LoggerFactory.getLogger(ShoppingCartFacadeImpl.class);
+ 
+ 	@Inject
+@@ -95,6 +100,9 @@ public class ShoppingCartFacadeImpl implements ShoppingCartFacade {
+ 	@Autowired
+ 	private ReadableShoppingCartMapper readableShoppingCartMapper;
+ 
++	@Inject
++	private MerchantConfigurationService merchantConfigurationService;
++
+ 	public void deleteShoppingCart(final Long id, final MerchantStore store) throws Exception {
+ 		ShoppingCart cart = shoppingCartService.getById(id, store);
+ 		if (cart != null) {
+@@ -832,6 +840,8 @@ public class ShoppingCartFacadeImpl implements ShoppingCartFacade {
+ 
+ 		com.salesmanager.core.model.shoppingcart.ShoppingCartItem itemModel = createCartItem(cartModel, item, store);
+ 
++		int maxLineQuantity = cartMaxLineQuantity(store);
++
+ 		// need to check if the item is already in the cart
+ 		boolean duplicateFound = false;
+ 		// only if item has no attributes
+@@ -843,7 +853,9 @@ public class ShoppingCartFacadeImpl implements ShoppingCartFacade {
+ 					if (CollectionUtils.isEmpty(cartItem.getAttributes())) {
+ 						if (!duplicateFound) {
+ 							if (!itemModel.isProductVirtual()) {
+-								cartItem.setQuantity(cartItem.getQuantity() + item.getQuantity());
++								long updatedQuantity = (long) cartItem.getQuantity() + item.getQuantity();
++								rejectLineQuantityAboveMax(updatedQuantity, maxLineQuantity);
++								cartItem.setQuantity((int) updatedQuantity);
+ 							}
+ 							duplicateFound = true;
+ 							break;
+@@ -854,6 +866,7 @@ public class ShoppingCartFacadeImpl implements ShoppingCartFacade {
+ 		}
+ 
+ 		if (!duplicateFound) {
++			rejectLineQuantityAboveMax(item.getQuantity(), maxLineQuantity);
+ 			cartModel.getLineItems().add(itemModel);
+ 		}
+ 
+@@ -877,6 +890,10 @@ public class ShoppingCartFacadeImpl implements ShoppingCartFacade {
+ 	private ReadableShoppingCart modifyCart(ShoppingCart cartModel, PersistableShoppingCartItem item,
+ 			MerchantStore store, Language language) throws Exception {
+ 
++		// Quantity 0 removes the line. Anything above the store limit is refused
++		// before the cart is changed.
++		rejectLineQuantityAboveMax(item.getQuantity(), cartMaxLineQuantity(store));
++
+ 		com.salesmanager.core.model.shoppingcart.ShoppingCartItem itemModel = createCartItem(cartModel, item, store);
+ 
+ 		boolean itemModified = false;
+@@ -968,6 +985,11 @@ public class ShoppingCartFacadeImpl implements ShoppingCartFacade {
+ 	private ReadableShoppingCart modifyCartMulti(ShoppingCart cartModel, List<PersistableShoppingCartItem> cartItems,
+ 			MerchantStore store, Language language) throws Exception {
+ 
++		int maxLineQuantity = cartMaxLineQuantity(store);
++		for (PersistableShoppingCartItem cartItem : cartItems) {
++			rejectLineQuantityAboveMax(cartItem.getQuantity(), maxLineQuantity);
++		}
++
+ 		int itemUpdatedCnt = 0;
+ 		List<com.salesmanager.core.model.shoppingcart.ShoppingCartItem> inCartItemList = createCartItems(cartModel,
+ 				cartItems, store);
+@@ -1161,4 +1183,30 @@ public class ShoppingCartFacadeImpl implements ShoppingCartFacade {
+ 
+ 	}
+ 
++	/**
++	 * Per-store line cap. Read on each call so a configuration change applies
++	 * without a restart. Missing or blank values use {@link #DEFAULT_CART_MAX_LINE_QUANTITY}.
++	 */
++	private int cartMaxLineQuantity(MerchantStore store) {
++		try {
++			MerchantConfiguration configuration = merchantConfigurationService
++					.getMerchantConfiguration(CART_MAX_LINE_QUANTITY, store);
++			if (configuration == null || StringUtils.isBlank(configuration.getValue())) {
++				return DEFAULT_CART_MAX_LINE_QUANTITY;
++			}
++			return Integer.parseInt(configuration.getValue().trim());
++		} catch (ServiceException | NumberFormatException e) {
++			LOG.warn("Cannot read " + CART_MAX_LINE_QUANTITY + " for store " + store.getCode()
++					+ ", using " + DEFAULT_CART_MAX_LINE_QUANTITY, e);
++			return DEFAULT_CART_MAX_LINE_QUANTITY;
++		}
++	}
++
++	private void rejectLineQuantityAboveMax(long quantity, int maxLineQuantity) {
++		if (quantity > maxLineQuantity) {
++			throw new IllegalArgumentException("Cart line quantity " + quantity
++					+ " exceeds the maximum of " + maxLineQuantity);
++		}
++	}
++
+ }

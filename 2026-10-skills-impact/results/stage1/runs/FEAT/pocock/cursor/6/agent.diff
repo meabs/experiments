@@ -1,0 +1,306 @@
+diff --git a/sm-shop/src/main/java/com/salesmanager/shop/store/api/v1/shoppingCart/ShoppingCartApi.java b/sm-shop/src/main/java/com/salesmanager/shop/store/api/v1/shoppingCart/ShoppingCartApi.java
+index 7c300f2..d9626cc 100755
+--- a/sm-shop/src/main/java/com/salesmanager/shop/store/api/v1/shoppingCart/ShoppingCartApi.java
++++ b/sm-shop/src/main/java/com/salesmanager/shop/store/api/v1/shoppingCart/ShoppingCartApi.java
+@@ -107,6 +107,8 @@ public class ShoppingCartApi {
+ 		} catch (Exception e) {
+ 			if(e instanceof ResourceNotFoundException) {
+ 				throw (ResourceNotFoundException)e;
++			} else if (e instanceof ServiceRuntimeException) {
++				throw (ServiceRuntimeException) e;
+ 			} else {
+ 				throw new ServiceRuntimeException(e);
+ 			}
+@@ -165,6 +167,8 @@ public class ShoppingCartApi {
+ 		} catch (Exception e) {
+ 			if(e instanceof ResourceNotFoundException) {
+ 				throw (ResourceNotFoundException)e;
++			} else if (e instanceof ServiceRuntimeException) {
++				throw (ServiceRuntimeException) e;
+ 			} else {
+ 				throw new ServiceRuntimeException(e);
+ 			}
+diff --git a/sm-shop/src/main/java/com/salesmanager/shop/store/controller/shoppingCart/CartLineQuantityLimit.java b/sm-shop/src/main/java/com/salesmanager/shop/store/controller/shoppingCart/CartLineQuantityLimit.java
+new file mode 100644
+index 0000000..f15ffc6
+--- /dev/null
++++ b/sm-shop/src/main/java/com/salesmanager/shop/store/controller/shoppingCart/CartLineQuantityLimit.java
+@@ -0,0 +1,59 @@
++package com.salesmanager.shop.store.controller.shoppingCart;
++
++import org.apache.commons.lang3.StringUtils;
++import org.springframework.stereotype.Component;
++
++import com.salesmanager.core.business.exception.ServiceException;
++import com.salesmanager.core.business.services.system.MerchantConfigurationService;
++import com.salesmanager.core.model.merchant.MerchantStore;
++import com.salesmanager.core.model.system.MerchantConfiguration;
++import com.salesmanager.shop.store.api.exception.ServiceRuntimeException;
++
++/**
++ * Per-store cap on how many units one cart line may hold.
++ * Read on each request so a configuration change applies without a restart.
++ */
++@Component
++public class CartLineQuantityLimit {
++
++	public static final String CONFIG_KEY = "CART_MAX_LINE_QUANTITY";
++	public static final int DEFAULT_MAX = 99;
++
++	private final MerchantConfigurationService merchantConfigurationService;
++
++	public CartLineQuantityLimit(MerchantConfigurationService merchantConfigurationService) {
++		this.merchantConfigurationService = merchantConfigurationService;
++	}
++
++	/**
++	 * Quantity 0 is left to the caller: it removes a line and is not a quantity to store.
++	 */
++	public void check(int quantity, MerchantStore store) {
++		if (quantity <= 0) {
++			return;
++		}
++		int max = maxFor(store);
++		if (quantity > max) {
++			String message = "Cart line quantity cannot exceed " + max;
++			throw new ServiceRuntimeException("400", message, new IllegalArgumentException(message));
++		}
++	}
++
++	public int maxFor(MerchantStore store) {
++		MerchantConfiguration configuration;
++		try {
++			configuration = merchantConfigurationService.getMerchantConfiguration(CONFIG_KEY, store);
++		} catch (ServiceException e) {
++			throw new ServiceRuntimeException("500", "Cannot read cart line quantity limit", e);
++		}
++		if (configuration == null || StringUtils.isBlank(configuration.getValue())) {
++			return DEFAULT_MAX;
++		}
++		try {
++			return Integer.parseInt(configuration.getValue().trim());
++		} catch (NumberFormatException e) {
++			throw new ServiceRuntimeException("400",
++					"CART_MAX_LINE_QUANTITY must be a whole number", e);
++		}
++	}
++}
+diff --git a/sm-shop/src/main/java/com/salesmanager/shop/store/controller/shoppingCart/facade/ShoppingCartFacadeImpl.java b/sm-shop/src/main/java/com/salesmanager/shop/store/controller/shoppingCart/facade/ShoppingCartFacadeImpl.java
+index 7fdc139..77132a5 100755
+--- a/sm-shop/src/main/java/com/salesmanager/shop/store/controller/shoppingCart/facade/ShoppingCartFacadeImpl.java
++++ b/sm-shop/src/main/java/com/salesmanager/shop/store/controller/shoppingCart/facade/ShoppingCartFacadeImpl.java
+@@ -58,6 +58,7 @@ import com.salesmanager.shop.model.shoppingcart.ShoppingCartItem;
+ import com.salesmanager.shop.populator.shoppingCart.ShoppingCartDataPopulator;
+ import com.salesmanager.shop.store.api.exception.ResourceNotFoundException;
+ import com.salesmanager.shop.store.api.exception.ServiceRuntimeException;
++import com.salesmanager.shop.store.controller.shoppingCart.CartLineQuantityLimit;
+ import com.salesmanager.shop.utils.DateUtil;
+ import com.salesmanager.shop.utils.ImageFilePath;
+ 
+@@ -88,6 +89,9 @@ public class ShoppingCartFacadeImpl implements ShoppingCartFacade {
+ 	@Inject
+ 	private ProductAttributeService productAttributeService;
+ 
++	@Inject
++	private CartLineQuantityLimit cartLineQuantityLimit;
++
+ 	@Inject
+ 	@Qualifier("img")
+ 	private ImageFilePath imageUtils;
+@@ -773,6 +777,8 @@ public class ShoppingCartFacadeImpl implements ShoppingCartFacade {
+ 		} catch (Exception e) {
+ 			if (e instanceof ResourceNotFoundException) {
+ 				throw (ResourceNotFoundException) e;
++			} else if (e instanceof ServiceRuntimeException) {
++				throw (ServiceRuntimeException) e;
+ 			} else {
+ 				throw new ServiceRuntimeException(e.getMessage(),e);
+ 			}
+@@ -834,6 +840,8 @@ public class ShoppingCartFacadeImpl implements ShoppingCartFacade {
+ 
+ 		// need to check if the item is already in the cart
+ 		boolean duplicateFound = false;
++		com.salesmanager.core.model.shoppingcart.ShoppingCartItem duplicate = null;
++		int resultingQuantity = item.getQuantity();
+ 		// only if item has no attributes
+ 		if (CollectionUtils.isEmpty(item.getAttributes())) {// increment quantity
+ 			// get duplicate item from the cart
+@@ -842,8 +850,11 @@ public class ShoppingCartFacadeImpl implements ShoppingCartFacade {
+ 				if (cartItem.getProduct().getSku().equals(item.getProduct())) {
+ 					if (CollectionUtils.isEmpty(cartItem.getAttributes())) {
+ 						if (!duplicateFound) {
++							duplicate = cartItem;
+ 							if (!itemModel.isProductVirtual()) {
+-								cartItem.setQuantity(cartItem.getQuantity() + item.getQuantity());
++								resultingQuantity = cartItem.getQuantity() + item.getQuantity();
++							} else {
++								resultingQuantity = cartItem.getQuantity();
+ 							}
+ 							duplicateFound = true;
+ 							break;
+@@ -853,7 +864,14 @@ public class ShoppingCartFacadeImpl implements ShoppingCartFacade {
+ 			}
+ 		}
+ 
+-		if (!duplicateFound) {
++		// Reject before the line is changed or the cart is saved.
++		cartLineQuantityLimit.check(resultingQuantity, store);
++
++		if (duplicateFound) {
++			if (!itemModel.isProductVirtual()) {
++				duplicate.setQuantity(resultingQuantity);
++			}
++		} else {
+ 			cartModel.getLineItems().add(itemModel);
+ 		}
+ 
+@@ -877,6 +895,9 @@ public class ShoppingCartFacadeImpl implements ShoppingCartFacade {
+ 	private ReadableShoppingCart modifyCart(ShoppingCart cartModel, PersistableShoppingCartItem item,
+ 			MerchantStore store, Language language) throws Exception {
+ 
++		// Absolute quantity for this line. Check before any line is removed or saved.
++		cartLineQuantityLimit.check(item.getQuantity(), store);
++
+ 		com.salesmanager.core.model.shoppingcart.ShoppingCartItem itemModel = createCartItem(cartModel, item, store);
+ 
+ 		boolean itemModified = false;
+@@ -972,6 +993,11 @@ public class ShoppingCartFacadeImpl implements ShoppingCartFacade {
+ 		List<com.salesmanager.core.model.shoppingcart.ShoppingCartItem> inCartItemList = createCartItems(cartModel,
+ 				cartItems, store);
+ 
++		// One over-limit line rejects the whole request before any line is removed or saved.
++		for (com.salesmanager.core.model.shoppingcart.ShoppingCartItem newItemValue : inCartItemList) {
++			cartLineQuantityLimit.check(newItemValue.getQuantity(), store);
++		}
++
+ 		Set<com.salesmanager.core.model.shoppingcart.ShoppingCartItem> existingItems = cartModel.getLineItems();
+ 		// loop over incoming items since they drive changes
+ 		for (com.salesmanager.core.model.shoppingcart.ShoppingCartItem newItemValue : inCartItemList) {
+diff --git a/sm-shop/src/test/java/com/salesmanager/test/shop/controller/shoppingCart/CartLineQuantityLimitTest.java b/sm-shop/src/test/java/com/salesmanager/test/shop/controller/shoppingCart/CartLineQuantityLimitTest.java
+new file mode 100644
+index 0000000..6ac2380
+--- /dev/null
++++ b/sm-shop/src/test/java/com/salesmanager/test/shop/controller/shoppingCart/CartLineQuantityLimitTest.java
+@@ -0,0 +1,122 @@
++package com.salesmanager.test.shop.controller.shoppingCart;
++
++import static org.junit.Assert.assertEquals;
++import static org.junit.Assert.fail;
++
++import java.util.List;
++
++import org.junit.Test;
++
++import com.salesmanager.core.business.exception.ServiceException;
++import com.salesmanager.core.business.services.system.MerchantConfigurationService;
++import com.salesmanager.core.model.merchant.MerchantStore;
++import com.salesmanager.core.model.system.MerchantConfig;
++import com.salesmanager.core.model.system.MerchantConfiguration;
++import com.salesmanager.core.model.system.MerchantConfigurationType;
++import com.salesmanager.shop.store.api.exception.ServiceRuntimeException;
++import com.salesmanager.shop.store.controller.shoppingCart.CartLineQuantityLimit;
++
++public class CartLineQuantityLimitTest {
++
++	@Test
++	public void defaultsTo99WhenStoreHasNoConfiguration() throws Exception {
++		CartLineQuantityLimit limit = new CartLineQuantityLimit(config(null));
++		assertEquals(99, limit.maxFor(new MerchantStore()));
++		limit.check(99, new MerchantStore());
++	}
++
++	@Test
++	public void readsWholeNumberFromStoreConfiguration() throws Exception {
++		MerchantConfiguration configuration = new MerchantConfiguration();
++		configuration.setKey(CartLineQuantityLimit.CONFIG_KEY);
++		configuration.setValue("5");
++		CartLineQuantityLimit limit = new CartLineQuantityLimit(config(configuration));
++		assertEquals(5, limit.maxFor(new MerchantStore()));
++		limit.check(5, new MerchantStore());
++		try {
++			limit.check(6, new MerchantStore());
++			fail("quantity above the store limit must be rejected");
++		} catch (ServiceRuntimeException expected) {
++			assertEquals("400", expected.getErrorCode());
++		}
++	}
++
++	@Test
++	public void quantityZeroIsNotLimited() {
++		MerchantConfiguration configuration = new MerchantConfiguration();
++		configuration.setValue("1");
++		CartLineQuantityLimit limit = new CartLineQuantityLimit(config(configuration));
++		limit.check(0, new MerchantStore());
++	}
++
++	private MerchantConfigurationService config(MerchantConfiguration configuration) {
++		return new MerchantConfigurationService() {
++			@Override
++			public MerchantConfiguration getMerchantConfiguration(String key, MerchantStore store) {
++				return configuration;
++			}
++
++			@Override
++			public void saveOrUpdate(MerchantConfiguration entity) {
++			}
++
++			@Override
++			public List<MerchantConfiguration> listByStore(MerchantStore store) {
++				return null;
++			}
++
++			@Override
++			public List<MerchantConfiguration> listByType(MerchantConfigurationType type, MerchantStore store) {
++				return null;
++			}
++
++			@Override
++			public MerchantConfig getMerchantConfig(MerchantStore store) {
++				return null;
++			}
++
++			@Override
++			public void saveMerchantConfig(MerchantConfig config, MerchantStore store) {
++			}
++
++			@Override
++			public void save(MerchantConfiguration entity) throws ServiceException {
++			}
++
++			@Override
++			public void saveAll(Iterable<MerchantConfiguration> entities) throws ServiceException {
++			}
++
++			@Override
++			public void update(MerchantConfiguration entity) throws ServiceException {
++			}
++
++			@Override
++			public void create(MerchantConfiguration entity) throws ServiceException {
++			}
++
++			@Override
++			public void delete(MerchantConfiguration entity) throws ServiceException {
++			}
++
++			@Override
++			public MerchantConfiguration getById(Long id) {
++				return null;
++			}
++
++			@Override
++			public List<MerchantConfiguration> list() {
++				return null;
++			}
++
++			@Override
++			public Long count() {
++				return 0L;
++			}
++
++			@Override
++			public void flush() {
++			}
++		};
++	}
++}
