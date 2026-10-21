@@ -31,7 +31,6 @@ Each arm installs skills into the repository's `.agents/skills/`, which both CLI
 | `placebo` | One skill of about the same length as the largest pack's entry skill, with generic advice ("read the code before changing it, keep changes small") and a broad description | Whether any extra skill text has an effect |
 | `superpowers` | [obra/superpowers](https://github.com/obra/superpowers) as its Codex and Cursor install guides describe it, including `using-superpowers`, `test-driven-development`, `systematic-debugging` and `verification-before-completion` | The best-known workflow pack |
 | `pocock` | [mattpocock/skills](https://github.com/mattpocock/skills), engineering skills relevant to backend code: `tdd`, `diagnose`, `zoom-out`, `codebase-design` | A second widely used pack, with a smaller and more targeted set |
-| `caveman` | `caveman` alone (from mattpocock/skills) | The claim that it cuts tokens by about 75% while keeping accuracy, on change tasks as well as questions |
 | `pstack` (Cursor only) | [cursor/plugins `pstack`](https://github.com/cursor/plugins/tree/main/pstack) 0.15.29 (commit `190d287`, 2026-10-20), installed as a Cursor plugin in the clean home | Cursor's widely promoted "rigorous engineering" pack |
 
 **pstack needs three adjustments, all recorded as part of the treatment:**
@@ -64,9 +63,8 @@ The prompts never mention skills, documentation or tools. The hidden tests live 
 | `BUG` | Bug fix | A planted regression in `sm-core` business logic (for example, pagination or price calculation), reported as a user symptom ("customers on page 2 see the last item of page 1 again"). The plant is a one-line change that the module's existing tests do not catch | A hidden JUnit test for the symptom, plus the module's own tests, plus a compile of the whole reactor | `systematic-debugging`, `diagnose`, `tdd` |
 | `FEAT` | Small feature | A new rule in an existing service, with two edge cases written into the prompt (for example, a coupon-code validation rule) | A hidden JUnit test of the rule and its edge cases, plus the module's tests and a reactor compile. Whether the agent added tests of its own is recorded separately | `test-driven-development`, `tdd`, `verification-before-completion` |
 | `CROSS` | Multi-file change | Add a field end to end: entity, service, API model, mapper, and one REST response, with one existing caller that must keep working | A hidden API-level test, plus the tests of every touched module and a reactor compile | Planning and verification skills; pstack's "go deep first" |
-| `QA` (only `none` and `caveman`) | Read-only | Eight multi-step impact questions from Experiment 3 (`SU`), scored by F1 against bytecode-derived truth. Pass is a mean F1 of at least 0.95 | Answer key (`expect` regexes per question) | `caveman` token claim on questions |
 
-The experiment is about making effective changes. `BUG`, `FEAT` and `CROSS` are the primary tasks, and `QA` is kept only to test caveman's claim on its home ground.
+The experiment is about making effective changes, so every task is a change task. Caveman, a token-saving skill, is tested in its own experiment: [2026-10-caveman](../2026-10-caveman/).
 
 **Effective change, measured from the final repository and never from what the agent says:**
 
@@ -84,13 +82,12 @@ The experiment is about making effective changes. `BUG`, `FEAT` and `CROSS` are 
 
 Primary:
 
-1. **Verified pass**: the `verify` exit code for change tasks, and the answer key for `QA`. Timeouts (20 minutes) and crashes count as failures.
+1. **Verified pass**: the `verify` exit code. Timeouts (20 minutes) and crashes count as failures.
 2. **Total tokens per run**, relative to `none` for the same agent and task (the rig's relative-cost bootstrap).
 
 Secondary:
 
 - **Skill uptake** (manipulation check): runs whose tool calls read a `SKILL.md` (`uses = "skills/.+/SKILL\\.md"`). Cursor can inject a skill without a tool call, so the rig's `claim` line also asks which skills were used, reported as self-reported.
-- Output tokens on their own. Caveman can only cut output, and output is a small share of total.
 - Codex dollar cost ($0.20, $0.02 and $1.20 per million fresh-input, cached-input and output tokens) and Cursor dollar cost at the published Grok 4.7 rate ($2 per million input, $6 per million output)
 - Wall time, turns and Maven runs
 - **Test-first**: whether the first edit under `src/test` comes before the first edit under `src/main` (the TDD skills' central claim)
@@ -105,7 +102,6 @@ These are fixed now. Each treatment arm is compared with `none`, and `placebo` i
 | --- | --- | --- |
 | H1 | `superpowers` raises the pass rate on `BUG` and `FEAT` | Pooled across both agents and both tasks, the pass rate is higher than `none` with a one-sided Fisher p < 0.05 |
 | H2 | `pocock` raises the pass rate on `BUG` and `FEAT` | Same test as H1 |
-| H3 | `caveman` cuts total tokens by at least 20% with no loss of correctness | The relative-cost interval lies entirely below 0.80 on at least one agent, and the pass rate is not lower by more than one run in six |
 | H4 | The TDD packs (`superpowers`, `pocock`, `pstack`) produce tests that bite | On `BUG`, a larger share of their runs add a test that fails on the unfixed code than in `none` (Fisher p < 0.05) |
 | H7 | `pstack` raises the pass rate on Cursor | Pooled over `BUG`, `FEAT` and `CROSS` (18 runs), the pass rate is higher than Cursor `none`, with a one-sided Fisher p < 0.05. Its token cost is reported alongside |
 | H5 | The packs make agents work test-first | `superpowers` or `pocock` is test-first in a larger share of change runs than `none` (Fisher p < 0.05) |
@@ -113,11 +109,11 @@ These are fixed now. Each treatment arm is compared with `none`, and `placebo` i
 
 Reading the results: if `placebo` moves as much as a pack does, the effect is "more instructions in context", not the pack itself. If a pack's skill uptake is under 50%, a null result means the skill was rarely triggered, not that it does not work. In that case a follow-up arm names the skill in the prompt, matched by the same wording in the control.
 
-Predictions, written down now so they can be checked: H3 fails on total tokens (input dominates, and the caveman text adds input) but output tokens fall. Ceiling effects make H1 and H2 small at best.
+Predictions, written down now so they can be checked: ceiling effects keep H1 and H2 small at best, and the packs cost more tokens than `none`.
 
 ## Size, order and stopping
 
-- **Stage 1**: 6 runs per cell. Change tasks: 3 tasks × 5 arms × 2 agents × 6 = 180 runs, plus `pstack` on Cursor (3 × 6 = 18). `QA`: 2 arms × 2 agents × 6 = 24. That is **222 runs** in total. The order is randomised, with no arm run as a block. `parallel = 3` (Maven needs memory).
+- **Stage 1**: 6 runs per cell. 3 tasks × 4 arms × 2 agents × 6 = 144 runs, plus `pstack` on Cursor (3 × 6 = 18), giving **162 runs**. The order is randomised, with no arm run as a block. `parallel = 3` (Maven needs memory).
 - **Stage 2**: `trialrig plan --results results/stage1 --max-reps 12`. Cells still marked open get more runs, up to 12 per arm, if the spend allows. Extra runs taken after looking at the data are reported as sequential, and their p-values are marked as such.
 - **Power, stated plainly**: at 6 runs a cell, only very large differences show up within a cell (about 1 of 6 against 5 of 6). Pooled across 2 agents and 3 change tasks (36 runs an arm), a difference of about 35 percentage points is detectable. Token differences under about 20% are not reliable at this size and are reported as "no evidence", not as "no effect".
 
@@ -127,10 +123,9 @@ These figures come from the token counts Experiment 3 recorded on shopizer, pric
 
 - Codex change runs: 0.3 to 1.2 million tokens, about 90% of them cached, so $0.03 to $0.10 a run.
 - Cursor change runs: 30k to 80k tokens, so $0.06 to $0.16 a run.
-- Cursor `QA` runs: 240k to 520k tokens, so $0.50 to $1.00 a run.
 - `pstack` runs: assumed to cost 3 to 10 times a Cursor change run, because of its subagents.
 
-Stage 1 comes to about **$20 to $65** and **9 to 11 hours** of wall time at `parallel = 3`. That is more than one day, so it runs in two sessions with the same pinned CLI versions. The Mac is kept awake with a detached `caffeinate -dimsu`.
+Stage 1 comes to about **$10 to $50** (`pstack` is the most uncertain part) and **about 7 hours** of wall time at `parallel = 3`. The Mac is kept awake with a detached `caffeinate -dimsu`.
 
 ## Grading integrity
 
@@ -161,3 +156,4 @@ Stage 1 comes to about **$20 to $65** and **9 to 11 hours** of wall time at `par
 
 - 2026-10-21: design written.
 - 2026-10-21 (before any run): cost estimate corrected from $60–170 to the measured token counts of Experiment 3. `QA` cut to `none` and `caveman`. `CROSS` change task and "effective change" measures added. `pstack` arm added (Cursor only, invoked through `/poteto-mode`, every model role set to `inherit-parent`). H4 changed from "pack overhead on QA" to "tests that bite"; H7 added.
+- 2026-10-21 (before any run): `caveman` moved to its own experiment ([2026-10-caveman](../2026-10-caveman/)) at the user's request. `QA` and H3 removed from this one. 162 runs.

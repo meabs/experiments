@@ -4,4 +4,5 @@ Agent experiments run with [AgentTrialRig](https://github.com/meabs/AgentTrialRi
 
 | Folder | Question | Status |
 | --- | --- | --- |
-| [2026-10-skills-impact](2026-10-skills-impact/) | Do popular agent skill packs (Superpowers, Matt Pocock's skills, caveman, pstack) change correctness or cost on a real Java repository? | Design |
+| [2026-10-skills-impact](2026-10-skills-impact/) | Do popular agent skill packs (Superpowers, Matt Pocock's skills, pstack) change correctness or cost on a real Java repository? | Design |
+| [2026-10-caveman](2026-10-caveman/) | Does the caveman skill cut tokens without losing correctness? | Design |
