@@ -12,7 +12,7 @@ Run on 2026-10-21. The design, hypotheses and selection rule are in [README.md](
   - It wrote tests in 23 of 32 runs (the control wrote none) and ran Maven in 28 of 32 runs (the control ran Maven once).
   - It used 3.07 times the control's tokens per task (2.50 to 3.68). Pocock used 1.57 times (1.10 to 2.24).
 - **Writing tests helped where the failure only shows at runtime, and that is the only place it helped.**
-  - On `TAXRATE`, the control and the placebo added validation annotations that nothing enforces and failed all four runs. Superpowers passed both of its runs; both wrote a test against the endpoint and saw it fail.
+  - On `TAXRATE`, the control and the placebo added validation annotations that nothing enforces and failed all four runs. Superpowers passed both of its runs. Both wrote an integration test that calls the endpoint and added a range check in the API; one run is confirmed to have seen its test fail before the fix (the other is unknown).
   - On `ADDR`, `CARTCALC` and `PAGE`, Superpowers did worse than the control.
 - **Nearly every failure came with a claim of success.** In 28 of the 30 failed runs, the agent said its change worked. This held in every arm, so no pack fixed it.
 - **One task beat every arm.** All 8 runs on `HREVIEW` failed, and 7 of them broke creating a review, which had worked before the change.
@@ -55,7 +55,7 @@ Passes out of 2:
 | TAXRATE | feature | 0 | 0 | 2 | 1 |
 | **total** | | **24/32** | **23/32** | **24/32** | **27/32** |
 
-Seven tasks were passed by every run, and one (`HREVIEW`) by none. The arms differ only on the other eight, and most of those differences are a single run.
+Six tasks were passed by every run, and one (`HREVIEW`) by none. The arms differ only on the other nine, and most of those differences are a single run.
 
 No run in any arm broke an existing test. Every failure is a hidden-test failure.
 
