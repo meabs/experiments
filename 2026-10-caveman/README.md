@@ -64,10 +64,16 @@ That is about **$15 to $45** in total, and about 3 hours at `parallel = 3`. Stag
 
 ## Layout
 
-`README.md` (this design), `trial.toml`, `arms/caveman/`, and `results/` (raw runs, `report.md`, `REPORT.md` alongside). The tasks and hidden tests are taken from `../2026-10-skills-impact/`.
+`README.md` (this design), `trial-codex.toml` and `trial-cursor.toml`, `gate.toml`, `arms/caveman/`, `hidden/QA/`, `scripts/`, and `results/` (raw runs, `report.md`, `REPORT.md` alongside). The tasks and hidden tests are taken from `../2026-10-skills-impact/`.
 
 ## Amendment log
 
 - 2026-10-21: design written, split out of skills-impact at the user's request.
 - 2026-10-21: source chosen by the user: Matt Pocock's own `caveman`, taken from `mattpocock/skills` history at `skills/productivity/caveman/SKILL.md`, commit `0a4b76776dfd9979bfe013d99b5562a03b743839` (2026-05-31), the last commit before it was removed (`7d3ada9`). It is no longer in the published pack, so the arm tests the skill as it last shipped.
 - 2026-10-21: cost re-estimated from skills-impact's measured Cursor change runs, which used about 10 times the tokens first assumed. $10 to $18 becomes $15 to $45.
+- 2026-10-21 (before any run), build and gate:
+  - The pinned `caveman` sets `disable-model-invocation: true`, so an installed-only arm would never load it. As with pstack in skills-impact, the arm uses the publisher's invocation as a prompt prefix: the gate ([results/gate.md](results/gate.md)) found that Codex loads it with `$caveman` and Cursor with `/caveman`, and neither honours the other's syntax. There is one trial file per agent, `trial-codex.toml` and `trial-cursor.toml`, identical except for the prefix. `none` gets no prefix.
+  - Uptake is therefore set by the invocation, and is checked from behaviour. The blind rubric is replaced by a measure fixed now: the rate of the articles "a", "an" and "the" per 100 words in the agent's final reply (caveman's first rule is to drop articles). A `caveman` run counts as compressed if its rate is under half of the `none` median for the same agent and task.
+  - `QA` is Experiment 3's `SU` prompt word for word, including its `Conflicts:` line. It is graded by `scripts/grade_qa.py` (the same F1 as Experiment 3's `multihop.py`) against `hidden/QA/truth.json`, the bytecode truth built on shopizer `6a4a0a6`. Checked: the truth scores 1.0 and a wrong answer fails.
+  - `BUG` and `FEAT` reuse skills-impact's `setup.sh`, `verify.sh` and hidden tests unchanged.
+
