@@ -6,7 +6,7 @@ E="$(cd "$(dirname "$0")/.." && pwd)"
 RUNS="$1"; OUTJ="$2"
 export JAVA_HOME=/opt/homebrew/opt/openjdk@21 PATH="/opt/homebrew/opt/openjdk@21/bin:$PATH"
 T="$(mktemp -d)"
-git clone -q /Users/garry/code/benchmark/skills-impact-work/shopizer "$T/base" && (cd "$T/base" && git checkout -q 6a4a0a6 && TRIAL_QUESTION=BUG bash "$E/scripts/setup.sh" >/dev/null)
+git clone -q "${SHOPIZER:-$HOME/code/benchmark/skills-impact-work/shopizer}" "$T/base" && (cd "$T/base" && git checkout -q 6a4a0a6 && TRIAL_QUESTION=BUG bash "$E/scripts/setup.sh" >/dev/null)
 
 one() {
   r="$1"; key="${r#$RUNS/}"; W="$T/$(echo "$key" | tr / _)"

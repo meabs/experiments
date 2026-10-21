@@ -6,7 +6,7 @@ E="$(cd "$(dirname "$0")/.." && pwd)"
 OUT="$1"; Q="$2"; A="$3"; G="$4"; N="$5"
 R="$OUT/runs/$Q/$A/$G/$N"
 W="$(mktemp -d)/c"
-git clone -q /Users/garry/code/benchmark/skills-impact-work/shopizer "$W" && cd "$W" && git checkout -q 6a4a0a6
+git clone -q "${SHOPIZER:-$HOME/code/benchmark/skills-impact-work/shopizer}" "$W" && cd "$W" && git checkout -q 6a4a0a6
 export TRIAL_QUESTION="$Q" TRIAL_ARM="$A" TRIAL_AGENT="$G" TRIAL_REP="$N" TRIAL_DIR="$W"
 bash "$E/scripts/setup.sh"
 cp "$R/agent.diff" "$R/agent.diff.orig" 2>/dev/null || true

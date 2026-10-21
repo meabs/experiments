@@ -1,6 +1,6 @@
 # Results
 
-- [RESULTS.md](RESULTS.md): the answer and the hypothesis tests.
+- [../REPORT.md](../REPORT.md): the engineering report (method, results, failure analysis, validity).
 - [analysis.md](analysis.md): every table, produced by `scripts/analyse.py results/stage1/runs results/stage1/bite.json`.
 - [runs.csv](runs.csv): one row per run.
 - [report.md](report.md) and [plan.md](plan.md): AgentTrialRig's `report` and `plan` output.

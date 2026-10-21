@@ -64,8 +64,9 @@ That is about **$10 to $18** in total, and about 3 hours at `parallel = 3`. Stag
 
 ## Layout
 
-`README.md` (this design), `trial.toml`, `arms/caveman/`, and `results/` (raw runs, `report.md`, `RESULTS.md`). The tasks and hidden tests are taken from `../2026-10-skills-impact/`.
+`README.md` (this design), `trial.toml`, `arms/caveman/`, and `results/` (raw runs, `report.md`, `REPORT.md` alongside). The tasks and hidden tests are taken from `../2026-10-skills-impact/`.
 
 ## Amendment log
 
 - 2026-10-21: design written, split out of skills-impact at the user's request.
+- 2026-10-21: source chosen by the user: Matt Pocock's own `caveman`, taken from `mattpocock/skills` history at `skills/productivity/caveman/SKILL.md`, commit `0a4b76776dfd9979bfe013d99b5562a03b743839` (2026-05-31), the last commit before it was removed (`7d3ada9`). It is no longer in the published pack, so the arm tests the skill as it last shipped.

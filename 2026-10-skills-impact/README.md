@@ -149,7 +149,8 @@ Stage 1 comes to about **$10 to $50** (`pstack` is the most uncertain part) and 
   arms/<arm>/        overlay copied into each clone, plus SOURCE (pack commit hash)
   tasks/             prompts, plants, reference solutions
   hidden/            hidden tests (never copied into a clone before verify)
-  results/           raw runs, report.md, RESULTS.md
+  REPORT.md          engineering report
+  results/           raw runs, analysis, rig report
 ```
 
 ## Amendment log
@@ -168,4 +169,4 @@ Stage 1 comes to about **$10 to $50** (`pstack` is the most uncertain part) and 
 - 2026-10-21 (before any run), calibration (`results/calibration.md`): BUG and FEAT were at the ceiling. BUG is now v3, two independent slips behind one symptom; the hidden test is API-level, 5 cases. FEAT v2 reads the limit from merchant configuration and is still at the ceiling. The user chose to keep it for cost and process measures, so the pass-rate hypotheses (H1, H2, H7) pool over BUG and CROSS only, and FEAT pass rates are reported as descriptive. CROSS is unchanged. Pass is now defined as: the reactor ran, every hidden test passed, and no other test failed, including tests the agent added. The verifier runs every module and writes `verify-summary.json`.
 - 2026-10-21 (before any run): `caveman` moved to its own experiment ([2026-10-caveman](../2026-10-caveman/)) at the user's request. `QA` and H3 removed from this one. 162 runs.
 - 2026-10-21 (after stage 1, before analysis): test-first is counted over all change runs, as written; the share among runs that edited both test and main code is also reported. Tests that bite: a run's test changes are applied to the planted code and its test classes are run; a failing test counts as biting, and runs that wrote no test count as not biting. Stage 2 skipped: `trialrig plan` marks every cell futile.
-- 2026-10-21 (after stage 1): the cost estimate was wrong for Cursor (0.4M to 1.2M tokens a run, mostly cache reads, against 30k to 80k expected). See `results/RESULTS.md`.
+- 2026-10-21 (after stage 1): the cost estimate was wrong for Cursor (0.4M to 1.2M tokens a run, mostly cache reads, against 30k to 80k expected). See `REPORT.md`.
