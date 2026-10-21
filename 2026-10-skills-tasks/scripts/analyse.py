@@ -20,7 +20,8 @@ ARMS = ["none", "placebo", "superpowers", "pocock"]
 KIND = {"PAGE": "real bug", "CONTENT": "real bug", "AMBIG": "real bug", "AVAIL": "real bug", "ADDR": "real bug",
         "CUSTDUP": "real bug", "CUSTPAGE": "real bug", "NOTFOUND": "real bug", "MANINUSE": "real bug", "CATDUP": "real bug",
         "CARTCALC": "planted bug", "TAXRATE": "feature", "REVIEW": "feature", "CATCOUNT": "feature", "MANORDER": "feature",
-        "CUSTSEARCH": "feature", "TAXPAGE": "feature"}
+        "CUSTSEARCH": "feature", "TAXPAGE": "feature",
+        "HREVIEW": "real bug", "HCUST": "feature", "MANCODE": "feature"}
 
 
 def cost(t):

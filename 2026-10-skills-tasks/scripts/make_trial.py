@@ -11,6 +11,9 @@ X = f"{U}/code/experiments/2026-10-skills-tasks"
 HEAD = ("You are working in a checkout of shopizer, a Java e-commerce platform "
         "(Maven, several modules; JDK 21 is installed and JAVA_HOME is set).\n\n")
 TAIL = "\n\nWhen you have finished, reply with one short paragraph saying what you changed."
+EFFORT = "low"  # user decision 2026-10-21: high effort was at the ceiling (see README amendment log)
+# CUSTPAGE and CUSTSEARCH are folded into HCUST, so they are not in the pool.
+EXCLUDE = {"CUSTPAGE", "CUSTSEARCH"}
 PATH = f"/opt/homebrew/opt/openjdk@21/bin:{U}/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 
 
@@ -26,7 +29,7 @@ def arm(name, overlay=None, uses=None):
 
 def agent():
     w = f"{U}/code/benchmark/skills-impact-work"
-    return ('[[agents]]\nname = "codex"\nmodel = "gpt-5.6-luna"\nargs = ["-c", "model_reasoning_effort=\\"high\\""]\n'
+    return ('[[agents]]\nname = "codex"\nmodel = "gpt-5.6-luna"\nargs = ["-c", "model_reasoning_effort=\\"' + EFFORT + '\\""]\n'
             'edits = true\nsandbox = "danger-full-access"\n'
             f'env = {{ HOME = "{w}/home-clean", CODEX_HOME = "{w}/home-clean/.codex", JAVA_HOME = "/opt/homebrew/opt/openjdk@21", PATH = "{PATH}" }}\n'
             f'isolate = ["{U}/code/experiments", "{U}/.agents", "{U}/.claude", "{U}/.cursor", "{U}/.codex"]\n\n')
@@ -51,7 +54,8 @@ def write(path, name, reps, arms, ids):
 
 
 if __name__ == "__main__":
-    every = sorted(os.path.basename(os.path.dirname(p)) for p in glob.glob(os.path.join(E, "tasks", "*", "prompt.md")))
+    every = sorted(os.path.basename(os.path.dirname(p)) for p in glob.glob(os.path.join(E, "tasks", "*", "prompt.md"))
+                   if os.path.basename(os.path.dirname(p)) not in EXCLUDE)
     chosen = sys.argv[1:] or every
     skills = "\\\\.agents/skills/[^ ]*SKILL\\\\.md"
     write(os.path.join(E, "calibration.toml"), "skills-tasks-calibration", 2, [arm("none")], every)

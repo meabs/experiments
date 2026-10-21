@@ -1,0 +1,3 @@
+Manufacturer codes end up in storefront URLs, so we need rules for them. Today the admin API (POST /api/v1/private/manufacturer and PUT /api/v1/private/manufacturer/{id}) accepts codes such as "Bad Code!", and a code that is already taken gives a confusing 503 Service Unavailable.
+
+From now on, a manufacturer code must be 2 to 32 characters long and contain only letters, digits, hyphens and underscores. A code that breaks this rule must be rejected with 400 Bad Request. A code already used by another manufacturer of the store must be rejected with 409 Conflict. In both cases nothing is stored or changed. The same rules apply on create and on update. An update that keeps the manufacturer's own code, or moves it to a free valid code, works as before.
