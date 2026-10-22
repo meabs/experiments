@@ -107,9 +107,37 @@ The design said that a gain of about 15 to 20 points was detectable. The interva
 | A none | 0.38M | 0.016 | 0.026 | 43 | 0/60 | 5/60 | 0/60 | 0/60 | 0/60 |
 | B repo skills | 0.55M | 0.022 | 0.033 | 61 | 60/60 | 26/60 | 2/60 | 2/60 | 0/60 |
 
-- **Which skills it read.** Every run read `build-test` and `safe-change`. Only 8 runs read `verify-api`. The skill descriptions decide what the agent opens: "verify a change through the running application" did not draw it in at low effort.
+- **Which skills it read.**
+  - In all 60 runs, the agent's first command printed `safe-change` and `build-test` (see "Checks on the runs").
+  - Only 8 runs read `verify-api`.
+  - `AGENTS.md` points to `verify-api` "for endpoint/client behavior", but at low effort that did not draw the agent in.
 - **No one tried to start the application.** The skill said that route does not work here, so the 47 failed attempts of verify-vs-skills did not recur.
 - **What tests it ran.** Of the 26 runs that ran tests, 24 ran one existing integration test class, most often `UserApiIntegrationTest` (11 runs). In all 26, at least one test command succeeded. Existing tests describe the behaviour before the change, so a green run here says little about the change itself.
+
+## Checks on the runs
+
+These were checked from the raw event streams, after the results, at the user's request. The clones are deleted after each run, so the streams are the record.
+
+- **The guidance reached arm B, and only arm B.**
+  - In all 60 arm B runs, the commands or their output show `AGENTS.md` or `.agents/`.
+  - In arm A, none of the 60 runs shows either.
+- **The skills were really read, not just named.**
+  - In every arm B run, the first command printed `safe-change/SKILL.md` and `build-test/SKILL.md` with `sed`, and it exited 0. In 45 runs, the skill text is visible in the logged output.
+  - In the other 15, the same command went on to run a code search, and the stream kept only part of a long output, or none of it. They still exited 0, and the commands were chained with `&&`, so a missing file would have stopped them with an error.
+  - `verify-api` was read in 8 runs, with its text visible in all 8.
+  - No arm A run read a skill.
+- **`AGENTS.md` was in effect.** Arm B used the commands it gives; arm A almost never did.
+
+  | command | arm B runs | arm A runs |
+  | --- | --- | --- |
+  | offline Maven (`mvn -o`) | 59 | 0 |
+  | the single-class flag (`-DfailIfNoTests=false`) | 24 | 1 |
+
+  Codex loads `AGENTS.md` itself, so it never shows up as a read.
+- **Grading was complete.**
+  - All 120 runs have a grading summary.
+  - In every run, the number of hidden tests that ran equals the number expected.
+- **Neither arm saw the hidden tests.** No run's event stream mentions the experiments folder, a `hidden/` path or a hidden test class name.
 
 ## Exploratory analysis, added after the results
 
