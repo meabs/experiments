@@ -3,6 +3,9 @@
 - discover: the guidance from repo-skills (arms/guidance, byte-identical) is in the clone; the prompt is unchanged.
 - explicit: the same guidance, and the prompt starts with arms/explicit-prefix.md, which names the skills and when to use them.
 
+Also writes trial-agentsmd.toml (added by amendment, see README): arm agentsmd, the same guidance with one entry added to
+AGENTS.md (arms/guidance-agentsmd), run as a second trial file alongside trial.toml.
+
 Usage: python3 -I make_trial.py. Paths use the /Users/USER placeholder; run scripts/localize.sh after.
 """
 import glob, os
@@ -59,4 +62,8 @@ if __name__ == "__main__":
         + arm("explicit", "arms/guidance", skills, prefix) + agent("low")
         + "".join(question(t, HEAD + open(os.path.join(E, "tasks", t, "prompt.md")).read().strip() + TAIL,
                            f"bash {X}/scripts/verify.sh") for t in tasks))
-    print(f"trial.toml with {len(tasks)} tasks")
+    open(os.path.join(E, "trial-agentsmd.toml"), "w").write(
+        head("explicit-skills-agentsmd", 3, 1200, "agentsmd", "true") + arm("agentsmd", "arms/guidance-agentsmd", skills)
+        + agent("low") + "".join(question(t, HEAD + open(os.path.join(E, "tasks", t, "prompt.md")).read().strip() + TAIL,
+                                          f"bash {X}/scripts/verify.sh") for t in tasks))
+    print(f"trial.toml and trial-agentsmd.toml with {len(tasks)} tasks")

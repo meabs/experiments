@@ -113,3 +113,20 @@ python3 -I scripts/analyse.py results/stage1/runs > results/analysis.md
 ## Amendment log
 
 - 2026-10-22: design written at the user's request, following repo-skills: "an experiment where we explicitly call the skills, not just allow discovery". Codex only.
+- 2026-10-22 (main trial running, 29 of 180 runs done, no result looked at or analysed): **arm D added at the user's request**, "an entry in AGENTS.md telling it to use the verification skills".
+  - **What D gets.** The same guidance, with one entry added to the end of `AGENTS.md`, in `arms/guidance-agentsmd/`. Its words are those of arm C's third step:
+
+    > ## Before you finish
+    >
+    > Before you say you are done, read and follow `.agents/skills/verify-api/SKILL.md`, and check your change through the API as it says.
+
+    The skills are unchanged.
+  - **What it isolates.** C tells the agent in the prompt, which a user writes for each task. D puts the instruction in the repository, where a team would put it once. D names only the verification skill: in repo-skills, the agent already read the other two in every run.
+  - **How it runs.** The rig cannot add an arm to a running trial, so D runs as a second trial file, `trial-agentsmd.toml`, started while the main trial is running. Otherwise it is identical: same tasks, 3 runs each, low effort. Its runs cover later hours than A to C's. This is noted as a limit.
+  - **New hypotheses**, tested as H1 and H2 are:
+    - H3: `agentsmd` beats `none`;
+    - H4: `agentsmd` beats `discover`.
+
+    H3 and H4 are Holm-adjusted as their own pair, so H1 and H2 and their adjustment are unchanged.
+  - **Secondary**, two-sided and unadjusted: `explicit` against `agentsmd`.
+  - **Analysis.** `analyse.py` takes D's runs as an optional second folder. It was checked on repo-skills' runs before D started.

@@ -9,7 +9,10 @@ Secondary, reported and labelled so: discover vs none (a replication of repo-ski
 (pooled); which skills each arm read; the process measures; neighbour breaks; false success claims. Exploratory: in the
 explicit arm, the pass rate of runs that did and did not write an API-level test; results by kind of task.
 
-Usage: python3 -I analyse.py <runs dir> > results/analysis.md
+Added by amendment before any analysis (README): arm D, agentsmd, from a second runs dir. H3 (agentsmd vs none) and H4
+(agentsmd vs discover) are tested the same way and Holm-adjusted as their own pair, so H1 and H2 are unchanged.
+
+Usage: python3 -I analyse.py <runs dir> [<runs dir, agentsmd>] > results/analysis.md
 """
 import glob, gzip, itertools, json, os, random, re, statistics as st, sys
 from collections import defaultdict
@@ -20,9 +23,9 @@ sys.path.insert(0, os.path.join(E, "..", "2026-10-skills-impact", "scripts"))
 import process  # noqa: E402  (test-file-first and TDD evidence, unchanged from skills-impact)
 from stats import holm  # noqa: E402
 
-RUNS = sys.argv[1]
-ARMS = ["none", "discover", "explicit"]
-LABEL = {"none": "A none", "discover": "B discover", "explicit": "C explicit"}
+RUNS = sys.argv[1:]
+ARMS = ["none", "discover", "explicit"] + (["agentsmd"] if len(RUNS) > 1 else [])
+LABEL = {"none": "A none", "discover": "B discover", "explicit": "C explicit", "agentsmd": "D AGENTS.md entry"}
 
 
 def kind(t):
@@ -110,7 +113,7 @@ def detail(rd):
 
 
 
-rows = load(RUNS)
+rows = [r for d in RUNS for r in load(d)]
 tasks = sorted({r["task"] for r in rows})
 cell = defaultdict(list)
 for r in rows:
@@ -166,6 +169,19 @@ for h in ["H1", "H2"]:
     a, b, d, m, (lo, hi), p = res[h]
     print(f"| {h} | {a} vs {b} | {sum(x > 0 for x in d)} / {sum(x == 0 for x in d)} / {sum(x < 0 for x in d)} | "
           f"{m * 100:+.1f} pts ({lo * 100:+.1f} to {hi * 100:+.1f}) | {p:.3f} | {adj[h]:.3f} |")
+if "agentsmd" in ARMS:
+    print("\nAdded by amendment before any analysis (Holm-adjusted as their own pair):\n")
+    print("| # | comparison | tasks better / same / worse | mean per-task difference in pass rate (95% CI) | p (one-sided) | Holm p |")
+    print("| --- | --- | --- | --- | --- | --- |")
+    res2 = {"H3": ("agentsmd", "none") + compare("agentsmd", "none"), "H4": ("agentsmd", "discover") + compare("agentsmd", "discover")}
+    adj2 = dict(zip(["H3", "H4"], holm([res2[h][5] for h in ["H3", "H4"]])))
+    for h in ["H3", "H4"]:
+        a, b, d, m, (lo, hi), p = res2[h]
+        print(f"| {h} | {a} vs {b} | {sum(x > 0 for x in d)} / {sum(x == 0 for x in d)} / {sum(x < 0 for x in d)} | "
+              f"{m * 100:+.1f} pts ({lo * 100:+.1f} to {hi * 100:+.1f}) | {p:.3f} | {adj2[h]:.3f} |")
+    d, m, (lo, hi), p = compare("explicit", "agentsmd", True)
+    print(f"\nSecondary (two-sided, unadjusted): explicit vs agentsmd, {sum(x > 0 for x in d)} / {sum(x == 0 for x in d)} / "
+          f"{sum(x < 0 for x in d)}, {m * 100:+.1f} pts ({lo * 100:+.1f} to {hi * 100:+.1f}), p = {p:.3f}.")
 d, m, (lo, hi), p = compare("discover", "none", True)
 print(f"\nSecondary (two-sided, unadjusted): discover vs none, {sum(x > 0 for x in d)} / {sum(x == 0 for x in d)} / "
       f"{sum(x < 0 for x in d)}, {m * 100:+.1f} pts ({lo * 100:+.1f} to {hi * 100:+.1f}), p = {p:.3f}.\n")
@@ -182,7 +198,7 @@ print(f"Neighbour breaks ({len(nt)} neighbour-break tasks), runs with a failing 
 
 print("## Cost, time and process (secondary)\n")
 det = {a: [] for a in ARMS}
-for f in sorted(glob.glob(os.path.join(RUNS, "*/*/codex/*/run.json"))):
+for f in sorted(f for d in RUNS for f in glob.glob(os.path.join(d, "*/*/codex/*/run.json"))):
     rd = os.path.dirname(f)
     det[rd.split(os.sep)[-3]].append(detail(rd))
 print("| arm | runs | verified passes | mean tokens | total $ | $ per verified pass | median s | read safe-change | "
@@ -199,7 +215,7 @@ for a in ARMS:
           f"{sum(r['test_runs'] > 0 for r in rs)} | {sum(r['test_lines'] > 0 for r in rs)} | {sum(r['api_test'] for r in rs)} | "
           f"{sum(x[0] for x in det[a])} | {sum(r['keeps_broken'] for r in rs)} | {sum(r['overclaim'] for r in failed)}/{len(failed)} |")
 rng = random.Random(1)
-for a in ["discover", "explicit"]:
+for a in [x for x in ARMS if x != "none"]:
     bs = []
     for _ in range(10000):
         s = [rng.choice(tasks) for _ in tasks]
@@ -211,7 +227,7 @@ for a in ["discover", "explicit"]:
           f"(95% CI {bs[int(0.025 * len(bs))]:.2f} to {bs[int(0.975 * len(bs)) - 1]:.2f}, resampling tasks).")
 
 print("\n## Exploratory\n")
-for a in ["discover", "explicit"]:
+for a in [x for x in ARMS if x != "none"]:
     b = [r for r in rows if r["arm"] == a]
     for name, f in [("read verify-api", lambda r: "verify-api" in r["skills_read"]), ("wrote an API-level test", lambda r: r["api_test"])]:
         yes = [r for r in b if f(r)]
