@@ -1,6 +1,6 @@
 # Does a skill add anything to an instruction to test? (Codex)
 
-**Draft design, written 2026-10-22. Not yet run.** Nothing below is fixed until it is committed as final (step 4 of "Before the runs"); after that, changes go in the amendment log at the bottom.
+**Final design, committed 2026-10-22 before any measured run.** Later changes go in the amendment log at the bottom.
 
 ## Why this follows explicit-skills
 
@@ -107,7 +107,7 @@ A test that does not compile against the original code counts as failing there, 
 - **Arm F only:** how often the gate blocked, why, and whether the second check found a relevant test.
 - **False success claims.**
 
-## Hypotheses and analysis (to be fixed before the runs)
+## Hypotheses and analysis (fixed before the runs)
 
 The unit is the task. For each task and arm, the result is the number of runs, out of 3, with a relevant test.
 
@@ -140,7 +140,7 @@ The unit is the task. For each task and arm, the result is the number of runs, o
    - So explicit-skills' diff-based proxy (15 and 10 runs) slightly undercounted. Two runs, one per arm, on CARTCALC, wrote relevant tests it did not detect. Every test it did detect was relevant.
    - Of these runs, 14 of 16 and 10 of 11 passed the hidden tests.
 3. **Write `scripts/analyse.py` and check it. Done.** It was run on explicit-skills' runs, with arms renamed and the relevance results above, and on the gate test runs. All sections ran.
-4. **Commit the design as final, then run.**
+4. **Commit the design as final, then run. Done:** committed with this text, before the measured runs started.
 
 ## Known limits
 
@@ -168,3 +168,4 @@ python3 -I scripts/analyse.py results/stage1/runs results/stage1-medium/runs res
 
 - 2026-10-22: draft written at the user's request, from a review of explicit-skills. It uses the review's four arms, plus medium effort and the relevance measure.
 - 2026-10-22 (draft, before any run): arm F (Stop-hook gate) and H3 added at the user's request ("Is it worth adding any hooks" … "Do it").
+- 2026-10-22: design committed as final, at the user's go-ahead ("Yes"), before any measured run. The three trial files run side by side: main at 3 runs in parallel, medium at 1, gate at 1, to fit this machine's free disk.
