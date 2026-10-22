@@ -1,0 +1,3 @@
+Support reports that customer delivery addresses are coming out wrong. An admin updates a customer's addresses with PATCH /api/v1/private/customer/{id}/address, sending the billing address and a delivery address. When the customer is read back with GET /api/v1/private/customer/{id}, the delivery street address is missing, the delivery postal code shows the state code, and the delivery state is empty.
+
+Make the delivery address be stored and returned exactly as sent. As before, a field that is missing from the delivery address (street address, city, postal code or country) is taken from the billing address.

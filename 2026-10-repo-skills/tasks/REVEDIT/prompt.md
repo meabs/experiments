@@ -1,0 +1,3 @@
+Our moderators cannot maintain product reviews. Editing a review (PUT /api/v1/private/products/{id}/reviews/{reviewId}) and deleting one (DELETE on the same path) both fail with a server error. Shoppers also tell us that the star rating shown on products is sometimes out of date.
+
+Make editing and deleting reviews work. An edit changes that review, and a delete removes it. A review id that does not exist must answer 404 Not Found. A product's "rating" and "ratingCount" (as returned by GET /api/v2/product/{sku}) must always be the average rating and the number of the product's current reviews, after creates, edits and deletes.
