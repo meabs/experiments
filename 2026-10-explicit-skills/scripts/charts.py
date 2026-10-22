@@ -1,6 +1,7 @@
-"""Draws the three charts used on the website write-up, from the raw runs (via analyse.py's rows).
+"""Draws the four charts used on the website write-up, from the raw runs (via analyse.py's rows).
+The fourth also uses repo-skills' runs (via its own analyse.py), to show reading against doing across both experiments.
 
-Usage: uv run --with matplotlib python3 -I charts.py <runs dir> <runs dir, arm D> <out dir> [font dir]
+Usage: uv run --with matplotlib python3 -I charts.py <runs dir> <runs dir, arm D> <repo-skills runs dir> <out dir> [font dir]
 Style follows the Programming the Loop guide charts (and repo-skills' charts.py): 1800 x 920 px, Inter, beige / teal.
 """
 import contextlib, io, os, runpy, sys
@@ -10,11 +11,11 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 from matplotlib import font_manager
 
-RUNS, RUNS_D, OUT = sys.argv[1], sys.argv[2], sys.argv[3]
-if len(sys.argv) > 4:
-    for f in os.listdir(sys.argv[4]):
+RUNS, RUNS_D, RUNS_RSK, OUT = sys.argv[1:5]
+if len(sys.argv) > 5:
+    for f in os.listdir(sys.argv[5]):
         if f.endswith(".ttf"):
-            font_manager.fontManager.addfont(os.path.join(sys.argv[4], f))
+            font_manager.fontManager.addfont(os.path.join(sys.argv[5], f))
     plt.rcParams["font.family"] = "Inter"
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -22,6 +23,9 @@ sys.argv = ["analyse.py", RUNS, RUNS_D]
 with contextlib.redirect_stdout(io.StringIO()):
     g = runpy.run_path(os.path.join(HERE, "analyse.py"))
 rows, tasks, passes, cost_per_pass = g["rows"], g["tasks"], g["passes"], g["cost_per_pass"]
+sys.argv = ["analyse.py", RUNS_RSK]
+with contextlib.redirect_stdout(io.StringIO()):
+    rsk_rows = runpy.run_path(os.path.join(HERE, "..", "..", "2026-10-repo-skills", "scripts", "analyse.py"))["rows"]
 
 TEAL, BEIGE, NAVY, MUTED, GRID, PALE = "#1f6f8b", "#b9b2a0", "#1d2a44", "#4a5873", "#e8eaed", "#ece8df"
 MID = "#6f9aa8"
@@ -72,7 +76,7 @@ fig, ax = figure("What the agent did, runs out of 60 per arm")
 fig.subplots_adjust(left=0.3)
 measures = [("Read verify-api skill", lambda r: "verify-api" in r["skills_read"]),
             ("Ran Maven tests", lambda r: r["test_runs"] > 0),
-            ("Wrote an API test of its change", lambda r: r["api_test"])]
+            ("API test detected in the change", lambda r: r["api_test"])]
 h = 0.2
 for i, (name, f) in enumerate(measures):
     for j, a in enumerate(ARMS):
@@ -99,4 +103,32 @@ ax.set_yticks(range(len(ARMS)), [LABEL[a] for a in reversed(ARMS)])
 ax.set_xlim(0, 6.5); ax.tick_params(axis="y", length=0)
 ax.grid(axis="x", color=GRID); ax.set_axisbelow(True)
 save(fig, "chart-esk-cost.png", "Arm spend / verified passes.")
-print("wrote 3 charts to", OUT)
+
+# 4. Reading against doing, across repo-skills and this experiment.
+fig, axes = plt.subplots(1, 3, figsize=(9, 4.6), dpi=200, sharey=True)
+fig.subplots_adjust(left=0.27, right=0.97, top=0.78, bottom=0.2, wspace=0.12)
+fig.suptitle("Reading the verification skill is not the same as testing the change", x=0.01, ha="left", fontsize=15, y=0.95)
+groups = [("Repository skills: no guidance", rsk_rows, "none", PALE),
+          ("Repository skills: left to discover", rsk_rows, "repo-skills", BEIGE),
+          ("This one: no guidance", rows, "none", PALE),
+          ("This one: left to discover", rows, "discover", BEIGE),
+          ("This one: told in the prompt", rows, "explicit", MID),
+          ("This one: told in AGENTS.md", rows, "agentsmd", TEAL)]
+panels = [("Read verify-api", lambda r: "verify-api" in r["skills_read"]),
+          ("API test detected\nin the change", lambda r: r["api_test"]),
+          ("Passed the\nhidden tests", lambda r: r["passed"])]
+for ax, (title, f) in zip(axes, panels):
+    for i, (name, rs, a, c) in enumerate(groups):
+        n = sum(bool(f(r)) for r in rs if r["arm"] == a)
+        y = len(groups) - 1 - i
+        ax.barh(y, n, height=0.62, color=c, edgecolor=BEIGE if c == PALE else "none", lw=0.6)
+        ax.text(n + 1.2, y, str(n), va="center", fontsize=9.5)
+    ax.set_title(title, fontsize=11.5, loc="left")
+    ax.set_xlim(0, 72); ax.set_xticks([0, 30, 60])
+    ax.tick_params(axis="y", length=0, labelsize=10)
+    ax.grid(axis="x", color=GRID); ax.set_axisbelow(True)
+    for sp in ("top", "right"):
+        ax.spines[sp].set_visible(False)
+axes[0].set_yticks(range(len(groups)), [g[0] for g in reversed(groups)])
+save(fig, "chart-esk-readdo.png", "Top two rows: 2026-10-repo-skills. Test detected from the diff.")
+print("wrote 4 charts to", OUT)

@@ -13,9 +13,11 @@ In [repo-skills](../2026-10-repo-skills/), the skills sat in the repository for 
 
 ## Summary
 
-- **Telling the agent worked: it read the skills.**
-  - Both told arms opened `verify-api` in 60 of 60 runs.
-  - Left to discover the skills, the agent opened it in 3 of 60.
+- **Reading is not doing.** This is the main result.
+  - Told to use the skills, in the prompt or in `AGENTS.md`, the agent opened `verify-api` in 60 of 60 runs. Left to discover them, it opened it in 3 of 60.
+  - The skill says to write a focused integration test for the change. A test of that kind was detected in the change of only 15 runs in C and 10 in D (from the diff: an added test using `TestRestTemplate`, `ServicesTestSupport` or `MockMvc`; not checked by hand).
+  - Most runs ran the skill's first example instead: `ActuatorTest`, a smoke test that only checks the application starts and answers a health ping. It ran in 49 C runs and 47 D runs. In 23 C runs and 37 D runs, it was the only test the agent ran.
+  - So the agent did not ignore the skill. It took the action in it that looked like verification and was easiest, rather than the one that checks the change.
 - **The pass rate rose a little, but not measurably.**
 
   | arm | passed |
@@ -27,13 +29,10 @@ In [repo-skills](../2026-10-repo-skills/), the skills sat in the repository for 
 
   - Telling the agent added 8 to 10 points over no guidance, and 5 to 7 over discovery.
   - None of the four tests is significant (Holm-adjusted p 0.33 to 0.41). H1 to H4 are not supported.
-- **It read `verify-api`, but mostly did not do what it says.**
-  - The skill says to write a focused integration test for the change. Only 15 runs in C and 10 in D did.
-  - Most ran the skill's example instead: `ActuatorTest`, a smoke test that only checks the application starts and answers a health ping. It ran in 49 C runs and 47 D runs.
-  - In 23 C runs and 37 D runs, that smoke test was the only test the agent ran.
-- **Where the instruction went made no difference.**
-  - The prompt (C) and `AGENTS.md` (D) gave the same result: 42 against 43 of 60, p = 1.0.
-  - The `AGENTS.md` entry was as effective at getting the skill read, and slightly cheaper.
+- **The prompt and `AGENTS.md` gave similar results.**
+  - Both got the verification skill read in every run. The pass rates were similar, 42 and 43 of 60 (p = 1.0), but the experiment is too small to show whether placement matters.
+  - The two instructions also differed in content: the prompt named all three skills, the `AGENTS.md` entry only `verify-api`. So this is not a pure test of placement.
+  - The `AGENTS.md` entry was slightly cheaper.
 - **It cost about twice as much per correct change.**
   - Cost per verified pass, against no guidance: C 1.98 times (95% CI 1.54 to 2.41); D 1.77 times (1.34 to 2.24).
   - Discovery cost 1.22 times.
@@ -138,7 +137,7 @@ The design said a gain of about 15 to 20 points was detectable. The point estima
 
 ## Cost and process
 
-| arm | mean tokens | $ per verified pass | vs none | median seconds | read `verify-api` | ran Maven tests | wrote an API-level test | tried to start the app |
+| arm | mean tokens | $ per verified pass | vs none | median seconds | read `verify-api` | ran Maven tests | API-level test detected in the change | tried to start the app |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | A none | 0.40M | 0.028 | 1 | 53 | 0/60 | 6/60 | 0/60 | 0/60 |
 | B discover | 0.56M | 0.034 | 1.22 | 73 | 3/60 | 16/60 | 0/60 | 0/60 |
@@ -149,7 +148,7 @@ The design said a gain of about 15 to 20 points was detectable. The point estima
   - Told to follow `verify-api`, the agent ran a test in almost every run.
   - Most often it ran the skill's example, `ActuatorTest`, which checks only that the application starts and answers a health ping. It does not touch the change.
   - Its end-of-run claims said so: for example, "the specific customer address PATCH/GET flow was not covered by an existing integration test".
-- **Writing a test was the step that was skipped.** Only 15 C runs and 10 D runs left an API-level test of their change, even though the skill says to add one.
+- **Writing a test was the step that was skipped.** An API-level test was detected in the change of only 15 C runs and 10 D runs, even though the skill says to add one. The count comes from the diff (an added line using `TestRestTemplate`, `ServicesTestSupport` or `MockMvc`); it does not show that the test exercised the change.
 - **Neighbour breaks.** Runs with a broken neighbouring feature, on the 2 neighbour-break tasks: none 4, discover 5, C 5, D 4. Being told to use `safe-change`, which says to check every caller of shared code, did not prevent them.
 - **False success claims.** Every failed run claimed success: none 23 of 23, discover 21 of 21, C 18 of 18, D 17 of 17.
 
@@ -183,7 +182,7 @@ These were checked from the raw event streams before the results were written up
 
 These were not part of the preregistered analysis.
 
-- **Runs that wrote an API-level test passed more often.** In C: 13 of 15, against 29 of 45. In D: 9 of 10, against 34 of 50. This is not causal: an agent may write a test more readily when it understands the task.
+- **Runs with an API-level test detected in the change passed more often.** In C: 13 of 15, against 29 of 45. In D: 9 of 10, against 34 of 50. This is not causal: an agent may write a test more readily when it understands the task.
 - **Runs that ran only the smoke test** passed 14 of 23 in C and 24 of 37 in D, a little below each arm overall (42 and 43 of 60).
 - **By kind of task.**
   - Runtime traps: none 37/54, discover 39/54, C 41/54, D 42/54.
