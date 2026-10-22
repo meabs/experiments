@@ -1,0 +1,3 @@
+Shoppers who empty their cart lose it. If a shopper removes the last product from their cart (DELETE /api/v1/cart/{code}/product/{sku}), or sets the last product's quantity to 0 (PUT /api/v1/cart/{code}), the cart is gone: reading it answers 404, and adding a product to it fails, so our storefront has to start a new cart and the shopper's cart code stops working.
+
+A cart that has been emptied this way must still exist: GET /api/v1/cart/{code} must answer 200 with no products and a subtotal of 0, and adding a product to it must work as it does for any other cart. Removing a product, or setting its quantity to 0, while other products remain must keep working as it does today.

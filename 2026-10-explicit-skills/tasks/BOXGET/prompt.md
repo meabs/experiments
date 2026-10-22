@@ -1,0 +1,3 @@
+Our storefront shows small content boxes (a footer note, a promotion banner) that the marketing team writes in the back office. The storefront reads each box with GET /api/v1/content/boxes/{code}, and what comes back is not what was saved: the box has no code and no id, it says it is not visible even when it is, and its text arrives wrapped in "<![CDATA[ ... ]]>", which then shows up on the page.
+
+GET /api/v1/content/boxes/{code} must return the box's code, id and visibility as stored, and its text exactly as it was written. The box list and the 404 for an unknown box code must keep working as they do today.
