@@ -117,3 +117,13 @@ python3 -I scripts/analyse.py results/stage1/runs > results/analysis.md
 ## Amendment log
 
 - 2026-10-22: design written at the user's request, following verify-vs-skills. Codex only. Two arms, as the user asked: no guidance, and agent-generated `AGENTS.md` plus skills.
+- 2026-10-22 (after generation, before any measured run): **the guidance was generated** in one run (175 s, 3.3M tokens, mostly cached), and is committed unedited in `arms/repo-skills/`. The record is in `generate/record/`.
+  - **What it wrote.**
+    - `AGENTS.md`: 8 lines on the modules and the key commands.
+    - Three skills: `build-test`, `verify-api` and `safe-change`.
+  - **What `verify-api` says.**
+    - Standalone startup does not work here, with the reasons it saw: there is no main class at the parent, and `database.properties` exists only in the test resources.
+    - The working route is a `@SpringBootTest` integration test with `TestRestTemplate`, run with `mvn -o -pl sm-shop -am -Dtest=<Class> -DfailIfNoTests=false test`.
+  - **Changes outside the allowed files.** None: its diff holds only `AGENTS.md` and `.agents/`.
+  - **Access outside its clone.** None of its 30 shell commands reads outside its clone.
+  - **Whether it names a task's cause.** No passage describes the specific cause of any of the 20 tasks: nothing on lazy proxies, ratings, carts, tax, visibility or the error handler's missing-cause case. One inaccuracy is recorded, not corrected: `safe-change` says `ServiceRuntimeException` becomes 400. With no cause attached, the handler fails and the answer is 500, which is one of the runtime traps.
