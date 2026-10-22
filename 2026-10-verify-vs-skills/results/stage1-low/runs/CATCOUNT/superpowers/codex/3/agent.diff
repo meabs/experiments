@@ -1,0 +1,147 @@
+diff --git a/sm-shop/src/main/java/com/salesmanager/shop/store/facade/category/CategoryFacadeImpl.java b/sm-shop/src/main/java/com/salesmanager/shop/store/facade/category/CategoryFacadeImpl.java
+index 3d9067d..65ce819 100755
+--- a/sm-shop/src/main/java/com/salesmanager/shop/store/facade/category/CategoryFacadeImpl.java
++++ b/sm-shop/src/main/java/com/salesmanager/shop/store/facade/category/CategoryFacadeImpl.java
+@@ -22,6 +22,7 @@ import com.salesmanager.core.business.exception.ConversionException;
+ import com.salesmanager.core.business.exception.ServiceException;
+ import com.salesmanager.core.business.services.catalog.category.CategoryService;
+ import com.salesmanager.core.business.services.catalog.product.attribute.ProductAttributeService;
++import com.salesmanager.core.business.services.catalog.product.ProductService;
+ import com.salesmanager.core.business.services.merchant.MerchantStoreService;
+ import com.salesmanager.core.model.catalog.category.Category;
+ import com.salesmanager.core.model.catalog.product.attribute.ProductAttribute;
+@@ -64,6 +65,9 @@ public class CategoryFacadeImpl implements CategoryFacade {
+ 	@Inject
+ 	private ProductAttributeService productAttributeService;
+ 
++	@Inject
++	private ProductService productService;
++
+ 	private static final String FEATURED_CATEGORY = "featured";
+ 	private static final String VISIBLE_CATEGORY = "visible";
+ 	private static final String ADMIN_CATEGORY = "admin";
+@@ -100,16 +104,24 @@ public class CategoryFacadeImpl implements CategoryFacade {
+ 
+ 
+ 			List<ReadableCategory> readableCategories = null;
++			List<Category> categoriesToMap = categories;
+ 			if (filter != null && filter.contains(VISIBLE_CATEGORY)) {
+-				readableCategories = categories.stream().filter(Category::isVisible)
++				categoriesToMap = categories.stream().filter(Category::isVisible).collect(Collectors.toList());
++				readableCategories = categoriesToMap.stream()
+ 						.map(cat -> readableCategoryMapper.convert(cat, store, language))
+ 						.collect(Collectors.toList());
+ 			} else {
+-				readableCategories = categories.stream()
++				readableCategories = categoriesToMap.stream()
+ 						.map(cat -> readableCategoryMapper.convert(cat, store, language))
+ 						.collect(Collectors.toList());
+ 			}
+ 
++			CategoryProductCountCalculator productCountCalculator =
++					new CategoryProductCountCalculator(categoryService, productService);
++			for (int i = 0; i < categoriesToMap.size(); i++) {
++				readableCategories.get(i).setProductCount(productCountCalculator.count(categoriesToMap.get(i), language));
++			}
++
+ 			Map<Long, ReadableCategory> readableCategoryMap = readableCategories.stream()
+ 					.collect(Collectors.toMap(ReadableCategory::getId, Function.identity()));
+ 
+diff --git a/sm-shop/src/main/java/com/salesmanager/shop/store/facade/category/CategoryProductCountCalculator.java b/sm-shop/src/main/java/com/salesmanager/shop/store/facade/category/CategoryProductCountCalculator.java
+new file mode 100644
+index 0000000..d17577e
+--- /dev/null
++++ b/sm-shop/src/main/java/com/salesmanager/shop/store/facade/category/CategoryProductCountCalculator.java
+@@ -0,0 +1,38 @@
++package com.salesmanager.shop.store.facade.category;
++
++import java.util.ArrayList;
++import java.util.HashSet;
++import java.util.List;
++import java.util.Set;
++import java.util.stream.Collectors;
++
++import com.salesmanager.core.business.exception.ServiceException;
++import com.salesmanager.core.business.services.catalog.category.CategoryService;
++import com.salesmanager.core.business.services.catalog.product.ProductService;
++import com.salesmanager.core.model.catalog.category.Category;
++import com.salesmanager.core.model.reference.language.Language;
++
++final class CategoryProductCountCalculator {
++
++    private final CategoryService categoryService;
++    private final ProductService productService;
++
++    CategoryProductCountCalculator(CategoryService categoryService, ProductService productService) {
++        this.categoryService = categoryService;
++        this.productService = productService;
++    }
++
++    int count(Category category, Language language) throws ServiceException {
++        List<Long> categoryIds = new ArrayList<>();
++        categoryIds.add(category.getId());
++        categoryIds.addAll(categoryService.getListByLineage(category.getMerchantStore(),
++                category.getLineage() + category.getId() + "/").stream()
++                .map(Category::getId)
++                .collect(Collectors.toList()));
++
++        Set<Long> productIds = productService.getProducts(categoryIds, language).stream()
++                .map(product -> product.getId())
++                .collect(Collectors.toSet());
++        return productIds.size();
++    }
++}
+diff --git a/sm-shop/src/test/java/com/salesmanager/shop/store/facade/category/CategoryProductCountCalculatorTest.java b/sm-shop/src/test/java/com/salesmanager/shop/store/facade/category/CategoryProductCountCalculatorTest.java
+new file mode 100644
+index 0000000..c36adb9
+--- /dev/null
++++ b/sm-shop/src/test/java/com/salesmanager/shop/store/facade/category/CategoryProductCountCalculatorTest.java
+@@ -0,0 +1,48 @@
++package com.salesmanager.shop.store.facade.category;
++
++import static org.junit.Assert.assertEquals;
++import static org.mockito.Mockito.when;
++
++import java.util.Arrays;
++
++import org.junit.Test;
++
++import com.salesmanager.core.business.services.catalog.category.CategoryService;
++import com.salesmanager.core.business.services.catalog.product.ProductService;
++import com.salesmanager.core.model.catalog.category.Category;
++import com.salesmanager.core.model.catalog.product.Product;
++import com.salesmanager.core.model.reference.language.Language;
++
++public class CategoryProductCountCalculatorTest {
++
++    @Test
++    public void countsEachProductOnceAcrossCategoryDescendants() throws Exception {
++        CategoryService categoryService = org.mockito.Mockito.mock(CategoryService.class);
++        ProductService productService = org.mockito.Mockito.mock(ProductService.class);
++        Category root = category(1L, "1/");
++        Category child = category(2L, "1/2/");
++        Product shared = product(10L);
++        Product another = product(11L);
++
++        when(categoryService.getListByLineage((com.salesmanager.core.model.merchant.MerchantStore) null, "1/1/")).thenReturn(Arrays.asList(child));
++        when(productService.getProducts(Arrays.asList(1L, 2L), null))
++                .thenReturn(Arrays.asList(shared, shared, another));
++
++        CategoryProductCountCalculator calculator = new CategoryProductCountCalculator(categoryService, productService);
++
++        assertEquals(2, calculator.count(root, null));
++    }
++
++    private static Category category(Long id, String lineage) {
++        Category category = new Category();
++        category.setId(id);
++        category.setLineage(lineage);
++        return category;
++    }
++
++    private static Product product(Long id) {
++        Product product = new Product();
++        product.setId(id);
++        return product;
++    }
++}

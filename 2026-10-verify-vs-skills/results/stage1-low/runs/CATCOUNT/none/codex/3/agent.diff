@@ -1,0 +1,120 @@
+diff --git a/sm-core/src/main/java/com/salesmanager/core/business/repositories/catalog/category/CategoryRepositoryCustom.java b/sm-core/src/main/java/com/salesmanager/core/business/repositories/catalog/category/CategoryRepositoryCustom.java
+index d46ef44..48102b3 100755
+--- a/sm-core/src/main/java/com/salesmanager/core/business/repositories/catalog/category/CategoryRepositoryCustom.java
++++ b/sm-core/src/main/java/com/salesmanager/core/business/repositories/catalog/category/CategoryRepositoryCustom.java
+@@ -10,6 +10,9 @@ public interface CategoryRepositoryCustom {
+ 	List<Object[]> countProductsByCategories(MerchantStore store,
+ 			List<Long> categoryIds);
+ 
++	List<Object[]> countProductsInCategoryTrees(MerchantStore store,
++			List<Long> categoryIds);
++
+ 	List<Category> listByStoreAndParent(MerchantStore store, Category category);
+ 	
+ 	List<Category> listByProduct(MerchantStore store, Long product);
+diff --git a/sm-core/src/main/java/com/salesmanager/core/business/repositories/catalog/category/CategoryRepositoryImpl.java b/sm-core/src/main/java/com/salesmanager/core/business/repositories/catalog/category/CategoryRepositoryImpl.java
+index ba6ba6f..876f1f3 100755
+--- a/sm-core/src/main/java/com/salesmanager/core/business/repositories/catalog/category/CategoryRepositoryImpl.java
++++ b/sm-core/src/main/java/com/salesmanager/core/business/repositories/catalog/category/CategoryRepositoryImpl.java
+@@ -43,6 +43,22 @@ public class CategoryRepositoryImpl implements CategoryRepositoryCustom {
+ 		
+ 		
+ 	}
++
++	@Override
++	public List<Object[]> countProductsInCategoryTrees(MerchantStore store, List<Long> categoryIds) {
++		String hql = "select target.id, count(distinct product.id) from Category target "
++				+ "left join Product product with product.merchantStore.id = :mid "
++				+ "left join product.categories assigned "
++				+ "where target.merchantStore.id = :mid and target.id in (:cid) "
++				+ "and (assigned.id is null or assigned.lineage like concat(target.lineage, '%')) "
++				+ "and (product.id is null or (product.available=true and product.dateAvailable<=:dt)) "
++				+ "group by target.id";
++		Query q = em.createQuery(hql);
++		q.setParameter("mid", store.getId());
++		q.setParameter("cid", categoryIds);
++		q.setParameter("dt", new Date());
++		return q.getResultList();
++	}
+ 	
+ 	@SuppressWarnings("unchecked")
+ 	@Override
+diff --git a/sm-core/src/main/java/com/salesmanager/core/business/services/catalog/category/CategoryService.java b/sm-core/src/main/java/com/salesmanager/core/business/services/catalog/category/CategoryService.java
+index 32caa72..b910971 100755
+--- a/sm-core/src/main/java/com/salesmanager/core/business/services/catalog/category/CategoryService.java
++++ b/sm-core/src/main/java/com/salesmanager/core/business/services/catalog/category/CategoryService.java
+@@ -91,6 +91,9 @@ public interface CategoryService extends SalesManagerEntityService<Long, Categor
+ 	 */
+ 	List<Object[]> countProductsByCategories(MerchantStore store,
+ 			List<Long> categoryIds) throws ServiceException;
++
++	List<Object[]> countProductsInCategoryTrees(MerchantStore store,
++			List<Long> categoryIds) throws ServiceException;
+ 	
+ 	List<Category> getByProductId(Long productId, MerchantStore store);
+ 
+diff --git a/sm-core/src/main/java/com/salesmanager/core/business/services/catalog/category/CategoryServiceImpl.java b/sm-core/src/main/java/com/salesmanager/core/business/services/catalog/category/CategoryServiceImpl.java
+index 36a1aeb..783d3d1 100755
+--- a/sm-core/src/main/java/com/salesmanager/core/business/services/catalog/category/CategoryServiceImpl.java
++++ b/sm-core/src/main/java/com/salesmanager/core/business/services/catalog/category/CategoryServiceImpl.java
+@@ -73,13 +73,19 @@ public class CategoryServiceImpl extends SalesManagerEntityServiceImpl<Long, Cat
+   }
+ 
+   @Override
+-  public List<Object[]> countProductsByCategories(MerchantStore store, List<Long> categoryIds)
++	public List<Object[]> countProductsByCategories(MerchantStore store, List<Long> categoryIds)
+       throws ServiceException {
+ 
+     return categoryRepository.countProductsByCategories(store, categoryIds);
+ 
+ 	}
+ 
++	@Override
++	public List<Object[]> countProductsInCategoryTrees(MerchantStore store, List<Long> categoryIds)
++	    throws ServiceException {
++	  return categoryRepository.countProductsInCategoryTrees(store, categoryIds);
++	}
++
+ 
+ 	@Override
+ 	public List<Category> listByCodes(MerchantStore store, List<String> codes, Language language) {
+diff --git a/sm-shop/src/main/java/com/salesmanager/shop/store/facade/category/CategoryFacadeImpl.java b/sm-shop/src/main/java/com/salesmanager/shop/store/facade/category/CategoryFacadeImpl.java
+index 3d9067d..a1975ae 100755
+--- a/sm-shop/src/main/java/com/salesmanager/shop/store/facade/category/CategoryFacadeImpl.java
++++ b/sm-shop/src/main/java/com/salesmanager/shop/store/facade/category/CategoryFacadeImpl.java
+@@ -100,13 +100,20 @@ public class CategoryFacadeImpl implements CategoryFacade {
+ 
+ 
+ 			List<ReadableCategory> readableCategories = null;
++			List<Category> allCategories = categoryService.listByStore(parent);
++			Map<Long, Integer> productCounts = new HashMap<>();
++			List<Long> categoryIds = allCategories.stream().map(Category::getId).collect(Collectors.toList());
++			if (!categoryIds.isEmpty()) {
++				categoryService.countProductsInCategoryTrees(parent, categoryIds).forEach(row ->
++					productCounts.put((Long) row[0], ((Number) row[1]).intValue()));
++			}
+ 			if (filter != null && filter.contains(VISIBLE_CATEGORY)) {
+ 				readableCategories = categories.stream().filter(Category::isVisible)
+-						.map(cat -> readableCategoryMapper.convert(cat, store, language))
++						.map(cat -> withProductCount(cat, readableCategoryMapper.convert(cat, store, language), productCounts))
+ 						.collect(Collectors.toList());
+ 			} else {
+ 				readableCategories = categories.stream()
+-						.map(cat -> readableCategoryMapper.convert(cat, store, language))
++						.map(cat -> withProductCount(cat, readableCategoryMapper.convert(cat, store, language), productCounts))
+ 						.collect(Collectors.toList());
+ 			}
+ 
+@@ -146,6 +153,12 @@ public class CategoryFacadeImpl implements CategoryFacade {
+ 
+ 	}
+ 
++	private ReadableCategory withProductCount(Category category, ReadableCategory readable,
++			Map<Long, Integer> productCounts) {
++		readable.setProductCount(productCounts.getOrDefault(category.getId(), 0));
++		return readable;
++	}
++
+ 	@Override
+ 	public boolean existByCode(MerchantStore store, String code) {
+ 		try {

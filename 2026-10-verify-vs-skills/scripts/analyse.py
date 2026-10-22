@@ -188,3 +188,49 @@ for k in ["N", "R"]:
     if ts:
         print(f"| {k} | {len(ts)} | " + " | ".join(f"{sum(passes(t, a) for t in ts)}/{reps * len(ts)}" for a in ARMS) + " |")
 print(f"\nTotal estimated spend (list prices): ${sum(r['cost'] for r in rows):.2f}.")
+
+# Added after the results (exploratory). The rig's claim parser keeps only list values, and many agents wrote
+# could_not_verify as a string, so caveats are read here from the last VERIFICATION line of the raw final message.
+
+
+def detail(rd):
+    raw = os.path.join(rd, "raw.out")
+    text = (open(raw) if os.path.exists(raw) else gzip.open(raw + ".gz", "rt")).read()
+    cmds, msg = [], ""
+    for line in text.splitlines():
+        try:
+            e = json.loads(line)
+        except ValueError:
+            continue
+        it = e.get("item") or {}
+        if e.get("type") == "item.completed" and it.get("type") == "command_execution":
+            cmds.append(it)
+        if e.get("type") == "item.completed" and it.get("type") == "agent_message":
+            msg = it.get("text", "")
+    caveat = False
+    m = list(re.finditer(r"VERIFICATION:\s*(\{.*\})", msg))
+    if m:
+        try:
+            v = json.loads(m[-1].group(1)).get("could_not_verify")
+            v = " ".join(map(str, v)) if isinstance(v, list) else str(v or "")
+            caveat = v.strip().lower().rstrip(".") not in ("", "none", "n/a", "nothing")
+        except ValueError:
+            pass
+    start = any(re.search(r"spring-boot:run|java\s+-jar", c.get("command", "")) for c in cmds)
+    up = any(re.search(r"Started ShopApplication|Tomcat started", c.get("aggregated_output") or "") for c in cmds)
+    curl = any(re.search(r"(curl|wget)\s[^\n]*localhost", c.get("command", "")) and c.get("exit_code") == 0 for c in cmds)
+    return start, up, curl, caveat
+
+
+print("\n## Added after the results (exploratory)\n")
+print("| arm | tried to start the app | app came up | called it successfully | runs stating something unchecked | "
+      "failed runs claiming success |\n| --- | --- | --- | --- | --- | --- |")
+for runs, arms in [(LOW, ["none", "verify", "superpowers"]), (HIGH, ["medium"])]:
+    for a in arms:
+        ds, fails = [], []
+        for f in sorted(glob.glob(os.path.join(runs, "*", a, "codex", "*", "run.json"))):
+            ds.append(detail(os.path.dirname(f)))
+        rs = [r for r in rows if r["arm"] == a]
+        failed = [r for r in rs if not r["passed"]]
+        print(f"| {LABEL[a]} | {sum(d[0] for d in ds)}/{len(ds)} | {sum(d[1] for d in ds)} | {sum(d[2] for d in ds)} | "
+              f"{sum(d[3] for d in ds)}/{len(ds)} | {sum(r['overclaim'] for r in failed)}/{len(failed)} |")

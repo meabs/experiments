@@ -1,0 +1,227 @@
+diff --git a/sm-core/src/main/java/com/salesmanager/core/business/services/catalog/product/review/ProductReviewServiceImpl.java b/sm-core/src/main/java/com/salesmanager/core/business/services/catalog/product/review/ProductReviewServiceImpl.java
+index e4068ce..209433d 100755
+--- a/sm-core/src/main/java/com/salesmanager/core/business/services/catalog/product/review/ProductReviewServiceImpl.java
++++ b/sm-core/src/main/java/com/salesmanager/core/business/services/catalog/product/review/ProductReviewServiceImpl.java
+@@ -1,6 +1,7 @@
+ package com.salesmanager.core.business.services.catalog.product.review;
+ 
+ import java.math.BigDecimal;
++import java.math.RoundingMode;
+ import java.util.List;
+ 
+ import javax.inject.Inject;
+@@ -25,14 +26,15 @@ public class ProductReviewServiceImpl extends
+ 
+ 	private ProductReviewRepository productReviewRepository;
+ 	
+-	@Inject
+ 	private ProductService productService;
+ 	
+ 	@Inject
+ 	public ProductReviewServiceImpl(
+-			ProductReviewRepository productReviewRepository) {
++			ProductReviewRepository productReviewRepository,
++			ProductService productService) {
+ 			super(productReviewRepository);
+ 			this.productReviewRepository = productReviewRepository;
++			this.productService = productService;
+ 	}
+ 
+ 	@Override
+@@ -54,6 +56,11 @@ public class ProductReviewServiceImpl extends
+ 	public List<ProductReview> getByProduct(Product product, Language language) {
+ 		return productReviewRepository.findByProduct(product.getId(), language.getId());
+ 	}
++
++	@Override
++	public ProductReview getById(Long id) {
++		return productReviewRepository.findById(id).orElse(null);
++	}
+ 	
+ 	private void saveOrUpdate(ProductReview review) throws ServiceException {
+ 		
+@@ -66,36 +73,22 @@ public class ProductReviewServiceImpl extends
+ 		//refresh product
+ 		Product product = productService.getById(review.getProduct().getId());
+ 		
+-		//ajust product rating
+-		Integer count = 0;
+-		if(product.getProductReviewCount()!=null) {
+-			count = product.getProductReviewCount();
+-		}
+-				
+-		
+-		
+-
+-		BigDecimal averageRating = product.getProductReviewAvg();
+-		if(averageRating==null) {
+-			averageRating = new BigDecimal(0);
+-		}
+-		//get reviews
++		super.save(review);
++		review.setProduct(product);
++		recalculateRating(product);
++	}
+ 
+-		
+-		BigDecimal totalRating = averageRating.multiply(new BigDecimal(count));
+-		totalRating = totalRating.add(new BigDecimal(review.getReviewRating()));
+-		
+-		count = count + 1;
+-		double avg = totalRating.doubleValue() / count;
+-		
+-		product.setProductReviewAvg(new BigDecimal(avg));
++	private void recalculateRating(Product product) throws ServiceException {
++		List<ProductReview> reviews = productReviewRepository.findByProduct(product.getId());
++		int count = reviews.size();
++		BigDecimal total = reviews.stream()
++				.map(ProductReview::getReviewRating)
++				.map(BigDecimal::valueOf)
++				.reduce(BigDecimal.ZERO, BigDecimal::add);
+ 		product.setProductReviewCount(count);
+-		super.save(review);
+-		
++		product.setProductReviewAvg(count == 0 ? BigDecimal.ZERO
++				: total.divide(BigDecimal.valueOf(count), 10, RoundingMode.HALF_UP).stripTrailingZeros());
+ 		productService.update(product);
+-		
+-		review.setProduct(product);
+-		
+ 	}
+ 	
+ 	public void update(ProductReview review) throws ServiceException {
+@@ -106,6 +99,14 @@ public class ProductReviewServiceImpl extends
+ 		this.saveOrUpdate(review);
+ 	}
+ 
++	@Override
++	public void delete(ProductReview review) throws ServiceException {
++		Product product = review.getProduct();
++		super.delete(review);
++		productReviewRepository.flush();
++		recalculateRating(product);
++	}
++
+ 	/* (non-Javadoc)
+ 	 * @see com.salesmanager.core.business.services.catalog.product.review.ProductReviewService#getByProductNoObjects(com.salesmanager.core.model.catalog.product.Product)
+ 	 */
+diff --git a/sm-core/src/test/java/com/salesmanager/test/catalog/ProductReviewServiceTest.java b/sm-core/src/test/java/com/salesmanager/test/catalog/ProductReviewServiceTest.java
+new file mode 100644
+index 0000000..03ebdb0
+--- /dev/null
++++ b/sm-core/src/test/java/com/salesmanager/test/catalog/ProductReviewServiceTest.java
+@@ -0,0 +1,58 @@
++package com.salesmanager.test.catalog;
++
++import static org.junit.Assert.assertEquals;
++import static org.mockito.Mockito.*;
++
++import java.util.Arrays;
++import java.util.Optional;
++
++import org.junit.Test;
++import org.junit.runner.RunWith;
++import org.mockito.InjectMocks;
++import org.mockito.Mock;
++import org.mockito.junit.MockitoJUnitRunner;
++
++import com.salesmanager.core.business.repositories.catalog.product.review.ProductReviewRepository;
++import com.salesmanager.core.business.services.catalog.product.ProductService;
++import com.salesmanager.core.business.services.catalog.product.review.ProductReviewServiceImpl;
++import com.salesmanager.core.model.catalog.product.Product;
++import com.salesmanager.core.model.catalog.product.review.ProductReview;
++import com.salesmanager.core.model.customer.Customer;
++
++@RunWith(MockitoJUnitRunner.class)
++public class ProductReviewServiceTest {
++
++    @Mock private ProductReviewRepository repository;
++    @Mock private ProductService productService;
++    @InjectMocks private ProductReviewServiceImpl service;
++
++    @Test
++    public void createRecalculatesProductRatingFromCurrentReviews() throws Exception {
++        Product product = new Product();
++        product.setId(7L);
++        ProductReview first = review(product, 2D);
++        ProductReview second = review(product, 4D);
++        when(productService.getById(7L)).thenReturn(product);
++        when(repository.findByProduct(7L)).thenReturn(Arrays.asList(first, second));
++
++        service.update(review(product, 4D));
++
++        assertEquals(Integer.valueOf(2), product.getProductReviewCount());
++        assertEquals(Double.valueOf(3D), product.getProductReviewAvg().doubleValue(), 0.001D);
++    }
++
++    @Test
++    public void missingReviewIsReturnedAsNull() {
++        when(repository.findById(99L)).thenReturn(Optional.empty());
++
++        assertEquals(null, service.getById(99L));
++    }
++
++    private ProductReview review(Product product, Double rating) {
++        ProductReview review = new ProductReview();
++        review.setProduct(product);
++        review.setCustomer(new Customer());
++        review.setReviewRating(rating);
++        return review;
++    }
++}
+diff --git a/sm-shop/src/main/java/com/salesmanager/shop/store/api/v1/product/ProductReviewApi.java b/sm-shop/src/main/java/com/salesmanager/shop/store/api/v1/product/ProductReviewApi.java
+index 688493e..59e3fe8 100755
+--- a/sm-shop/src/main/java/com/salesmanager/shop/store/api/v1/product/ProductReviewApi.java
++++ b/sm-shop/src/main/java/com/salesmanager/shop/store/api/v1/product/ProductReviewApi.java
+@@ -140,8 +140,8 @@ public class ProductReviewApi {
+ 
+   @RequestMapping(
+       value = {
+-        "/private/products/{id}/reviews/{reviewid}",
+-        "/auth/products/{id}/reviews/{reviewid}"
++        "/private/products/{id}/reviews/{reviewId}",
++        "/auth/products/{id}/reviews/{reviewId}"
+       },
+       method = RequestMethod.PUT)
+   @ResponseStatus(HttpStatus.OK)
+@@ -166,7 +166,8 @@ public class ProductReviewApi {
+         return null;
+       }
+ 
+-      if (prodReview.getCustomer().getId().longValue() != review.getCustomerId().longValue()) {
++      if (prodReview.getProduct().getId().longValue() != id.longValue()
++          || prodReview.getCustomer().getId().longValue() != review.getCustomerId().longValue()) {
+         response.sendError(404, "Product review with id " + reviewId + " does not exist");
+         return null;
+       }
+@@ -178,6 +179,7 @@ public class ProductReviewApi {
+       }
+ 
+       review.setProductId(id);
++      review.setId(reviewId);
+ 
+       productCommonFacade.saveOrUpdateReview(review, merchantStore, language);
+ 
+@@ -196,8 +198,8 @@ public class ProductReviewApi {
+ 
+   @RequestMapping(
+       value = {
+-        "/private/products/{id}/reviews/{reviewid}",
+-        "/auth/products/{id}/reviews/{reviewid}"
++        "/private/products/{id}/reviews/{reviewId}",
++        "/auth/products/{id}/reviews/{reviewId}"
+       },
+       method = RequestMethod.DELETE)
+   @ResponseStatus(HttpStatus.OK)
+diff --git a/sm-shop/src/main/java/com/salesmanager/shop/store/facade/product/ProductCommonFacadeImpl.java b/sm-shop/src/main/java/com/salesmanager/shop/store/facade/product/ProductCommonFacadeImpl.java
+index cd3d302..0352d77 100644
+--- a/sm-shop/src/main/java/com/salesmanager/shop/store/facade/product/ProductCommonFacadeImpl.java
++++ b/sm-shop/src/main/java/com/salesmanager/shop/store/facade/product/ProductCommonFacadeImpl.java
+@@ -308,6 +308,7 @@ public class ProductCommonFacadeImpl implements ProductCommonFacade {
+ 
+ 		com.salesmanager.core.model.catalog.product.review.ProductReview rev = new com.salesmanager.core.model.catalog.product.review.ProductReview();
+ 		populator.populate(review, rev, store, language);
++		rev.setId(review.getId());
+ 
+ 		if (review.getId() == null) {
+ 			productReviewService.create(rev);

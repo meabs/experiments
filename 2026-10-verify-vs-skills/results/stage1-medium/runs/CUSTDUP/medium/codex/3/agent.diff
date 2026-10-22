@@ -1,0 +1,169 @@
+diff --git a/sm-core/src/main/java/com/salesmanager/core/business/repositories/customer/CustomerRepository.java b/sm-core/src/main/java/com/salesmanager/core/business/repositories/customer/CustomerRepository.java
+index 25bcc36..9f115fd 100755
+--- a/sm-core/src/main/java/com/salesmanager/core/business/repositories/customer/CustomerRepository.java
++++ b/sm-core/src/main/java/com/salesmanager/core/business/repositories/customer/CustomerRepository.java
+@@ -54,6 +54,9 @@ public interface CustomerRepository extends JpaRepository<Customer, Long>, Custo
+ 			+ "left join fetch cb.zone "
+ 			+ "where c.nick = ?1 and cm.code = ?2")
+ 	Customer findByNick(String nick, String store);
++
++	@Query("select c from Customer c where lower(c.emailAddress) = lower(?1) and c.merchantStore.id = ?2")
++	Customer findByEmailAddressAndStore(String emailAddress, int storeId);
+ 	
+ 	@Query("select c from Customer c "
+ 			+ "join fetch c.merchantStore cm "
+diff --git a/sm-core/src/main/java/com/salesmanager/core/business/services/customer/CustomerService.java b/sm-core/src/main/java/com/salesmanager/core/business/services/customer/CustomerService.java
+index 2e8d8b3..1967498 100755
+--- a/sm-core/src/main/java/com/salesmanager/core/business/services/customer/CustomerService.java
++++ b/sm-core/src/main/java/com/salesmanager/core/business/services/customer/CustomerService.java
+@@ -27,6 +27,7 @@ public interface CustomerService  extends SalesManagerEntityService<Long, Custom
+ 
+ 	Customer getByNick(String nick, int storeId);
+ 	Customer getByNick(String nick, String code);
++	Customer getByEmailAddress(String emailAddress, int storeId);
+ 	
+ 	/**
+ 	 * Password reset token
+diff --git a/sm-core/src/main/java/com/salesmanager/core/business/services/customer/CustomerServiceImpl.java b/sm-core/src/main/java/com/salesmanager/core/business/services/customer/CustomerServiceImpl.java
+index 1c80bad..984037d 100755
+--- a/sm-core/src/main/java/com/salesmanager/core/business/services/customer/CustomerServiceImpl.java
++++ b/sm-core/src/main/java/com/salesmanager/core/business/services/customer/CustomerServiceImpl.java
+@@ -116,6 +116,11 @@ public class CustomerServiceImpl extends SalesManagerEntityServiceImpl<Long, Cus
+ 		return customerRepository.findByNick(nick, code);
+ 	}
+ 
++	@Override
++	public Customer getByEmailAddress(String emailAddress, int storeId) {
++		return customerRepository.findByEmailAddressAndStore(emailAddress, storeId);
++	}
++
+ 	@Override
+ 	public Customer getByPasswordResetToken(String storeCode, String token) {
+ 		return customerRepository.findByResetPasswordToken(token, storeCode);
+diff --git a/sm-shop/src/main/java/com/salesmanager/shop/store/api/exception/ConflictException.java b/sm-shop/src/main/java/com/salesmanager/shop/store/api/exception/ConflictException.java
+new file mode 100644
+index 0000000..1cc5c4e
+--- /dev/null
++++ b/sm-shop/src/main/java/com/salesmanager/shop/store/api/exception/ConflictException.java
+@@ -0,0 +1,10 @@
++package com.salesmanager.shop.store.api.exception;
++
++public class ConflictException extends GenericRuntimeException {
++
++    private static final long serialVersionUID = 1L;
++
++    public ConflictException(String message) {
++        super("409", message);
++    }
++}
+diff --git a/sm-shop/src/main/java/com/salesmanager/shop/store/api/exception/RestErrorHandler.java b/sm-shop/src/main/java/com/salesmanager/shop/store/api/exception/RestErrorHandler.java
+index 054ea33..c1f1407 100755
+--- a/sm-shop/src/main/java/com/salesmanager/shop/store/api/exception/RestErrorHandler.java
++++ b/sm-shop/src/main/java/com/salesmanager/shop/store/api/exception/RestErrorHandler.java
+@@ -19,9 +19,17 @@ import org.springframework.web.bind.annotation.ResponseStatus;
+ @ControllerAdvice({"com.salesmanager.shop.store.api"})
+ public class RestErrorHandler {
+   
+-    private static final Logger log = LoggerFactory.getLogger(RestErrorHandler.class);
+-
+-    @RequestMapping(produces = "application/json")
++    private static final Logger log = LoggerFactory.getLogger(RestErrorHandler.class);
++
++    @RequestMapping(produces = "application/json")
++    @ExceptionHandler(ConflictException.class)
++    @ResponseStatus(HttpStatus.CONFLICT)
++    public @ResponseBody ErrorEntity handleConflictException(ConflictException exception) {
++        return createErrorEntity(exception.getErrorCode(), exception.getErrorMessage(),
++                exception.getLocalizedMessage());
++    }
++
++    @RequestMapping(produces = "application/json")
+     @ExceptionHandler(Exception.class)
+     @ResponseStatus(HttpStatus.INTERNAL_SERVER_ERROR)
+     public @ResponseBody ErrorEntity handleServiceException(Exception exception) {
+diff --git a/sm-shop/src/main/java/com/salesmanager/shop/store/api/v1/customer/AuthenticateCustomerApi.java b/sm-shop/src/main/java/com/salesmanager/shop/store/api/v1/customer/AuthenticateCustomerApi.java
+index 42cb2f5..40f6372 100755
+--- a/sm-shop/src/main/java/com/salesmanager/shop/store/api/v1/customer/AuthenticateCustomerApi.java
++++ b/sm-shop/src/main/java/com/salesmanager/shop/store/api/v1/customer/AuthenticateCustomerApi.java
+@@ -33,7 +33,7 @@ import com.salesmanager.core.model.merchant.MerchantStore;
+ import com.salesmanager.core.model.reference.language.Language;
+ import com.salesmanager.shop.constants.Constants;
+ import com.salesmanager.shop.model.customer.PersistableCustomer;
+-import com.salesmanager.shop.store.api.exception.GenericRuntimeException;
++import com.salesmanager.shop.store.api.exception.ConflictException;
+ import com.salesmanager.shop.store.api.exception.ResourceNotFoundException;
+ import com.salesmanager.shop.store.api.exception.UnauthorizedException;
+ import com.salesmanager.shop.store.controller.customer.facade.CustomerFacade;
+@@ -105,9 +105,9 @@ public class AuthenticateCustomerApi {
+ 
+             customer.setUserName(customer.getEmailAddress());
+             
+-			if(customerFacade.checkIfUserExists(customer.getUserName(),  merchantStore)) {
++            if(customerFacade.checkIfEmailExists(customer.getEmailAddress(), merchantStore)) {
+ 				//409 Conflict
+-				throw new GenericRuntimeException("409", "Customer with email [" + customer.getEmailAddress() + "] is already registered");
++				throw new ConflictException("Customer with email [" + customer.getEmailAddress() + "] is already registered");
+ 			}
+             
+             Validate.notNull(customer.getUserName(),"Username cannot be null");
+diff --git a/sm-shop/src/main/java/com/salesmanager/shop/store/controller/customer/facade/CustomerFacade.java b/sm-shop/src/main/java/com/salesmanager/shop/store/controller/customer/facade/CustomerFacade.java
+index 4a86ea3..b2a6b57 100755
+--- a/sm-shop/src/main/java/com/salesmanager/shop/store/controller/customer/facade/CustomerFacade.java
++++ b/sm-shop/src/main/java/com/salesmanager/shop/store/controller/customer/facade/CustomerFacade.java
+@@ -80,6 +80,7 @@ public interface CustomerFacade
+     public Customer getCustomerByUserName(final String userName, final MerchantStore store);
+     
+     public boolean checkIfUserExists(final String userName,final MerchantStore store) throws Exception;
++    public boolean checkIfEmailExists(final String emailAddress, final MerchantStore store);
+     
+     public PersistableCustomer  registerCustomer( final PersistableCustomer customer,final MerchantStore merchantStore, final Language language) throws Exception;
+     
+diff --git a/sm-shop/src/main/java/com/salesmanager/shop/store/controller/customer/facade/CustomerFacadeImpl.java b/sm-shop/src/main/java/com/salesmanager/shop/store/controller/customer/facade/CustomerFacadeImpl.java
+index 60fbf4b..8811362 100755
+--- a/sm-shop/src/main/java/com/salesmanager/shop/store/controller/customer/facade/CustomerFacadeImpl.java
++++ b/sm-shop/src/main/java/com/salesmanager/shop/store/controller/customer/facade/CustomerFacadeImpl.java
+@@ -80,6 +80,7 @@ import com.salesmanager.shop.populator.customer.ReadableCustomerList;
+ import com.salesmanager.shop.populator.customer.ReadableCustomerPopulator;
+ import com.salesmanager.shop.populator.customer.ReadableCustomerReviewPopulator;
+ import com.salesmanager.shop.store.api.exception.ConversionRuntimeException;
++import com.salesmanager.shop.store.api.exception.ConflictException;
+ import com.salesmanager.shop.store.api.exception.ResourceNotFoundException;
+ import com.salesmanager.shop.store.api.exception.ServiceRuntimeException;
+ import com.salesmanager.shop.utils.EmailTemplatesUtils;
+@@ -341,12 +342,24 @@ public class CustomerFacadeImpl implements CustomerFacade {
+     return false;
+   }
+ 
++  @Override
++  public boolean checkIfEmailExists(final String emailAddress, final MerchantStore store)
++      {
++    return StringUtils.isNotBlank(emailAddress) && store != null
++        && customerService.getByEmailAddress(emailAddress, store.getId()) != null;
++  }
++
+ 
+   @Override
+   public PersistableCustomer registerCustomer(final PersistableCustomer customer,
+       final MerchantStore merchantStore, Language language) throws Exception {
+     LOG.info("Starting customer registration process..");
+ 
++    if (checkIfEmailExists(customer.getEmailAddress(), merchantStore)) {
++      throw new ConflictException("Customer with email [" + customer.getEmailAddress()
++          + "] is already registered");
++    }
++
+     if (userExist(customer.getUserName())) {
+       throw new UserAlreadyExistException("User already exist");
+     }
+@@ -586,8 +599,9 @@ public class CustomerFacadeImpl implements CustomerFacade {
+ 
+ 	//set customer user name
+ 	customer.setUserName(customer.getEmailAddress());
+-    if (userExist(customer.getUserName())) {
+-      throw new ServiceRuntimeException("User already exist");
++    if (checkIfEmailExists(customer.getEmailAddress(), store)) {
++      throw new ConflictException("Customer with email [" + customer.getEmailAddress()
++          + "] is already registered");
+     }
+     //end user exists
+ 
