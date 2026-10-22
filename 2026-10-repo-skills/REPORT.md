@@ -177,12 +177,17 @@ Only effort has made a measurable difference. Of the text-based interventions, r
 
 Nothing in the preregistered analysis changed. The amendment log records the generation run and the review of the guidance, both before any measured run. The exploratory checks above were added after the results.
 
-## Suggested next step
+## Next step: telling the agent to use the skills
 
-The guidance told the agent how to verify, and the agent did not open that part. Two follow-ups would separate why:
+This experiment left the skills for the agent to discover. It read two of them every time, but opened `verify-api`, the one on checking a change through the API, in only 8 of 60 runs. So it measured guidance the agent chose to read, not guidance it followed.
 
-- **Make verification part of the task, not an optional skill.** Put the one route that works (write a `@SpringBootTest` test of the changed endpoint, run it with the given command) in `AGENTS.md` as a required step, and repeat B against A. This tests whether following the advice helps, rather than whether the agent chooses to read it.
-- **Guidance with more effort.** Repeat A and B at medium effort. This tests whether repository guidance adds anything once the agent thinks for longer.
+The follow-up, [2026-10-explicit-skills](../2026-10-explicit-skills/), tests the same guidance, byte for byte, with the agent **told to use the skills**. Its prompt starts by naming each skill and when to use it, including `verify-api` before finishing. It has three arms, run side by side:
+
+- no guidance;
+- the guidance left to discover, repeating this experiment;
+- the guidance explicitly called.
+
+A second follow-up would repeat this at medium effort, to test whether repository guidance adds anything once the agent thinks for longer.
 
 ## Reproducing
 
