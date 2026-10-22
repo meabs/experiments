@@ -73,6 +73,7 @@ def load(runs):
                         api_test=bool(re.search(r"^\+.*(TestRestTemplate|ServicesTestSupport|MockMvc)", diff, re.M | re.I)),
                         boot_app=any(BOOT_APP.search(c) for c in commands(text)),
                         skill=any(SKILL.search(c) for c in commands(text)),
+                        skills_read={m for c in commands(text) for m in re.findall(r"skills/([a-z-]+)/SKILL\.md", c)},
                         overclaim=claim.get("result") == "passed" and not s.get("pass")))
     return out
 
