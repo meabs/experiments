@@ -76,7 +76,7 @@ fig, ax = figure("What the agent did, runs out of 60 per arm")
 fig.subplots_adjust(left=0.3)
 measures = [("Read verify-api skill", lambda r: "verify-api" in r["skills_read"]),
             ("Ran Maven tests", lambda r: r["test_runs"] > 0),
-            ("API test detected in the change", lambda r: r["api_test"])]
+            ("API test detected\nin the change", lambda r: r["api_test"])]
 h = 0.2
 for i, (name, f) in enumerate(measures):
     for j, a in enumerate(ARMS):
