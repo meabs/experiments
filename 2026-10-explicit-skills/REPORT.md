@@ -178,6 +178,16 @@ These were checked from the raw event streams before the results were written up
   - No command touched the experiments folder or a `hidden/` path.
   - The one command the scan flagged read a skill inside the agent's own clone.
 
+## Later check: were the detected tests real tests of the change?
+
+Added after the report, while preparing [test-skill](../2026-10-test-skill/), and checked automatically rather than by hand. Each of the 27 runs that changed a test file was rebuilt from its saved diff. The agent's own tests were then run with its change, and again on the original code.
+
+- **All 27 have a relevant test.** Every test passes with the change, and at least one fails on the original code.
+- **The count from the diff slightly undercounted.** It found 15 (prompt) and 10 (`AGENTS.md`); the check finds 16 and 11. One run per arm, both on CARTCALC, wrote a relevant test the pattern missed. Every test it did find was relevant.
+- So the main result stands, with slightly firmer numbers: told to follow the skill, the agent wrote a real test of its change in 16 and 11 of 60 runs.
+
+The method and results are in test-skill's README ("Before the runs") and [`results/retro-explicit-skills`](../2026-10-test-skill/results/retro-explicit-skills/).
+
 ## Exploratory analysis, added after the results
 
 These were not part of the preregistered analysis.
