@@ -140,4 +140,5 @@ python3 -I scripts/make_items.py
 python3 -I scripts/judge.py <out> hosted; python3 -I scripts/judge.py <out> hosted --retest
 scripts/export.sh <out> main
 python3 -I scripts/analyse.py results/main > results/analysis.md
+uv run --with matplotlib python3 -I scripts/charts.py results/main <out dir> <Inter font dir>   # the website chart
 ```
