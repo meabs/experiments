@@ -40,7 +40,30 @@ This is the pilot's main limit: it tests EGM **without a human's judgement**. A 
   - run 2: 81 lines of code (an entity, a service, removal of the Drools rule).
 
   Neither touched the cart totals, the category rules or most of the validation. Both said they had finished and that the project compiled. The spec's quality did not carry over into the code.
+- **With the build at medium effort, EGM did no better than plain Codex at medium effort** (follow-up below). Both approved designs, built at medium effort, scored 4/16, as did plain Codex at medium effort with the task alone (4/16 twice). All four runs named the cart's discount line `order.total.discount` instead of the `discount` the task asks for, which fails every test that checks the amount. A diagnostic that accepts either name gives **13/16 for all four runs**, with the same three failures. Plain Codex cost about a quarter as much: $0.10 a run on average, against $0.43 for EGM.
 - **EGM's review did not run as specified until corrected.** In both runs, Codex at low effort first spawned its reviewers with `fork_turns: "all"`, which copies the whole conversation into each one, so they were not Goldfish. It also merged review stages. After one correction from the approver (below), every later reviewer was spawned with fresh context (`fork_turns: "none"`), and each stage stopped at its own checkpoint. Run 2 still ran one combined critic at stage 7 instead of EGM's three.
+
+## Follow-up: the build at medium effort
+
+Run on 2026-10-23 after the pilot, at the user's request to fix the build step and test the fix. The two designs already approved in EGM runs 1 and 2 were each put into a fresh clone (`egm_drive.sh seed`). A fresh Codex session at **medium effort** was given the same build prompt ([arms/egm-build.md](arms/egm-build.md)). Nothing in the designs or the prompt changed. As the fair rival, plain Codex at medium effort got the task alone, twice, through the rig ([trial-medium-discount.toml](trial-medium-discount.toml)).
+
+| run | hidden tests passed | diagnostic (either line name) | build cost | whole run cost | build time | lines added |
+| --- | --- | --- | --- | --- | --- | --- |
+| baseline medium 1 (task only) | 4/16 | 13/16 | — | $0.080 | 142 s | — |
+| baseline medium 2 (task only) | 4/16 | 13/16 | — | $0.128 | 224 s | — |
+| EGM 1, medium build | 4/16 | 13/16 | $0.296 | $0.573 | 4311 s* | 654 |
+| EGM 2, medium build | 4/16 | 13/16 | $0.091 | $0.286 | 160 s | 596 |
+
+The whole-run cost of an EGM run is its design and review (run 1: $0.277; run 2: $0.195) plus the build. No existing test broke in any run. Each build was a single session at `effort: medium`, checked in its session file.
+
+\* EGM 1's build stalled seven times for about 576 seconds each, waiting for a model response; two of these are logged as reconnects after `max_output_tokens`. Its working time was about 5 minutes.
+
+- **The build step is fixed.** At medium effort the builds wrote the whole feature: about 600 to 650 lines across 19 to 21 files, including the cart totals, category rules and validation that the low-effort builds left out.
+- **One naming miss hides most of the work.** The task says the cart shows "a line in "totals" with code "discount"". Every medium run, EGM or not, used shopizer's existing constant `order.total.discount` instead. Neither EGM design, nor any of its review reports, names the line's code. The tests that check a discount amount all fail on this.
+- **The diagnostic.** To see how much of the feature works apart from that miss, every run's diff was retested with the hidden test changed in one line, so that a line coded `order.total.discount` also counts ([scripts/diag_line_name.sh](scripts/diag_line_name.sh), results in `results/diagnostic-line-name/`). It is not the score; the score is the task as written.
+  - All four medium runs pass 13/16 and fail the same three tests: a duplicate code is not answered with 409, an invalid code is not answered with 400 (500 instead), and a code is not shown as the merchant wrote it.
+  - The reference still passes 16/16. The low-effort runs: baseline 11/16 and 2/16, EGM 3/16 and 1/16. Two low runs lose a test under the diagnostic, because the old Test1234 rule still produced an `order.total.discount` line, which the official test did not see.
+- **So on this task, at this sample size, EGM added cost and nothing measurable.** The spec and its reviews did not pin down the one requirement every run missed. It also did not fix the three error-handling gaps that plain Codex at medium effort also left.
 
 ## What a full trial would cost
 
@@ -55,7 +78,8 @@ This is the pilot's main limit: it tests EGM **without a human's judgement**. A 
 
 ## What the pilot changes for a full design
 
-1. **Fix the build step before measuring anything else.** With a low-effort build, EGM's output is limited by how much code the build writes, not by the spec. A full trial should try the build at medium effort, or in the Elephant's own session, or with a check that every planned file was changed. Otherwise it measures the build agent, not EGM.
+1. **Build at medium effort.** With a low-effort build, EGM's output is limited by how much code the build writes, not by the spec. The follow-up shows a medium-effort build writes the whole feature. A full trial should compare EGM with plain Codex at the same effort, which here matched it.
+1. **Score near misses as well.** A single interface detail (the totals line's name) turned 13/16 into 4/16 in every medium run. A full trial should report a diagnostic score alongside the strict one, decided before the runs.
 2. **Turn on Codex's subagents explicitly** (`--enable multi_agent_v2`). Without it, Codex 0.157 offers no spawn tool and EGM cannot run its review.
 3. **Audit every review automatically** from the session files: each subagent's `fork_turns`, its parent, and its tokens. Subagent tokens are not in the main event stream; they are only in the session files.
 4. **Count each arm's fair rival.** To isolate EGM's effect, the arms should include the task alone at the same effort as the build, a plan-first arm without reviewers, and medium effort, which has been the only clear gain in earlier experiments.
@@ -65,6 +89,8 @@ This is the pilot's main limit: it tests EGM **without a human's judgement**. A 
 - **Shared Maven repository.** Twice, the shared `~/.m2` received modified shopizer jars:
   - once from my own `mvn install` while building the reference implementation;
   - once from EGM run 2's build agent, whose design told it to run `./mvnw -DskipTests install`.
+
+  A third time, in the follow-up, baseline medium run 2 ran `mvn -q -DskipTests install`. The rig, unlike the EGM driver, does not forbid this. The jars were rebuilt from the original code again and checked. The other runs going at the time all built from source (`-am` or the whole project), so none used them. EGM 2's medium build also tried `./mvnw -DskipTests install`, and the driver's sandbox stopped it.
 
   Grading is not affected, because the grader builds the whole project from source. But a later agent building only `sm-shop` would have used another run's code. Both times, the jars were rebuilt from the original code and checked. The driver's sandbox now forbids writes to the shopizer folder in `~/.m2`.
 
@@ -108,4 +134,11 @@ EGM_ARGS="--enable multi_agent_v2" scripts/egm_drive.sh say egmN <message file> 
 scripts/egm_drive.sh new egmN arms/egm-build.md                       # the build
 scripts/egm_drive.sh grade egmN
 python3 -I scripts/audit_sessions.py results/egmN/sessions
+
+# follow-up: medium-effort build of an approved design, and its rival
+scripts/egm_drive.sh seed egmNm DISCOUNT results/egmN/design/design_draft.md
+EGM_ARGS='-c model_reasoning_effort="medium"' scripts/egm_drive.sh new egmNm arms/egm-build.md
+scripts/egm_drive.sh grade egmNm
+trialrig run trial-medium-discount.toml --out <dir> --agent codex
+scripts/diag_line_name.sh <agent.diff> <out dir>                    # the diagnostic
 ```

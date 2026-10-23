@@ -9,6 +9,7 @@
 #   egm_drive.sh start <run> <task> <prompt file>   new session in a fresh clone; prints the agent's last message
 #   egm_drive.sh say   <run> <message file>         resumes the session with the approver's message
 #   egm_drive.sh new   <run> <prompt file>          a second, fresh session in the same clone (the build step)
+#   egm_drive.sh seed  <run> <task> <design file>   a fresh clone with an approved design at its root, for a build alone
 #   egm_drive.sh grade <run>                        runs verify.sh (relevance check, hidden tests, full suite)
 # Every turn's JSON events are kept in <run>/turns/NN.jsonl, and every message sent in <run>/turns/NN.in.md.
 set -euo pipefail
@@ -69,6 +70,13 @@ case "$CMD" in
     cp -R "$W/home-egm" "$R/home"
     profile
     turn "$4" -s danger-full-access "${ARGS[@]}" "$(cat "$4")" ;;
+  seed)  # seed <run> <task> <design file>: a fresh clone with an approved design at its root, no turn run
+    rm -rf "$R"; mkdir -p "$R/turns"; echo "$3" > "$R/task"
+    git clone -q "$W/shopizer" "$R/repo"; git -C "$R/repo" checkout -q 6a4a0a6
+    ( cd "$R/repo" && TRIAL_QUESTION="$3" bash "$E/scripts/setup.sh" )
+    cp "$4" "$R/repo/design_draft.md"
+    cp -R "$W/home-egm" "$R/home"
+    profile ;;
   say)
     turn "$3" resume -c 'sandbox_mode="danger-full-access"' "${ARGS[@]}" "$(cat "$R/thread")" "$(cat "$3")" ;;
   new)
