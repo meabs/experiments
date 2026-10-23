@@ -10,7 +10,7 @@ tasks, bootstrap 95% CI (10,000 resamples, seed 1), Holm across the six arms. Se
 tests local vs hosted per arm; each TSK arm effect for both models side by side, and their per-task difference; tokens,
 time, cost, energy, false success claims, failure modes. Exploratory: arm G vs arm A (local). Calibration: hosted runs
 made on this machine (results/calibration), against TSK's arm A.
-Usage: python3 -I compare.py [local results dir] > results/compare.md
+Usage: python3 -I compare.py [local results dir] [local stages, comma-separated] > results/compare.md
 """
 import ast, csv, glob, gzip, json, os, re, statistics as st, subprocess, sys
 from collections import Counter
@@ -111,19 +111,34 @@ def energy_wh(base, stage, r):
 
 hosted_dirty = subprocess.run(["git", "-C", O, "diff", "--quiet", SHA, "--", "results"], capture_output=True).returncode
 LR = ARGV[1] if len(ARGV) > 1 else os.path.join(N, "results")  # optional: another results folder (for testing)
-H = enrich(os.path.join(O, "results"), STAGES)
-L = enrich(LR, STAGES)
-G = enrich(LR, ["stage1-stop"])
-tasks = sorted({r["task"] for r in H})
-REPS = 3
+LSTAGES = ARGV[2].split(",") if len(ARGV) > 2 else STAGES + ["stage1-stop"]  # optional: local stages, e.g. "pilot"
+H_ALL = enrich(os.path.join(O, "results"), STAGES)
+LOC = enrich(LR, LSTAGES)
+L = [r for r in LOC if r["arm"] != "stop"]
+G = [r for r in LOC if r["arm"] == "stop"]
+tasks = sorted({r["task"] for r in LOC}) or sorted({r["task"] for r in H_ALL})  # the pilot uses 10 of the 20 tasks
+H = [r for r in H_ALL if r["task"] in tasks]
+U = 6  # per-task rates in units of 1/6, so 1, 2 or 3 runs per cell give whole numbers (exact sign-flip, no float ties)
 
 
 def cnt(rows, t, a, key):
     return sum(r[key] for r in rows if r["task"] == t and r["arm"] == a)
 
 
+def units(rows, t, a, key):
+    """A cell's rate (passes over runs) in units of 1/U. With 3 runs on both sides this is 2 x the count difference,
+    which leaves the sign-flip p and the bootstrap interval of the rate exactly as in the design."""
+    rs = [r[key] for r in rows if r["task"] == t and r["arm"] == a]
+    return round(U * sum(rs) / len(rs)) if rs else 0
+
+
+def total(rows, a, key):
+    rs = [r for r in rows if r["arm"] == a]
+    return f"{sum(r[key] for r in rs)}/{len(rs)}"
+
+
 def diff_stats(d, two_sided=True):
-    rate = [x / REPS for x in d]
+    rate = [x / U for x in d]
     return st.mean(rate), boot(rate), signflip_p(d, two_sided)
 
 
@@ -144,15 +159,14 @@ arms = [a for a in ARMS if any(r["arm"] == a for r in L)]
 print("## Verified passes, local against hosted (primary)\n")
 print("| # | arm | hosted | local | tasks local better / same / worse | mean per-task difference (95% CI) | p (two-sided) | Holm p |")
 print("| --- | --- | --- | --- | --- | --- | --- | --- |")
-res = {a: [cnt(L, t, a, "passed") - cnt(H, t, a, "passed") for t in tasks] for a in arms}
+res = {a: [units(L, t, a, "passed") - units(H, t, a, "passed") for t in tasks] for a in arms}
 ps = {a: diff_stats(res[a])[2] for a in arms}
 adj = dict(zip(arms, holm([ps[a] for a in arms]))) if arms else {}
 for a in arms:
     m, (lo, hi), p = diff_stats(res[a])
-    tot = lambda rows: f"{sum(cnt(rows, t, a, 'passed') for t in tasks)}/{REPS * len(tasks)}"  # noqa: E731
-    print(f"| L-{'ABCDEF'[ARMS.index(a)]} | {LABEL[a]} | {tot(H)} | {tot(L)} | {bsw(res[a])} | {pts(m, lo, hi)} | {p:.3f} | {adj[a]:.3f} |")
+    print(f"| L-{'ABCDEF'[ARMS.index(a)]} | {LABEL[a]} | {total(H, a, 'passed')} | {total(L, a, 'passed')} | {bsw(res[a])} | {pts(m, lo, hi)} | {p:.3f} | {adj[a]:.3f} |")
 
-print("\n## Per task (verified passes of 3, hosted / local)\n")
+print("\n## Per task (verified passes, hosted / local; each of the runs made)\n")
 print("| task | " + " | ".join(LABEL[a] for a in arms) + " |\n| --- |" + " --- |" * len(arms))
 for t in tasks:
     print(f"| {t} | " + " | ".join(f"{cnt(H, t, a, 'passed')} / {cnt(L, t, a, 'passed')}" for a in arms) + " |")
@@ -160,9 +174,9 @@ for t in tasks:
 print("\n## Relevant tests, local against hosted (secondary, two-sided, unadjusted)\n")
 print("| arm | hosted | local | tasks local better / same / worse | difference (95% CI) | p |\n| --- | --- | --- | --- | --- | --- |")
 for a in arms:
-    d = [cnt(L, t, a, "relevant") - cnt(H, t, a, "relevant") for t in tasks]
+    d = [units(L, t, a, "relevant") - units(H, t, a, "relevant") for t in tasks]
     m, (lo, hi), p = diff_stats(d)
-    print(f"| {LABEL[a]} | {sum(cnt(H, t, a, 'relevant') for t in tasks)}/60 | {sum(cnt(L, t, a, 'relevant') for t in tasks)}/60 | "
+    print(f"| {LABEL[a]} | {total(H, a, 'relevant')} | {total(L, a, 'relevant')} | "
           f"{bsw(d)} | {pts(m, lo, hi)} | {p:.3f} |")
 
 print("\n## TSK's arm effects, both models side by side (secondary, two-sided, unadjusted)\n")
@@ -174,8 +188,8 @@ EFFECTS = [("relevant", "instruction", "none"), ("relevant", "skill", "instructi
 for key, a, b in EFFECTS:
     if a not in arms or b not in arms:
         continue
-    dh = [cnt(H, t, a, key) - cnt(H, t, b, key) for t in tasks]
-    dl = [cnt(L, t, a, key) - cnt(L, t, b, key) for t in tasks]
+    dh = [units(H, t, a, key) - units(H, t, b, key) for t in tasks]
+    dl = [units(L, t, a, key) - units(L, t, b, key) for t in tasks]
     dd = [x - y for x, y in zip(dl, dh)]
     cells = []
     for d in (dh, dl, dd):
@@ -221,10 +235,10 @@ for name, rows in (("hosted", H), ("local", L), ("local", G)):
 
 if G and any(r["arm"] == "none" for r in L):
     print("\n## Exploratory: arm G (stop) against arm A (none), local only\n")
-    d = [cnt(G, t, "stop", "passed") - cnt(L, t, "none", "passed") for t in tasks]
+    d = [units(G, t, "stop", "passed") - units(L, t, "none", "passed") for t in tasks]
     m, (lo, hi), p = diff_stats(d)
     A = [r for r in L if r["arm"] == "none"]
-    print(f"- Verified passes: G {sum(r['passed'] for r in G)}/60, A {sum(r['passed'] for r in A)}/60; per task {bsw(d)}; "
+    print(f"- Verified passes: G {sum(r['passed'] for r in G)}/{len(G)}, A {sum(r['passed'] for r in A)}/{len(A)}; per task {bsw(d)}; "
           f"{pts(m, lo, hi)}, p {p:.3f} (two-sided, unadjusted, exploratory).")
     print(f"- Timeouts: G {sum(r['status'] == 'timeout' for r in G)}, A {sum(r['status'] == 'timeout' for r in A)}. "
           f"Median seconds: G {st.median(r['seconds'] for r in G):.0f}, A {st.median(r['seconds'] for r in A):.0f}. "
@@ -234,8 +248,9 @@ C = enrich(LR, ["calibration"])
 if C:
     print("\n## Calibration: hosted model on this machine against TSK's arm A (descriptive)\n")
     print("| task | TSK arm A (of 3) | this machine (of 1) |\n| --- | --- | --- |")
-    for t in tasks:
-        print(f"| {t} | {cnt(H, t, 'none', 'passed')} | {cnt(C, t, 'none', 'passed')} |")
-    agree = sum((cnt(C, t, 'none', 'passed') == 1) == (cnt(H, t, 'none', 'passed') >= 2) for t in tasks)
-    print(f"\nPassed here: {sum(r['passed'] for r in C)}/{len(C)}; TSK arm A: {sum(cnt(H, t, 'none', 'passed') for t in tasks)}/60. "
-          f"Tasks where this run agrees with TSK's majority: {agree}/{len(tasks)}.")
+    ct = sorted({r["task"] for r in C})
+    for t in ct:
+        print(f"| {t} | {cnt(H_ALL, t, 'none', 'passed')} | {cnt(C, t, 'none', 'passed')} |")
+    agree = sum((cnt(C, t, 'none', 'passed') == 1) == (cnt(H_ALL, t, 'none', 'passed') >= 2) for t in ct)
+    print(f"\nPassed here: {sum(r['passed'] for r in C)}/{len(C)}; TSK arm A: {sum(cnt(H_ALL, t, 'none', 'passed') for t in ct)}/{3 * len(ct)}. "
+          f"Tasks where this run agrees with TSK's majority: {agree}/{len(ct)}.")
