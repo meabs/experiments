@@ -1,0 +1,177 @@
+diff --git a/sm-shop/src/main/java/com/salesmanager/shop/store/api/exception/ConflictException.java b/sm-shop/src/main/java/com/salesmanager/shop/store/api/exception/ConflictException.java
+new file mode 100644
+index 0000000..edd5f85
+--- /dev/null
++++ b/sm-shop/src/main/java/com/salesmanager/shop/store/api/exception/ConflictException.java
+@@ -0,0 +1,11 @@
++package com.salesmanager.shop.store.api.exception;
++
++/** Indicates that the requested resource conflicts with an existing resource. */
++public class ConflictException extends ServiceRuntimeException {
++
++    private static final long serialVersionUID = 1L;
++
++    public ConflictException(String message) {
++        super("409", message);
++    }
++}
+diff --git a/sm-shop/src/main/java/com/salesmanager/shop/store/api/exception/RestErrorHandler.java b/sm-shop/src/main/java/com/salesmanager/shop/store/api/exception/RestErrorHandler.java
+index 054ea33..b815b75 100755
+--- a/sm-shop/src/main/java/com/salesmanager/shop/store/api/exception/RestErrorHandler.java
++++ b/sm-shop/src/main/java/com/salesmanager/shop/store/api/exception/RestErrorHandler.java
+@@ -64,8 +64,16 @@ public class RestErrorHandler {
+         return errorEntity;
+     }
+ 
+-    @RequestMapping(produces = "application/json")
+-    @ExceptionHandler(ResourceNotFoundException.class)
++    @RequestMapping(produces = "application/json")
++    @ExceptionHandler(ConflictException.class)
++    @ResponseStatus(HttpStatus.CONFLICT)
++    public @ResponseBody ErrorEntity handleConflictException(ConflictException exception) {
++        log.error(exception.getErrorMessage(), exception);
++        return createErrorEntity(exception.getErrorCode(), exception.getErrorMessage(), exception.getLocalizedMessage());
++    }
++
++    @RequestMapping(produces = "application/json")
++    @ExceptionHandler(ResourceNotFoundException.class)
+     @ResponseStatus(HttpStatus.NOT_FOUND)
+     public @ResponseBody ErrorEntity handleServiceException(ResourceNotFoundException exception) {
+         log.error(exception.getErrorMessage(), exception);
+diff --git a/sm-shop/src/main/java/com/salesmanager/shop/store/facade/user/UserFacadeImpl.java b/sm-shop/src/main/java/com/salesmanager/shop/store/facade/user/UserFacadeImpl.java
+index 92a6764..f36271a 100755
+--- a/sm-shop/src/main/java/com/salesmanager/shop/store/facade/user/UserFacadeImpl.java
++++ b/sm-shop/src/main/java/com/salesmanager/shop/store/facade/user/UserFacadeImpl.java
+@@ -56,9 +56,11 @@ import com.salesmanager.shop.model.user.UserPassword;
+ import com.salesmanager.shop.populator.user.PersistableUserPopulator;
+ import com.salesmanager.shop.populator.user.ReadableUserPopulator;
+ import com.salesmanager.shop.store.api.exception.ConversionRuntimeException;
++import com.salesmanager.shop.store.api.exception.ConflictException;
+ import com.salesmanager.shop.store.api.exception.GenericRuntimeException;
+ import com.salesmanager.shop.store.api.exception.OperationNotAllowedException;
+ import com.salesmanager.shop.store.api.exception.ResourceNotFoundException;
++import com.salesmanager.shop.store.api.exception.RestApiException;
+ import com.salesmanager.shop.store.api.exception.ServiceRuntimeException;
+ import com.salesmanager.shop.store.api.exception.UnauthorizedException;
+ import com.salesmanager.shop.store.controller.security.facade.SecurityFacade;
+@@ -311,7 +313,7 @@ public class UserFacadeImpl implements UserFacade {
+ 			// check if user exists
+ 			User tempUser = userService.getByUserName(user.getUserName(), store.getCode());
+ 			if (tempUser != null) {
+-				throw new ServiceRuntimeException(
++				throw new ConflictException(
+ 						"User [" + user.getUserName() + "] already exists for store [" + store.getCode() + "]");
+ 			}
+ 			
+@@ -394,12 +396,18 @@ public class UserFacadeImpl implements UserFacade {
+ 	public ReadableUser update(Long id, String authenticatedUser, MerchantStore store, PersistableUser user) {
+ 		Validate.notNull(user, "User cannot be null");
+ 		Validate.notNull(store, "store cannot be null");
++		User existingUser;
++		try {
++			existingUser = userService.findByStore(id, store.getCode());
++		} catch (ServiceException e) {
++			throw new ServiceRuntimeException("Cannot find user [" + id + "]", e);
++		}
++		if (existingUser == null) {
++			throw new ResourceNotFoundException("User [" + id + "] not found");
++		}
+ 
+ 		try {
+-			User userModel = userService.getById(id);
+-			if (userModel == null) {
+-				throw new ServiceRuntimeException("Cannot find user [" + user.getUserName() + "]");
+-			}
++			User userModel = existingUser;
+ 			if (userModel.getId().longValue() != id.longValue()) {
+ 				throw new ServiceRuntimeException(
+ 						"Cannot find user [" + user.getUserName() + "] id or name does not match");
+@@ -492,9 +500,9 @@ public class UserFacadeImpl implements UserFacade {
+ 				throw new ServiceRuntimeException("Cannot find user [" + authenticatedUser + "]");
+ 			}
+ 
+-			User userModel = userService.getById(userId);
++			User userModel = userService.findByStore(userId, auth.getMerchantStore().getCode());
+ 			if (userModel == null) {
+-				throw new ServiceRuntimeException("Cannot find user [" + userId + "]");
++				throw new ResourceNotFoundException("User [" + userId + "] not found");
+ 			}
+ 
+ 			/**
+@@ -502,7 +510,7 @@ public class UserFacadeImpl implements UserFacade {
+ 			 */
+ 
+ 			if (!securityFacade.matchPassword(userModel.getAdminPassword(), changePassword.getPassword())) {
+-				throw new ServiceRuntimeException("Actual password does not match for user [" + userId + "]");
++				throw new RestApiException("400", "Actual password does not match for user [" + userId + "]");
+ 			}
+ 
+ 			/**
+diff --git a/sm-shop/src/test/java/com/salesmanager/test/shop/integration/user/UserApiIntegrationTest.java b/sm-shop/src/test/java/com/salesmanager/test/shop/integration/user/UserApiIntegrationTest.java
+index 47ccb8f..4145fb2 100755
+--- a/sm-shop/src/test/java/com/salesmanager/test/shop/integration/user/UserApiIntegrationTest.java
++++ b/sm-shop/src/test/java/com/salesmanager/test/shop/integration/user/UserApiIntegrationTest.java
+@@ -1,6 +1,8 @@
+ package com.salesmanager.test.shop.integration.user;
+ 
+ import static org.junit.Assert.assertNotNull;
++import static org.hamcrest.MatcherAssert.assertThat;
++import static org.hamcrest.Matchers.is;
+ import javax.inject.Inject;
+ import org.junit.Test;
+ import org.junit.runner.RunWith;
+@@ -8,6 +10,7 @@ import org.springframework.boot.test.context.SpringBootTest;
+ import org.springframework.boot.test.context.SpringBootTest.WebEnvironment;
+ import org.springframework.boot.test.web.client.TestRestTemplate;
+ import org.springframework.http.HttpEntity;
++import org.springframework.http.HttpHeaders;
+ import org.springframework.http.HttpMethod;
+ import org.springframework.http.HttpStatus;
+ import org.springframework.http.ResponseEntity;
+@@ -93,6 +96,46 @@ public class UserApiIntegrationTest extends ServicesTestSupport {
+       
+       
+   }
++
++  @Test
++  public void invalidUserOperationsReturnClientErrors() {
++      PersistableUser duplicate = new PersistableUser();
++      duplicate.setDefaultLanguage("en");
++      duplicate.setEmailAddress("admin@shopizer.com");
++      duplicate.setFirstName("Admin");
++      duplicate.setLastName("User");
++      duplicate.setUserName("admin@shopizer.com");
++      duplicate.setPassword(CREATED_PASSWORD);
++      duplicate.setRepeatPassword(CREATED_PASSWORD);
++      PersistableGroup group = new PersistableGroup();
++      group.setName("ADMIN");
++      duplicate.getGroups().add(group);
++
++      HttpHeaders headers = getHeader();
++      ResponseEntity<ReadableUser> duplicateResponse = testRestTemplate.exchange(
++          "/api/v1/private/user/", HttpMethod.POST,
++          new HttpEntity<>(duplicate, headers), ReadableUser.class);
++      assertThat(duplicateResponse.getStatusCode(), is(HttpStatus.CONFLICT));
++
++      duplicate.setUserName("missing-user-for-update@test.com");
++      ResponseEntity<ReadableUser> missingUpdate = testRestTemplate.exchange(
++          "/api/v1/private/user/999999999", HttpMethod.PUT,
++          new HttpEntity<>(duplicate, headers), ReadableUser.class);
++      assertThat(missingUpdate.getStatusCode(), is(HttpStatus.NOT_FOUND));
++
++      UserPassword wrongPassword = new UserPassword();
++      wrongPassword.setPassword("wrong-current-password");
++      wrongPassword.setChangePassword(NEW_CREATED_PASSWORD);
++      ResponseEntity<Void> wrongPasswordResponse = testRestTemplate.exchange(
++          "/api/v1/private/user/1/password", HttpMethod.PATCH,
++          new HttpEntity<>(wrongPassword, headers), Void.class);
++      assertThat(wrongPasswordResponse.getStatusCode(), is(HttpStatus.BAD_REQUEST));
++
++      ResponseEntity<Void> missingPasswordResponse = testRestTemplate.exchange(
++          "/api/v1/private/user/999999999/password", HttpMethod.PATCH,
++          new HttpEntity<>(wrongPassword, headers), Void.class);
++      assertThat(missingPasswordResponse.getStatusCode(), is(HttpStatus.NOT_FOUND));
++  }
+   
+ 
+ 

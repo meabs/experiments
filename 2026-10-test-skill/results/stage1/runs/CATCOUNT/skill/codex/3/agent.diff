@@ -1,0 +1,131 @@
+diff --git a/sm-core/src/main/java/com/salesmanager/core/business/repositories/catalog/category/CategoryRepositoryCustom.java b/sm-core/src/main/java/com/salesmanager/core/business/repositories/catalog/category/CategoryRepositoryCustom.java
+index d46ef44..81ae35e 100755
+--- a/sm-core/src/main/java/com/salesmanager/core/business/repositories/catalog/category/CategoryRepositoryCustom.java
++++ b/sm-core/src/main/java/com/salesmanager/core/business/repositories/catalog/category/CategoryRepositoryCustom.java
+@@ -10,6 +10,9 @@ public interface CategoryRepositoryCustom {
+ 	List<Object[]> countProductsByCategories(MerchantStore store,
+ 			List<Long> categoryIds);
+ 
++	List<Object[]> countProductsByCategoryLineage(MerchantStore store,
++			List<Long> categoryIds);
++
+ 	List<Category> listByStoreAndParent(MerchantStore store, Category category);
+ 	
+ 	List<Category> listByProduct(MerchantStore store, Long product);
+diff --git a/sm-core/src/main/java/com/salesmanager/core/business/repositories/catalog/category/CategoryRepositoryImpl.java b/sm-core/src/main/java/com/salesmanager/core/business/repositories/catalog/category/CategoryRepositoryImpl.java
+index ba6ba6f..6782efc 100755
+--- a/sm-core/src/main/java/com/salesmanager/core/business/repositories/catalog/category/CategoryRepositoryImpl.java
++++ b/sm-core/src/main/java/com/salesmanager/core/business/repositories/catalog/category/CategoryRepositoryImpl.java
+@@ -43,6 +43,20 @@ public class CategoryRepositoryImpl implements CategoryRepositoryCustom {
+ 		
+ 		
+ 	}
++
++	@Override
++	public List<Object[]> countProductsByCategoryLineage(MerchantStore store, List<Long> categoryIds) {
++		String hql = "select ancestor.id, count(distinct product.id) "
++				+ "from Category ancestor, Product product join product.categories descendant "
++				+ "where ancestor.id in (:cid) and ancestor.merchantStore = :store "
++				+ "and (descendant.id = ancestor.id or descendant.lineage like concat(ancestor.lineage, ancestor.id, '/%')) "
++				+ "and product.available=true and product.dateAvailable<=:dt group by ancestor.id";
++		Query q = this.em.createQuery(hql);
++		q.setParameter("cid", categoryIds);
++		q.setParameter("store", store);
++		q.setParameter("dt", new Date());
++		return q.getResultList();
++	}
+ 	
+ 	@SuppressWarnings("unchecked")
+ 	@Override
+diff --git a/sm-core/src/main/java/com/salesmanager/core/business/services/catalog/category/CategoryService.java b/sm-core/src/main/java/com/salesmanager/core/business/services/catalog/category/CategoryService.java
+index 32caa72..ff724d6 100755
+--- a/sm-core/src/main/java/com/salesmanager/core/business/services/catalog/category/CategoryService.java
++++ b/sm-core/src/main/java/com/salesmanager/core/business/services/catalog/category/CategoryService.java
+@@ -91,6 +91,9 @@ public interface CategoryService extends SalesManagerEntityService<Long, Categor
+ 	 */
+ 	List<Object[]> countProductsByCategories(MerchantStore store,
+ 			List<Long> categoryIds) throws ServiceException;
++
++	List<Object[]> countProductsByCategoryLineage(MerchantStore store,
++			List<Long> categoryIds) throws ServiceException;
+ 	
+ 	List<Category> getByProductId(Long productId, MerchantStore store);
+ 
+diff --git a/sm-core/src/main/java/com/salesmanager/core/business/services/catalog/category/CategoryServiceImpl.java b/sm-core/src/main/java/com/salesmanager/core/business/services/catalog/category/CategoryServiceImpl.java
+index 36a1aeb..b44a82a 100755
+--- a/sm-core/src/main/java/com/salesmanager/core/business/services/catalog/category/CategoryServiceImpl.java
++++ b/sm-core/src/main/java/com/salesmanager/core/business/services/catalog/category/CategoryServiceImpl.java
+@@ -78,7 +78,13 @@ public class CategoryServiceImpl extends SalesManagerEntityServiceImpl<Long, Cat
+ 
+     return categoryRepository.countProductsByCategories(store, categoryIds);
+ 
+-	}
++  }
++
++  @Override
++  public List<Object[]> countProductsByCategoryLineage(MerchantStore store, List<Long> categoryIds)
++      throws ServiceException {
++    return categoryRepository.countProductsByCategoryLineage(store, categoryIds);
++  }
+ 
+ 
+ 	@Override
+diff --git a/sm-shop/src/main/java/com/salesmanager/shop/store/facade/category/CategoryFacadeImpl.java b/sm-shop/src/main/java/com/salesmanager/shop/store/facade/category/CategoryFacadeImpl.java
+index 3d9067d..e9d436e 100755
+--- a/sm-shop/src/main/java/com/salesmanager/shop/store/facade/category/CategoryFacadeImpl.java
++++ b/sm-shop/src/main/java/com/salesmanager/shop/store/facade/category/CategoryFacadeImpl.java
+@@ -113,6 +113,11 @@ public class CategoryFacadeImpl implements CategoryFacade {
+ 			Map<Long, ReadableCategory> readableCategoryMap = readableCategories.stream()
+ 					.collect(Collectors.toMap(ReadableCategory::getId, Function.identity()));
+ 
++			List<Object[]> productCounts = categoryService.countProductsByCategoryLineage(store,
++					new ArrayList<>(readableCategoryMap.keySet()));
++			productCounts.forEach(row -> readableCategoryMap.get(((Number) row[0]).longValue())
++					.setProductCount(((Number) row[1]).intValue()));
++
+ 			readableCategories.stream()
+ 					// .filter(ReadableCategory::isVisible)
+ 					.filter(cat -> Objects.nonNull(cat.getParent()))
+diff --git a/sm-shop/src/test/java/com/salesmanager/test/shop/integration/category/CategoryManagementAPIIntegrationTest.java b/sm-shop/src/test/java/com/salesmanager/test/shop/integration/category/CategoryManagementAPIIntegrationTest.java
+index 86987a8..476f0f0 100755
+--- a/sm-shop/src/test/java/com/salesmanager/test/shop/integration/category/CategoryManagementAPIIntegrationTest.java
++++ b/sm-shop/src/test/java/com/salesmanager/test/shop/integration/category/CategoryManagementAPIIntegrationTest.java
+@@ -41,6 +41,31 @@ public class CategoryManagementAPIIntegrationTest extends ServicesTestSupport {
+     @Autowired
+     private TestRestTemplate testRestTemplate;
+ 
++    @Test
++    public void categoryListIncludesDistinctProductCounts() throws Exception {
++        PersistableCategory category = category("count-api-category");
++        ResponseEntity<PersistableCategory> categoryResponse = testRestTemplate.postForEntity(
++                "/api/v1/private/category?store=DEFAULT", new HttpEntity<>(category, getHeader()),
++                PersistableCategory.class);
++        assertThat(categoryResponse.getStatusCode(), is(CREATED));
++
++        PersistableProduct product = product("count-api-product");
++        product.getCategories().add(categoryResponse.getBody());
++        ResponseEntity<PersistableProduct> productResponse = testRestTemplate.postForEntity(
++                "/api/v1/private/product?store=DEFAULT", new HttpEntity<>(product, getHeader()),
++                PersistableProduct.class);
++        assertThat(productResponse.getStatusCode(), is(CREATED));
++
++        ResponseEntity<ReadableCategoryList> response = testRestTemplate.exchange(
++                "/api/v1/category?store=DEFAULT&count=100", HttpMethod.GET,
++                new HttpEntity<>(getHeader()), ReadableCategoryList.class);
++        assertThat(response.getStatusCode(), is(OK));
++        ReadableCategory result = response.getBody().getCategories().stream()
++                .filter(c -> "count-api-category".equals(c.getCode())).findFirst().orElse(null);
++        assertNotNull(result);
++        assertThat(result.getProductCount(), is(1));
++    }
++
+ 
+ 
+     /**
+@@ -465,4 +490,4 @@ public class CategoryManagementAPIIntegrationTest extends ServicesTestSupport {
+     }
+         **/
+ 
+-}
+\ No newline at end of file
++}

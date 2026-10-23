@@ -1,0 +1,206 @@
+diff --git a/sm-core/src/main/java/com/salesmanager/core/business/services/catalog/product/review/ProductReviewServiceImpl.java b/sm-core/src/main/java/com/salesmanager/core/business/services/catalog/product/review/ProductReviewServiceImpl.java
+index e4068ce..34d928c 100755
+--- a/sm-core/src/main/java/com/salesmanager/core/business/services/catalog/product/review/ProductReviewServiceImpl.java
++++ b/sm-core/src/main/java/com/salesmanager/core/business/services/catalog/product/review/ProductReviewServiceImpl.java
+@@ -55,6 +55,18 @@ public class ProductReviewServiceImpl extends
+ 		return productReviewRepository.findByProduct(product.getId(), language.getId());
+ 	}
+ 	
++	private void refreshProductRating(Product product) throws ServiceException {
++		List<ProductReview> reviews = productReviewRepository.findByProduct(product.getId());
++		BigDecimal total = BigDecimal.ZERO;
++		for (ProductReview current : reviews) {
++			total = total.add(BigDecimal.valueOf(current.getReviewRating()));
++		}
++		product.setProductReviewCount(reviews.size());
++		product.setProductReviewAvg(reviews.isEmpty() ? BigDecimal.ZERO
++				: total.divide(BigDecimal.valueOf(reviews.size()), 4, java.math.RoundingMode.HALF_UP));
++		productService.update(product);
++	}
++
+ 	private void saveOrUpdate(ProductReview review) throws ServiceException {
+ 		
+ 
+@@ -66,34 +78,8 @@ public class ProductReviewServiceImpl extends
+ 		//refresh product
+ 		Product product = productService.getById(review.getProduct().getId());
+ 		
+-		//ajust product rating
+-		Integer count = 0;
+-		if(product.getProductReviewCount()!=null) {
+-			count = product.getProductReviewCount();
+-		}
+-				
+-		
+-		
+-
+-		BigDecimal averageRating = product.getProductReviewAvg();
+-		if(averageRating==null) {
+-			averageRating = new BigDecimal(0);
+-		}
+-		//get reviews
+-
+-		
+-		BigDecimal totalRating = averageRating.multiply(new BigDecimal(count));
+-		totalRating = totalRating.add(new BigDecimal(review.getReviewRating()));
+-		
+-		count = count + 1;
+-		double avg = totalRating.doubleValue() / count;
+-		
+-		product.setProductReviewAvg(new BigDecimal(avg));
+-		product.setProductReviewCount(count);
+ 		super.save(review);
+-		
+-		productService.update(product);
+-		
++		refreshProductRating(product);
+ 		review.setProduct(product);
+ 		
+ 	}
+@@ -106,6 +92,13 @@ public class ProductReviewServiceImpl extends
+ 		this.saveOrUpdate(review);
+ 	}
+ 
++	@Override
++	public void delete(ProductReview review) throws ServiceException {
++		Product product = productService.getById(review.getProduct().getId());
++		super.delete(review);
++		refreshProductRating(product);
++	}
++
+ 	/* (non-Javadoc)
+ 	 * @see com.salesmanager.core.business.services.catalog.product.review.ProductReviewService#getByProductNoObjects(com.salesmanager.core.model.catalog.product.Product)
+ 	 */
+diff --git a/sm-core/src/main/java/com/salesmanager/core/business/services/common/generic/SalesManagerEntityServiceImpl.java b/sm-core/src/main/java/com/salesmanager/core/business/services/common/generic/SalesManagerEntityServiceImpl.java
+index 994bbfc..625d4d9 100755
+--- a/sm-core/src/main/java/com/salesmanager/core/business/services/common/generic/SalesManagerEntityServiceImpl.java
++++ b/sm-core/src/main/java/com/salesmanager/core/business/services/common/generic/SalesManagerEntityServiceImpl.java
+@@ -36,7 +36,7 @@ public abstract class SalesManagerEntityServiceImpl<K extends Serializable & Com
+ 
+ 
+ 	public E getById(K id) {
+-		return repository.getOne(id);
++		return repository.findById(id).orElse(null);
+ 	}
+ 
+ 	
+@@ -84,4 +84,4 @@ public abstract class SalesManagerEntityServiceImpl<K extends Serializable & Com
+ 		return repository.saveAndFlush(entity);
+ 	}
+ 
+-}
+\ No newline at end of file
++}
+diff --git a/sm-shop/src/main/java/com/salesmanager/shop/store/facade/product/ProductCommonFacadeImpl.java b/sm-shop/src/main/java/com/salesmanager/shop/store/facade/product/ProductCommonFacadeImpl.java
+index cd3d302..4507da9 100644
+--- a/sm-shop/src/main/java/com/salesmanager/shop/store/facade/product/ProductCommonFacadeImpl.java
++++ b/sm-shop/src/main/java/com/salesmanager/shop/store/facade/product/ProductCommonFacadeImpl.java
+@@ -306,7 +306,12 @@ public class ProductCommonFacadeImpl implements ProductCommonFacade {
+ 		populator.setCustomerService(customerService);
+ 		populator.setProductService(productService);
+ 
+-		com.salesmanager.core.model.catalog.product.review.ProductReview rev = new com.salesmanager.core.model.catalog.product.review.ProductReview();
++		com.salesmanager.core.model.catalog.product.review.ProductReview rev = review.getId() == null
++				? new com.salesmanager.core.model.catalog.product.review.ProductReview()
++				: productReviewService.getById(review.getId());
++		if (rev == null) {
++			throw new IllegalArgumentException("Product review does not exist");
++		}
+ 		populator.populate(review, rev, store, language);
+ 
+ 		if (review.getId() == null) {
+diff --git a/sm-shop/src/test/java/com/salesmanager/test/shop/integration/product/ProductReviewApiIntegrationTest.java b/sm-shop/src/test/java/com/salesmanager/test/shop/integration/product/ProductReviewApiIntegrationTest.java
+new file mode 100644
+index 0000000..6b0e084
+--- /dev/null
++++ b/sm-shop/src/test/java/com/salesmanager/test/shop/integration/product/ProductReviewApiIntegrationTest.java
+@@ -0,0 +1,89 @@
++package com.salesmanager.test.shop.integration.product;
++
++import static org.hamcrest.CoreMatchers.is;
++import static org.junit.Assert.assertThat;
++import static org.springframework.http.HttpStatus.CREATED;
++import static org.springframework.http.HttpStatus.NOT_FOUND;
++import static org.springframework.http.HttpStatus.OK;
++
++import java.util.Map;
++
++import org.junit.Test;
++import org.junit.runner.RunWith;
++import org.springframework.boot.test.context.SpringBootTest;
++import org.springframework.boot.test.context.SpringBootTest.WebEnvironment;
++import org.springframework.http.HttpEntity;
++import org.springframework.http.HttpMethod;
++import org.springframework.http.ResponseEntity;
++
++import com.salesmanager.shop.model.catalog.product.PersistableProductReview;
++import com.salesmanager.shop.model.catalog.product.ReadableProduct;
++import com.salesmanager.shop.model.catalog.product.product.PersistableProduct;
++import com.salesmanager.shop.application.ShopApplication;
++import com.salesmanager.shop.model.customer.PersistableCustomer;
++import com.salesmanager.core.model.customer.CustomerGender;
++import com.salesmanager.shop.model.customer.address.Address;
++import com.salesmanager.test.shop.common.ServicesTestSupport;
++
++/** Client-level coverage for the complete product-review lifecycle. */
++@SpringBootTest(classes = ShopApplication.class, webEnvironment = WebEnvironment.RANDOM_PORT)
++@RunWith(org.springframework.test.context.junit4.SpringRunner.class)
++public class ProductReviewApiIntegrationTest extends ServicesTestSupport {
++
++    @Test
++    public void reviewLifecycleUpdatesAndRemovesProductRating() {
++        PersistableProduct product = product("review-api-" + System.nanoTime());
++        product.setSku(product.getInventory().getSku());
++        ResponseEntity<ReadableProduct> createdProduct = testRestTemplate.postForEntity(
++                "/api/v1/private/product?store=DEFAULT", new HttpEntity<>(product, getHeader()), ReadableProduct.class);
++        Long productId = createdProduct.getBody().getId();
++        String sku = createdProduct.getBody().getSku();
++        String path = "/api/v1/private/products/" + productId + "/reviews?store=DEFAULT";
++        PersistableProductReview review = new PersistableProductReview();
++        PersistableCustomer customer = new PersistableCustomer();
++        customer.setEmailAddress("review-api-" + System.nanoTime() + "@test.com");
++        customer.setPassword("clear123");
++        customer.setGender(CustomerGender.M.name());
++        customer.setLanguage("en");
++        customer.setStoreCode("DEFAULT");
++        Address address = new Address();
++        address.setFirstName("Review");
++        address.setLastName("Tester");
++        address.setCountry("BE");
++        customer.setBilling(address);
++        ResponseEntity<PersistableCustomer> registered = testRestTemplate.postForEntity(
++                "/api/v1/customer/register", new HttpEntity<>(customer, getHeader()), PersistableCustomer.class);
++        review.setCustomerId(registered.getBody().getId());
++        review.setProductId(productId);
++        review.setLanguage("en");
++        review.setRating(2D);
++        review.setDescription("API lifecycle review");
++
++        ResponseEntity<PersistableProductReview> created = testRestTemplate.postForEntity(
++                path, new HttpEntity<>(review, getHeader()), PersistableProductReview.class);
++        assertThat(created.getStatusCode(), is(CREATED));
++        Long reviewId = created.getBody().getId();
++
++        review.setId(reviewId);
++        review.setRating(4D);
++        ResponseEntity<PersistableProductReview> updated = testRestTemplate.exchange(
++                path + "/" + reviewId, HttpMethod.PUT,
++                new HttpEntity<>(review, getHeader()), PersistableProductReview.class);
++        assertThat(updated.getStatusCode(), is(OK));
++
++        ResponseEntity<Map> productResponse = testRestTemplate.getForEntity(
++                "/api/v2/product/" + sku + "?store=DEFAULT", Map.class);
++        assertThat(productResponse.getBody().get("rating"), is(4.0));
++        assertThat(productResponse.getBody().get("ratingCount"), is(1));
++
++        ResponseEntity<Void> deleted = testRestTemplate.exchange(
++                path + "/" + reviewId, HttpMethod.DELETE,
++                new HttpEntity<>(getHeader()), Void.class);
++        assertThat(deleted.getStatusCode(), is(OK));
++
++        ResponseEntity<Void> missing = testRestTemplate.exchange(
++                path + "/" + reviewId, HttpMethod.DELETE,
++                new HttpEntity<>(getHeader()), Void.class);
++        assertThat(missing.getStatusCode(), is(NOT_FOUND));
++    }
++}

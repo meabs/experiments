@@ -1,0 +1,186 @@
+diff --git a/sm-core/src/main/java/com/salesmanager/core/business/services/common/generic/SalesManagerEntityServiceImpl.java b/sm-core/src/main/java/com/salesmanager/core/business/services/common/generic/SalesManagerEntityServiceImpl.java
+index 994bbfc..625d4d9 100755
+--- a/sm-core/src/main/java/com/salesmanager/core/business/services/common/generic/SalesManagerEntityServiceImpl.java
++++ b/sm-core/src/main/java/com/salesmanager/core/business/services/common/generic/SalesManagerEntityServiceImpl.java
+@@ -36,7 +36,7 @@ public abstract class SalesManagerEntityServiceImpl<K extends Serializable & Com
+ 
+ 
+ 	public E getById(K id) {
+-		return repository.getOne(id);
++		return repository.findById(id).orElse(null);
+ 	}
+ 
+ 	
+@@ -84,4 +84,4 @@ public abstract class SalesManagerEntityServiceImpl<K extends Serializable & Com
+ 		return repository.saveAndFlush(entity);
+ 	}
+ 
+-}
+\ No newline at end of file
++}
+diff --git a/sm-shop/src/main/java/com/salesmanager/shop/store/api/v1/customer/CustomerReviewApi.java b/sm-shop/src/main/java/com/salesmanager/shop/store/api/v1/customer/CustomerReviewApi.java
+index 6448b96..4fee01a 100755
+--- a/sm-shop/src/main/java/com/salesmanager/shop/store/api/v1/customer/CustomerReviewApi.java
++++ b/sm-shop/src/main/java/com/salesmanager/shop/store/api/v1/customer/CustomerReviewApi.java
+@@ -85,7 +85,7 @@ public class CustomerReviewApi {
+     return customerFacade.getAllCustomerReviewsByReviewed(id, merchantStore, language);
+   }
+ 
+-	@PutMapping("/private/customers/{id}/reviews/{reviewid}")
++	@PutMapping("/private/customers/{id}/reviews/{reviewId}")
+   public PersistableCustomerReview update(
+       @PathVariable final Long id,
+       @PathVariable final Long reviewId,
+diff --git a/sm-shop/src/main/java/com/salesmanager/shop/store/controller/customer/facade/CustomerFacadeImpl.java b/sm-shop/src/main/java/com/salesmanager/shop/store/controller/customer/facade/CustomerFacadeImpl.java
+index 60fbf4b..c1505ab 100755
+--- a/sm-shop/src/main/java/com/salesmanager/shop/store/controller/customer/facade/CustomerFacadeImpl.java
++++ b/sm-shop/src/main/java/com/salesmanager/shop/store/controller/customer/facade/CustomerFacadeImpl.java
+@@ -10,6 +10,7 @@ import java.util.List;
+ import java.util.Locale;
+ import java.util.Map;
+ import java.util.Optional;
++import javax.persistence.EntityNotFoundException;
+ import java.util.stream.Collectors;
+ import javax.inject.Inject;
+ import org.apache.commons.collections4.CollectionUtils;
+@@ -792,8 +793,12 @@ public class CustomerFacadeImpl implements CustomerFacade {
+   }
+ 
+   private CustomerReview getCustomerReviewById(Long reviewId) {
+-    return Optional.ofNullable(customerReviewService.getById(reviewId))
+-        .orElseThrow(() -> new ResourceNotFoundException("Customer review with id " + reviewId + " does not exist"));
++    try {
++      return Optional.ofNullable(customerReviewService.getById(reviewId))
++          .orElseThrow(() -> new ResourceNotFoundException("Customer review with id " + reviewId + " does not exist"));
++    } catch (EntityNotFoundException e) {
++      throw new ResourceNotFoundException("Customer review with id " + reviewId + " does not exist");
++    }
+   }
+ 
+   private void deleteCustomerReview(CustomerReview review) {
+@@ -1017,6 +1022,16 @@ public class CustomerFacadeImpl implements CustomerFacade {
+       throw new ServiceRuntimeException("Maximum rating score is " + Constants.MAX_REVIEW_RATING_SCORE);
+     }
+ 
++    customerReview.setReviewRating(review.getRating());
++    customerReview.getDescriptions().stream().findFirst().ifPresent(description ->
++        description.setDescription(review.getDescription()));
++    try {
++      customerReviewService.update(customerReview);
++    } catch (ServiceException e) {
++      throw new ServiceRuntimeException(e);
++    }
++
++    review.setId(reviewId);
+     review.setReviewedCustomer(id);
+     return review;
+   }
+diff --git a/sm-shop/src/test/java/com/salesmanager/test/shop/integration/customer/CustomerReviewApiIntegrationTest.java b/sm-shop/src/test/java/com/salesmanager/test/shop/integration/customer/CustomerReviewApiIntegrationTest.java
+new file mode 100644
+index 0000000..44a33f7
+--- /dev/null
++++ b/sm-shop/src/test/java/com/salesmanager/test/shop/integration/customer/CustomerReviewApiIntegrationTest.java
+@@ -0,0 +1,103 @@
++package com.salesmanager.test.shop.integration.customer;
++
++import static org.hamcrest.CoreMatchers.is;
++import static org.junit.Assert.assertThat;
++import static org.springframework.http.HttpStatus.NOT_FOUND;
++import static org.springframework.http.HttpStatus.OK;
++
++import javax.inject.Inject;
++import java.util.UUID;
++
++import org.junit.Test;
++import org.junit.runner.RunWith;
++import org.springframework.boot.test.context.SpringBootTest;
++import org.springframework.boot.test.context.SpringBootTest.WebEnvironment;
++import org.springframework.boot.test.web.client.TestRestTemplate;
++import org.springframework.http.HttpEntity;
++import org.springframework.http.HttpHeaders;
++import org.springframework.http.HttpMethod;
++import org.springframework.http.ResponseEntity;
++import org.springframework.test.context.junit4.SpringRunner;
++
++import com.salesmanager.core.business.services.customer.CustomerService;
++import com.salesmanager.core.business.services.customer.review.CustomerReviewService;
++import com.salesmanager.core.business.services.reference.language.LanguageService;
++import com.salesmanager.core.model.customer.review.CustomerReview;
++import com.salesmanager.core.model.customer.review.CustomerReviewDescription;
++import com.salesmanager.shop.application.ShopApplication;
++import com.salesmanager.shop.model.customer.PersistableCustomerReview;
++import com.salesmanager.shop.model.customer.PersistableCustomer;
++import com.salesmanager.core.model.customer.CustomerGender;
++import com.salesmanager.shop.model.customer.address.Address;
++import com.salesmanager.shop.populator.customer.ReadableCustomerList;
++import com.salesmanager.test.shop.common.ServicesTestSupport;
++
++@RunWith(SpringRunner.class)
++@SpringBootTest(classes = ShopApplication.class, webEnvironment = WebEnvironment.RANDOM_PORT)
++public class CustomerReviewApiIntegrationTest extends ServicesTestSupport {
++
++  @Inject
++  private CustomerService customerService;
++
++  @Inject
++  private CustomerReviewService customerReviewService;
++
++  @Inject
++  private LanguageService languageService;
++
++  @Test
++  public void updateReviewChangesRatingAndTextAndMissingReviewIsNotFound() throws Exception {
++    Long reviewerId = registerTestCustomer();
++    Long reviewedId = registerTestCustomer();
++    CustomerReview stored = new CustomerReview();
++    stored.setCustomer(customerService.getById(reviewerId));
++    stored.setReviewedCustomer(customerService.getById(reviewedId));
++    stored.setReviewRating(2D);
++    CustomerReviewDescription description = new CustomerReviewDescription();
++    description.setDescription("original text");
++    description.setName("-");
++    description.setLanguage(languageService.getByCode("en"));
++    description.setCustomerReview(stored);
++    stored.getDescriptions().add(description);
++    customerReviewService.create(stored);
++
++    try {
++      PersistableCustomerReview update = new PersistableCustomerReview();
++      update.setCustomerId(reviewerId);
++      update.setReviewedCustomer(reviewedId);
++      update.setRating(5D);
++      update.setDescription("corrected text");
++      HttpHeaders headers = getHeader();
++      ResponseEntity<PersistableCustomerReview> response = testRestTemplate.exchange(
++          "/api/v1/private/customers/" + reviewedId + "/reviews/" + stored.getId(), HttpMethod.PUT,
++          new HttpEntity<>(update, headers), PersistableCustomerReview.class);
++
++      assertThat(response.getStatusCode(), is(OK));
++      assertThat(response.getBody().getRating(), is(5D));
++      assertThat(response.getBody().getDescription(), is("corrected text"));
++
++      ResponseEntity<String> missing = testRestTemplate.exchange(
++          "/api/v1/private/customers/" + reviewedId + "/reviews/999999999", HttpMethod.DELETE,
++          new HttpEntity<>(headers), String.class);
++      assertThat(missing.getStatusCode(), is(NOT_FOUND));
++    } finally {
++      customerReviewService.delete(stored);
++    }
++  }
++
++  private Long registerTestCustomer() {
++    PersistableCustomer customer = new PersistableCustomer();
++    customer.setEmailAddress(UUID.randomUUID() + "@test.com");
++    customer.setPassword("clear123");
++    customer.setGender(CustomerGender.M.name());
++    customer.setLanguage("en");
++    Address address = new Address();
++    address.setFirstName("review");
++    address.setLastName("test");
++    address.setCountry("BE");
++    customer.setBilling(address);
++    customer.setStoreCode("DEFAULT");
++    return testRestTemplate.postForEntity("/api/v1/customer/register", new HttpEntity<>(customer),
++        PersistableCustomer.class).getBody().getId();
++  }
++}

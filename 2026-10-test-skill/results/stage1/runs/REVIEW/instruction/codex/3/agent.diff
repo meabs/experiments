@@ -1,0 +1,180 @@
+diff --git a/sm-shop/src/main/java/com/salesmanager/shop/store/api/v1/product/ProductReviewApi.java b/sm-shop/src/main/java/com/salesmanager/shop/store/api/v1/product/ProductReviewApi.java
+index 688493e..584d8cc 100755
+--- a/sm-shop/src/main/java/com/salesmanager/shop/store/api/v1/product/ProductReviewApi.java
++++ b/sm-shop/src/main/java/com/salesmanager/shop/store/api/v1/product/ProductReviewApi.java
+@@ -68,23 +68,22 @@ public class ProductReviewApi {
+       HttpServletResponse response) {
+ 
+     try {
++      review.setProductId(id);
++
+       // rating already exist
+       ProductReview prodReview =
+           productReviewService.getByProductAndCustomer(
+               review.getProductId(), review.getCustomerId());
+       if (prodReview != null) {
+-        response.sendError(500, "A review already exist for this customer and product");
++        response.sendError(HttpStatus.CONFLICT.value(), "A review already exist for this customer and product");
+         return null;
+       }
+ 
+-      // rating maximum 5
+-      if (review.getRating() > Constants.MAX_REVIEW_RATING_SCORE) {
+-        response.sendError(503, "Maximum rating score is " + Constants.MAX_REVIEW_RATING_SCORE);
++      if (!isValidRating(review)) {
++        response.sendError(HttpStatus.BAD_REQUEST.value(), "Rating must be between 1 and " + Constants.MAX_REVIEW_RATING_SCORE);
+         return null;
+       }
+ 
+-      review.setProductId(id);
+-
+       productCommonFacade.saveOrUpdateReview(review, merchantStore, language);
+ 
+       return review;
+@@ -152,7 +151,7 @@ public class ProductReviewApi {
+   })
+   public PersistableProductReview update(
+       @PathVariable final Long id,
+-      @PathVariable final Long reviewId,
++      @PathVariable("reviewid") final Long reviewId,
+       @Valid @RequestBody PersistableProductReview review,
+       @ApiIgnore MerchantStore merchantStore,
+       @ApiIgnore Language language,
+@@ -171,9 +170,8 @@ public class ProductReviewApi {
+         return null;
+       }
+ 
+-      // rating maximum 5
+-      if (review.getRating() > Constants.MAX_REVIEW_RATING_SCORE) {
+-        response.sendError(503, "Maximum rating score is " + Constants.MAX_REVIEW_RATING_SCORE);
++      if (!isValidRating(review)) {
++        response.sendError(HttpStatus.BAD_REQUEST.value(), "Rating must be between 1 and " + Constants.MAX_REVIEW_RATING_SCORE);
+         return null;
+       }
+ 
+@@ -194,6 +192,11 @@ public class ProductReviewApi {
+     }
+   }
+ 
++  private boolean isValidRating(PersistableProductReview review) {
++    return review.getRating() != null && review.getRating() >= 1
++        && review.getRating() <= Constants.MAX_REVIEW_RATING_SCORE;
++  }
++
+   @RequestMapping(
+       value = {
+         "/private/products/{id}/reviews/{reviewid}",
+diff --git a/sm-shop/src/test/java/com/salesmanager/test/shop/api/ProductReviewApiTest.java b/sm-shop/src/test/java/com/salesmanager/test/shop/api/ProductReviewApiTest.java
+new file mode 100644
+index 0000000..c454c90
+--- /dev/null
++++ b/sm-shop/src/test/java/com/salesmanager/test/shop/api/ProductReviewApiTest.java
+@@ -0,0 +1,108 @@
++package com.salesmanager.test.shop.api;
++
++import static org.mockito.ArgumentMatchers.any;
++import static org.mockito.Mockito.never;
++import static org.mockito.Mockito.verify;
++import static org.mockito.Mockito.when;
++import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
++import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put;
++import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
++
++import org.junit.Before;
++import org.junit.Test;
++import org.junit.runner.RunWith;
++import org.mockito.InjectMocks;
++import org.mockito.Mock;
++import org.mockito.junit.MockitoJUnitRunner;
++import org.springframework.core.MethodParameter;
++import org.springframework.http.converter.json.MappingJackson2HttpMessageConverter;
++import org.springframework.test.web.servlet.MockMvc;
++import org.springframework.test.web.servlet.setup.MockMvcBuilders;
++import org.springframework.web.bind.support.WebDataBinderFactory;
++import org.springframework.web.context.request.NativeWebRequest;
++import org.springframework.web.method.support.HandlerMethodArgumentResolver;
++import org.springframework.web.method.support.ModelAndViewContainer;
++
++import com.fasterxml.jackson.databind.ObjectMapper;
++import com.salesmanager.core.business.services.catalog.product.review.ProductReviewService;
++import com.salesmanager.core.model.catalog.product.review.ProductReview;
++import com.salesmanager.core.model.merchant.MerchantStore;
++import com.salesmanager.core.model.reference.language.Language;
++import com.salesmanager.shop.store.api.v1.product.ProductReviewApi;
++import com.salesmanager.shop.store.controller.product.facade.ProductCommonFacade;
++
++@RunWith(MockitoJUnitRunner.class)
++public class ProductReviewApiTest {
++
++  @Mock private ProductCommonFacade productCommonFacade;
++  @Mock private ProductReviewService productReviewService;
++  @InjectMocks private ProductReviewApi api;
++  private MockMvc client;
++
++  @Before
++  public void setUp() {
++    client = MockMvcBuilders.standaloneSetup(api)
++        .setMessageConverters(new MappingJackson2HttpMessageConverter())
++        .setCustomArgumentResolvers(new FixedArgumentResolver())
++        .build();
++  }
++
++  @Test
++  public void rejectsOutOfRangeRatingsAndDuplicateReviewsThroughApi() throws Exception {
++    when(productReviewService.getByProductAndCustomer(42L, 7L)).thenReturn(null);
++
++    for (double rating : new double[] {0, -1, 6}) {
++      client.perform(post("/api/v1/private/products/42/reviews")
++          .contentType("application/json")
++          .content(reviewJson(rating, 7L)))
++          .andExpect(status().isBadRequest());
++    }
++    verify(productCommonFacade, never()).saveOrUpdateReview(any(), any(), any());
++
++    ProductReview existing = new ProductReview();
++    when(productReviewService.getByProductAndCustomer(42L, 7L)).thenReturn(existing);
++    client.perform(post("/api/v1/private/products/42/reviews")
++        .contentType("application/json")
++        .content(reviewJson(4, 7L)))
++        .andExpect(status().isConflict());
++    verify(productCommonFacade, never()).saveOrUpdateReview(any(), any(), any());
++  }
++
++  @Test
++  public void rejectsOutOfRangeEditThroughApi() throws Exception {
++    ProductReview existing = new ProductReview();
++    com.salesmanager.core.model.customer.Customer customer =
++        new com.salesmanager.core.model.customer.Customer();
++    customer.setId(7L);
++    existing.setCustomer(customer);
++    when(productReviewService.getById(9L)).thenReturn(existing);
++
++    client.perform(put("/api/v1/private/products/42/reviews/9")
++        .contentType("application/json")
++        .content(reviewJson(0, 7L)))
++        .andExpect(status().isBadRequest());
++    verify(productCommonFacade, never()).saveOrUpdateReview(any(), any(), any());
++  }
++
++  private String reviewJson(double rating, Long customerId) throws Exception {
++    return new ObjectMapper().writeValueAsString(new Object() {
++      public final Long customerIdValue = customerId;
++      public final double ratingValue = rating;
++      public final String description = "review";
++      public Long getCustomerId() { return customerIdValue; }
++      public double getRating() { return ratingValue; }
++      public String getDescription() { return description; }
++    });
++  }
++
++  private static class FixedArgumentResolver implements HandlerMethodArgumentResolver {
++    public boolean supportsParameter(MethodParameter parameter) {
++      return parameter.getParameterType() == MerchantStore.class
++          || parameter.getParameterType() == Language.class;
++    }
++    public Object resolveArgument(MethodParameter parameter, ModelAndViewContainer container,
++        NativeWebRequest request, WebDataBinderFactory binderFactory) {
++      return null;
++    }
++  }
++}

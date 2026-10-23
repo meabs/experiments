@@ -1,0 +1,142 @@
+diff --git a/sm-core/src/main/java/com/salesmanager/core/business/services/customer/review/CustomerReviewServiceImpl.java b/sm-core/src/main/java/com/salesmanager/core/business/services/customer/review/CustomerReviewServiceImpl.java
+index 6f50e4a..286a6e7 100755
+--- a/sm-core/src/main/java/com/salesmanager/core/business/services/customer/review/CustomerReviewServiceImpl.java
++++ b/sm-core/src/main/java/com/salesmanager/core/business/services/customer/review/CustomerReviewServiceImpl.java
+@@ -30,6 +30,11 @@ public class CustomerReviewServiceImpl extends
+ 			super(customerReviewRepository);
+ 			this.customerReviewRepository = customerReviewRepository;
+ 	}
++
++	@Override
++	public CustomerReview getById(Long id) {
++		return customerReviewRepository.findOne(id);
++	}
+ 	
+ 	
+ 	private void saveOrUpdate(CustomerReview review) throws ServiceException {
+@@ -77,7 +82,18 @@ public class CustomerReviewServiceImpl extends
+ 	}
+ 	
+ 	public void update(CustomerReview review) throws ServiceException {
+-		this.saveOrUpdate(review);
++		Validate.notNull(review,"CustomerReview cannot be null");
++		Customer customer = customerService.getById(review.getReviewedCustomer().getId());
++		CustomerReview previous = customerReviewRepository.findOne(review.getId());
++		BigDecimal average = customer.getCustomerReviewAvg() == null ? BigDecimal.ZERO : customer.getCustomerReviewAvg();
++		int count = customer.getCustomerReviewCount() == null ? 0 : customer.getCustomerReviewCount();
++		if (count > 0 && previous != null) {
++			average = average.add(new BigDecimal(review.getReviewRating() - previous.getReviewRating())
++				.divide(new BigDecimal(count), 10, java.math.RoundingMode.HALF_UP));
++		}
++		customer.setCustomerReviewAvg(average);
++		super.save(review);
++		customerService.update(customer);
+ 	}
+ 	
+ 	public void create(CustomerReview review) throws ServiceException {
+diff --git a/sm-shop/src/main/java/com/salesmanager/shop/store/api/exception/ResourceNotFoundException.java b/sm-shop/src/main/java/com/salesmanager/shop/store/api/exception/ResourceNotFoundException.java
+index b0abe73..518208c 100755
+--- a/sm-shop/src/main/java/com/salesmanager/shop/store/api/exception/ResourceNotFoundException.java
++++ b/sm-shop/src/main/java/com/salesmanager/shop/store/api/exception/ResourceNotFoundException.java
+@@ -1,8 +1,11 @@
+ package com.salesmanager.shop.store.api.exception;
+ 
+-import org.apache.commons.lang3.StringUtils;
+-
+-public class ResourceNotFoundException extends ServiceRuntimeException {
++import org.apache.commons.lang3.StringUtils;
++import org.springframework.http.HttpStatus;
++import org.springframework.web.bind.annotation.ResponseStatus;
++
++@ResponseStatus(HttpStatus.NOT_FOUND)
++public class ResourceNotFoundException extends ServiceRuntimeException {
+ 
+   private final static String ERROR_CODE = "404";
+     /**
+diff --git a/sm-shop/src/main/java/com/salesmanager/shop/store/controller/customer/facade/CustomerFacadeImpl.java b/sm-shop/src/main/java/com/salesmanager/shop/store/controller/customer/facade/CustomerFacadeImpl.java
+index 60fbf4b..937cdc8 100755
+--- a/sm-shop/src/main/java/com/salesmanager/shop/store/controller/customer/facade/CustomerFacadeImpl.java
++++ b/sm-shop/src/main/java/com/salesmanager/shop/store/controller/customer/facade/CustomerFacadeImpl.java
+@@ -1017,6 +1017,16 @@ public class CustomerFacadeImpl implements CustomerFacade {
+       throw new ServiceRuntimeException("Maximum rating score is " + Constants.MAX_REVIEW_RATING_SCORE);
+     }
+ 
++    customerReview.setReviewRating(review.getRating());
++    if (customerReview.getDescriptions() != null && !customerReview.getDescriptions().isEmpty()) {
++      customerReview.getDescriptions().iterator().next().setDescription(review.getDescription());
++    }
++    try {
++      customerReviewService.update(customerReview);
++    } catch (ServiceException e) {
++      throw new ServiceRuntimeException(e);
++    }
++    review.setId(reviewId);
+     review.setReviewedCustomer(id);
+     return review;
+   }
+diff --git a/sm-shop/src/main/java/com/salesmanager/shop/store/controller/error/ShopErrorController.java b/sm-shop/src/main/java/com/salesmanager/shop/store/controller/error/ShopErrorController.java
+index 15e2444..6de241b 100755
+--- a/sm-shop/src/main/java/com/salesmanager/shop/store/controller/error/ShopErrorController.java
++++ b/sm-shop/src/main/java/com/salesmanager/shop/store/controller/error/ShopErrorController.java
+@@ -15,12 +15,20 @@ import org.springframework.web.bind.annotation.RequestMapping;
+ import org.springframework.web.bind.annotation.RequestMethod;
+ import org.springframework.web.bind.annotation.ResponseStatus;
+ import org.springframework.web.servlet.ModelAndView;
++import com.salesmanager.shop.store.api.exception.ResourceNotFoundException;
+ 
+ @ControllerAdvice("com.salesmanager.shop.store.controller")
+ public class ShopErrorController {
+ 	
+ 	
+ 	private static final Logger LOGGER = LoggerFactory.getLogger(ShopErrorController.class);
++
++	@ExceptionHandler(ResourceNotFoundException.class)
++	@ResponseStatus(value = HttpStatus.NOT_FOUND)
++	@Produces({MediaType.APPLICATION_JSON})
++	public ModelAndView handleNotFound(ResourceNotFoundException ex) {
++		return new ModelAndView("error/generic_error");
++	}
+ 	
+     
+ 	@ExceptionHandler(Exception.class)
+diff --git a/sm-shop/src/test/java/com/salesmanager/test/shop/integration/customer/CustomerReviewApiIntegrationTest.java b/sm-shop/src/test/java/com/salesmanager/test/shop/integration/customer/CustomerReviewApiIntegrationTest.java
+new file mode 100644
+index 0000000..45f4ef7
+--- /dev/null
++++ b/sm-shop/src/test/java/com/salesmanager/test/shop/integration/customer/CustomerReviewApiIntegrationTest.java
+@@ -0,0 +1,35 @@
++package com.salesmanager.test.shop.integration.customer;
++
++import static org.junit.Assert.assertEquals;
++
++import org.junit.Test;
++import org.junit.runner.RunWith;
++import org.springframework.boot.test.context.SpringBootTest;
++import org.springframework.boot.test.context.SpringBootTest.WebEnvironment;
++import org.springframework.http.HttpEntity;
++import org.springframework.http.HttpMethod;
++import org.springframework.http.HttpStatus;
++import org.springframework.http.ResponseEntity;
++import org.springframework.test.context.junit4.SpringRunner;
++
++import com.salesmanager.shop.application.ShopApplication;
++import com.salesmanager.test.shop.common.ServicesTestSupport;
++
++@RunWith(SpringRunner.class)
++@SpringBootTest(classes = ShopApplication.class, webEnvironment = WebEnvironment.RANDOM_PORT)
++public class CustomerReviewApiIntegrationTest extends ServicesTestSupport {
++
++    @Test
++    public void missingReviewIsNotFoundForUpdateAndDelete() {
++        HttpEntity<String> request = new HttpEntity<>("{\"rating\":5,\"description\":\"corrected\"}", getHeader());
++
++        ResponseEntity<String> update = testRestTemplate.exchange(
++                "/api/v1/private/customers/1/reviews/9223372036854775807", HttpMethod.PUT, request, String.class);
++        ResponseEntity<String> delete = testRestTemplate.exchange(
++                "/api/v1/private/customers/1/reviews/9223372036854775807", HttpMethod.DELETE,
++                new HttpEntity<>(getHeader()), String.class);
++
++        assertEquals(HttpStatus.NOT_FOUND, update.getStatusCode());
++        assertEquals(HttpStatus.NOT_FOUND, delete.getStatusCode());
++    }
++}

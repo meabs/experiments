@@ -1,0 +1,163 @@
+diff --git a/sm-core/src/main/java/com/salesmanager/core/business/repositories/catalog/category/CategoryRepositoryImpl.java b/sm-core/src/main/java/com/salesmanager/core/business/repositories/catalog/category/CategoryRepositoryImpl.java
+index ba6ba6f..50f98f9 100755
+--- a/sm-core/src/main/java/com/salesmanager/core/business/repositories/catalog/category/CategoryRepositoryImpl.java
++++ b/sm-core/src/main/java/com/salesmanager/core/business/repositories/catalog/category/CategoryRepositoryImpl.java
+@@ -1,6 +1,5 @@
+ package com.salesmanager.core.business.repositories.catalog.category;
+ 
+-import java.util.Date;
+ import java.util.List;
+ 
+ import javax.persistence.EntityManager;
+@@ -21,20 +20,16 @@ public class CategoryRepositoryImpl implements CategoryRepositoryCustom {
+ 
+ 		
+ 		StringBuilder qs = new StringBuilder();
+-		qs.append("select category.id, count(product.id) from Product product ");
+-		qs.append("inner join product.categories category ");
+-		qs.append("where category.id in (:cid) ");
+-		qs.append("and product.available=true and product.dateAvailable<=:dt ");
+-		qs.append("group by category.id");
++		qs.append("select parent.id, count(distinct product.id) from Product product ");
++		qs.append("inner join product.categories category, Category parent ");
++		qs.append("where parent.id in (:cid) ");
++		qs.append("and (category.id = parent.id or category.lineage like concat('%/', parent.id, '/%')) ");
++		qs.append("group by parent.id");
+ 		
+     	String hql = qs.toString();
+ 		Query q = this.em.createQuery(hql);
+ 
+     	q.setParameter("cid", categoryIds);
+-    	q.setParameter("dt", new Date());
+-
+-
+-    	
+     	@SuppressWarnings("unchecked")
+ 		List<Object[]> counts =  q.getResultList();
+ 
+diff --git a/sm-shop/src/main/java/com/salesmanager/shop/store/facade/category/CategoryFacadeImpl.java b/sm-shop/src/main/java/com/salesmanager/shop/store/facade/category/CategoryFacadeImpl.java
+index 3d9067d..84bdb82 100755
+--- a/sm-shop/src/main/java/com/salesmanager/shop/store/facade/category/CategoryFacadeImpl.java
++++ b/sm-shop/src/main/java/com/salesmanager/shop/store/facade/category/CategoryFacadeImpl.java
+@@ -113,6 +113,17 @@ public class CategoryFacadeImpl implements CategoryFacade {
+ 			Map<Long, ReadableCategory> readableCategoryMap = readableCategories.stream()
+ 					.collect(Collectors.toMap(ReadableCategory::getId, Function.identity()));
+ 
++			if (!readableCategoryMap.isEmpty()) {
++				List<Object[]> counts = categoryService.countProductsByCategories(parent,
++						new ArrayList<>(readableCategoryMap.keySet()));
++				for (Object[] productCount : counts) {
++					ReadableCategory category = readableCategoryMap.get((Long) productCount[0]);
++					if (category != null) {
++						category.setProductCount(((Number) productCount[1]).intValue());
++					}
++				}
++			}
++
+ 			readableCategories.stream()
+ 					// .filter(ReadableCategory::isVisible)
+ 					.filter(cat -> Objects.nonNull(cat.getParent()))
+diff --git a/sm-shop/src/test/java/com/salesmanager/test/shop/integration/category/CategoryManagementAPIIntegrationTest.java b/sm-shop/src/test/java/com/salesmanager/test/shop/integration/category/CategoryManagementAPIIntegrationTest.java
+index 86987a8..c703aef 100755
+--- a/sm-shop/src/test/java/com/salesmanager/test/shop/integration/category/CategoryManagementAPIIntegrationTest.java
++++ b/sm-shop/src/test/java/com/salesmanager/test/shop/integration/category/CategoryManagementAPIIntegrationTest.java
+@@ -7,6 +7,7 @@ import static org.junit.Assert.assertThat;
+ import static org.springframework.http.HttpStatus.CREATED;
+ import static org.springframework.http.HttpStatus.OK;
+ import java.util.ArrayList;
++import java.math.BigDecimal;
+ import java.util.List;
+ import org.junit.Test;
+ import org.junit.runner.RunWith;
+@@ -15,6 +16,7 @@ import org.springframework.boot.test.context.SpringBootTest;
+ import org.springframework.boot.test.context.SpringBootTest.WebEnvironment;
+ import org.springframework.boot.test.web.client.TestRestTemplate;
+ import org.springframework.http.HttpEntity;
++import org.springframework.http.HttpHeaders;
+ import org.springframework.http.HttpMethod;
+ import org.springframework.http.HttpStatus;
+ import org.springframework.http.ResponseEntity;
+@@ -62,6 +64,76 @@ public class CategoryManagementAPIIntegrationTest extends ServicesTestSupport {
+         }
+     }
+ 
++    @Test
++    public void categoryProductCountIncludesDescendantsWithoutDuplicates() throws Exception {
++        HttpHeaders headers = getHeader();
++        PersistableCategory root = createCategory("count-root", null, 0, headers);
++        PersistableCategory child = createCategory("count-child", root.getId(), 1, headers);
++        PersistableCategory grandchild = createCategory("count-grandchild", child.getId(), 2, headers);
++
++        createProduct("count-product-one", categoryRef(child, "count-child"), categoryRef(grandchild, "count-grandchild"), headers);
++        createProduct("count-product-two", categoryRef(grandchild, "count-grandchild"), headers);
++
++        ResponseEntity<ReadableCategoryList> response = testRestTemplate.exchange(
++                "/api/v1/category?name=count-root", HttpMethod.GET, new HttpEntity<>(headers), ReadableCategoryList.class);
++        assertThat(response.getStatusCode(), is(OK));
++
++        ReadableCategory listedRoot = response.getBody().getCategories().stream()
++                .filter(category -> root.getId().equals(category.getId())).findFirst().orElse(null);
++        assertNotNull(listedRoot);
++        assertThat(listedRoot.getProductCount(), is(2));
++        assertThat(listedRoot.getChildren().get(0).getProductCount(), is(2));
++        assertThat(listedRoot.getChildren().get(0).getChildren().get(0).getProductCount(), is(2));
++    }
++
++    private PersistableCategory createCategory(String code, Long parentId, int depth, HttpHeaders headers) {
++        PersistableCategory category = category(code);
++        category.setDepth(depth);
++        if (parentId != null) {
++            Category parent = new Category();
++            parent.setId(parentId);
++            category.setParent(parent);
++        }
++        ResponseEntity<PersistableCategory> response = testRestTemplate.postForEntity(
++                "/api/v1/private/category?store=" + Constants.DEFAULT_STORE,
++                new HttpEntity<>(category, headers), PersistableCategory.class);
++        assertThat(response.getStatusCode(), is(CREATED));
++        return response.getBody();
++    }
++
++    private Category categoryRef(PersistableCategory category, String code) {
++        Category reference = new Category();
++        reference.setId(category.getId());
++        reference.setCode(code);
++        return reference;
++    }
++
++    private void createProduct(String code, Category firstCategory, Category secondCategory, HttpHeaders headers) {
++        createProduct(code, new Category[] { firstCategory, secondCategory }, headers);
++    }
++
++    private void createProduct(String code, Category category, HttpHeaders headers) {
++        createProduct(code, new Category[] { category }, headers);
++    }
++
++    private void createProduct(String code, Category[] categoryRefs, HttpHeaders headers) {
++        PersistableProduct product = product(code);
++        List<Category> categories = new ArrayList<>();
++        for (Category category : categoryRefs) categories.add(category);
++        product.setCategories(categories);
++        product.setAvailable(true);
++        product.setPrice(BigDecimal.TEN);
++        product.setSku(code);
++        product.setQuantity(100);
++        ProductSpecification specifications = new ProductSpecification();
++        specifications.setManufacturer(com.salesmanager.core.model.catalog.product.manufacturer.Manufacturer.DEFAULT_MANUFACTURER);
++        product.setProductSpecifications(specifications);
++        ResponseEntity<PersistableProduct> response = testRestTemplate.postForEntity(
++                "/api/v1/private/product?store=" + Constants.DEFAULT_STORE,
++                new HttpEntity<>(product, headers), PersistableProduct.class);
++        assertThat(response.getStatusCode(), is(CREATED));
++    }
++
+     /**
+      * Creates - POST a category for a given store
+      *
+@@ -465,4 +537,4 @@ public class CategoryManagementAPIIntegrationTest extends ServicesTestSupport {
+     }
+         **/
+ 
+-}
+\ No newline at end of file
++}

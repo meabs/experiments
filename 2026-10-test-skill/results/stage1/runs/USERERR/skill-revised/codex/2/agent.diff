@@ -1,0 +1,182 @@
+diff --git a/sm-shop/src/main/java/com/salesmanager/shop/store/api/exception/RestErrorHandler.java b/sm-shop/src/main/java/com/salesmanager/shop/store/api/exception/RestErrorHandler.java
+index 054ea33..c8ddb47 100755
+--- a/sm-shop/src/main/java/com/salesmanager/shop/store/api/exception/RestErrorHandler.java
++++ b/sm-shop/src/main/java/com/salesmanager/shop/store/api/exception/RestErrorHandler.java
+@@ -8,7 +8,8 @@ import org.slf4j.Logger;
+ import org.slf4j.LoggerFactory;
+ import org.springframework.core.Ordered;
+ import org.springframework.core.annotation.Order;
+-import org.springframework.http.HttpStatus;
++import org.springframework.http.HttpStatus;
++import org.springframework.http.ResponseEntity;
+ import org.springframework.web.bind.annotation.ControllerAdvice;
+ import org.springframework.web.bind.annotation.ExceptionHandler;
+ import org.springframework.web.bind.annotation.RequestMapping;
+@@ -86,16 +87,23 @@ public class RestErrorHandler {
+         return errorEntity;
+     }
+ 
+-    @RequestMapping(produces = "application/json")
+-    @ExceptionHandler(RestApiException.class)
+-    @ResponseStatus(HttpStatus.BAD_REQUEST)
+-    public @ResponseBody ErrorEntity handleRestApiException(RestApiException exception) {
+-        log.error(exception.getErrorMessage(), exception);
+-
+-        ErrorEntity errorEntity = createErrorEntity(exception.getErrorCode(), exception.getErrorMessage(),
+-                exception.getLocalizedMessage());
+-        return errorEntity;
+-    }
++    @RequestMapping(produces = "application/json")
++    @ExceptionHandler(RestApiException.class)
++    public ResponseEntity<ErrorEntity> handleRestApiException(RestApiException exception) {
++        log.error(exception.getErrorMessage(), exception);
++
++        ErrorEntity errorEntity = createErrorEntity(exception.getErrorCode(), exception.getErrorMessage(),
++                exception.getLocalizedMessage());
++        HttpStatus status = HttpStatus.BAD_REQUEST;
++        if (exception.getErrorCode() != null) {
++            try {
++                status = HttpStatus.valueOf(Integer.parseInt(exception.getErrorCode()));
++            } catch (IllegalArgumentException ignored) {
++                // Keep the API's default bad-request status for non-HTTP error codes.
++            }
++        }
++        return ResponseEntity.status(status).body(errorEntity);
++    }
+ 
+     private ErrorEntity createErrorEntity(String errorCode, String message, String detailMessage) {
+         ErrorEntity errorEntity = new ErrorEntity();
+diff --git a/sm-shop/src/main/java/com/salesmanager/shop/store/facade/user/UserFacadeImpl.java b/sm-shop/src/main/java/com/salesmanager/shop/store/facade/user/UserFacadeImpl.java
+index 92a6764..52e589a 100755
+--- a/sm-shop/src/main/java/com/salesmanager/shop/store/facade/user/UserFacadeImpl.java
++++ b/sm-shop/src/main/java/com/salesmanager/shop/store/facade/user/UserFacadeImpl.java
+@@ -311,7 +311,7 @@ public class UserFacadeImpl implements UserFacade {
+ 			// check if user exists
+ 			User tempUser = userService.getByUserName(user.getUserName(), store.getCode());
+ 			if (tempUser != null) {
+-				throw new ServiceRuntimeException(
++				throw new com.salesmanager.shop.store.api.exception.RestApiException("409",
+ 						"User [" + user.getUserName() + "] already exists for store [" + store.getCode() + "]");
+ 			}
+ 			
+@@ -396,9 +396,9 @@ public class UserFacadeImpl implements UserFacade {
+ 		Validate.notNull(store, "store cannot be null");
+ 
+ 		try {
+-			User userModel = userService.getById(id);
++			User userModel = userService.findByStore(id, store.getCode());
+ 			if (userModel == null) {
+-				throw new ServiceRuntimeException("Cannot find user [" + user.getUserName() + "]");
++				throw new ResourceNotFoundException("Cannot find user [" + id + "]");
+ 			}
+ 			if (userModel.getId().longValue() != id.longValue()) {
+ 				throw new ServiceRuntimeException(
+@@ -492,9 +492,9 @@ public class UserFacadeImpl implements UserFacade {
+ 				throw new ServiceRuntimeException("Cannot find user [" + authenticatedUser + "]");
+ 			}
+ 
+-			User userModel = userService.getById(userId);
++			User userModel = userService.findByStore(userId, auth.getMerchantStore().getCode());
+ 			if (userModel == null) {
+-				throw new ServiceRuntimeException("Cannot find user [" + userId + "]");
++				throw new ResourceNotFoundException("Cannot find user [" + userId + "]");
+ 			}
+ 
+ 			/**
+@@ -502,7 +502,8 @@ public class UserFacadeImpl implements UserFacade {
+ 			 */
+ 
+ 			if (!securityFacade.matchPassword(userModel.getAdminPassword(), changePassword.getPassword())) {
+-				throw new ServiceRuntimeException("Actual password does not match for user [" + userId + "]");
++				throw new com.salesmanager.shop.store.api.exception.RestApiException("400",
++						"Actual password does not match for user [" + userId + "]");
+ 			}
+ 
+ 			/**
+diff --git a/sm-shop/src/test/java/com/salesmanager/test/shop/integration/user/UserApiIntegrationTest.java b/sm-shop/src/test/java/com/salesmanager/test/shop/integration/user/UserApiIntegrationTest.java
+index 47ccb8f..e28efd1 100755
+--- a/sm-shop/src/test/java/com/salesmanager/test/shop/integration/user/UserApiIntegrationTest.java
++++ b/sm-shop/src/test/java/com/salesmanager/test/shop/integration/user/UserApiIntegrationTest.java
+@@ -1,6 +1,8 @@
+ package com.salesmanager.test.shop.integration.user;
+ 
+ import static org.junit.Assert.assertNotNull;
++import static org.junit.Assert.assertEquals;
++import java.util.UUID;
+ import javax.inject.Inject;
+ import org.junit.Test;
+ import org.junit.runner.RunWith;
+@@ -8,6 +10,7 @@ import org.springframework.boot.test.context.SpringBootTest;
+ import org.springframework.boot.test.context.SpringBootTest.WebEnvironment;
+ import org.springframework.boot.test.web.client.TestRestTemplate;
+ import org.springframework.http.HttpEntity;
++import org.springframework.http.HttpHeaders;
+ import org.springframework.http.HttpMethod;
+ import org.springframework.http.HttpStatus;
+ import org.springframework.http.ResponseEntity;
+@@ -17,6 +20,7 @@ import com.salesmanager.shop.model.security.PersistableGroup;
+ import com.salesmanager.shop.model.user.PersistableUser;
+ import com.salesmanager.shop.model.user.ReadableUser;
+ import com.salesmanager.shop.model.user.UserPassword;
++import com.salesmanager.shop.store.api.exception.ErrorEntity;
+ import com.salesmanager.test.shop.common.ServicesTestSupport;
+ 
+ @SpringBootTest(classes = ShopApplication.class, webEnvironment = WebEnvironment.RANDOM_PORT)
+@@ -93,6 +97,57 @@ public class UserApiIntegrationTest extends ServicesTestSupport {
+       
+       
+   }
++
++  @Test
++  public void ordinaryUserErrorsHaveClientStatusAndDoNotChangePassword() {
++      String username = "api-errors-" + UUID.randomUUID() + "@test.com";
++      PersistableUser user = new PersistableUser();
++      user.setDefaultLanguage("en");
++      user.setEmailAddress(username);
++      user.setFirstName("API");
++      user.setLastName("Errors");
++      user.setUserName(username);
++      user.setPassword(CREATED_PASSWORD);
++      user.setRepeatPassword(CREATED_PASSWORD);
++      PersistableGroup group = new PersistableGroup();
++      group.setName("ADMIN");
++      user.getGroups().add(group);
++
++      HttpHeaders headers = getHeader();
++      ResponseEntity<ReadableUser> created = testRestTemplate.exchange("/api/v1/private/user/", HttpMethod.POST,
++          new HttpEntity<>(user, headers), ReadableUser.class);
++
++      ResponseEntity<ErrorEntity> duplicate = testRestTemplate.exchange("/api/v1/private/user/", HttpMethod.POST,
++          new HttpEntity<>(user, headers), ErrorEntity.class);
++      assertEquals(HttpStatus.CONFLICT, duplicate.getStatusCode());
++      assertNotNull(duplicate.getBody());
++
++      UserPassword wrongPassword = new UserPassword();
++      wrongPassword.setPassword("wrong-current");
++      wrongPassword.setChangePassword(NEW_CREATED_PASSWORD);
++      ResponseEntity<ErrorEntity> wrong = testRestTemplate.exchange("/api/v1/private/user/" + created.getBody().getId() + "/password",
++          HttpMethod.PATCH, new HttpEntity<>(wrongPassword, headers), ErrorEntity.class);
++      assertEquals(HttpStatus.BAD_REQUEST, wrong.getStatusCode());
++      assertNotNull(wrong.getBody());
++
++      UserPassword correctPassword = new UserPassword();
++      correctPassword.setPassword(CREATED_PASSWORD);
++      correctPassword.setChangePassword(NEW_CREATED_PASSWORD);
++      ResponseEntity<Void> unchanged = testRestTemplate.exchange("/api/v1/private/user/" + created.getBody().getId() + "/password",
++          HttpMethod.PATCH, new HttpEntity<>(correctPassword, headers), Void.class);
++      assertEquals(HttpStatus.OK, unchanged.getStatusCode());
++
++      PersistableUser update = new PersistableUser();
++      update.setUserName(username);
++      update.setDefaultLanguage("en");
++      ResponseEntity<ErrorEntity> missingUpdate = testRestTemplate.exchange("/api/v1/private/user/999999999", HttpMethod.PUT,
++          new HttpEntity<>(update, headers), ErrorEntity.class);
++      assertEquals(HttpStatus.NOT_FOUND, missingUpdate.getStatusCode());
++
++      ResponseEntity<ErrorEntity> missingPassword = testRestTemplate.exchange("/api/v1/private/user/999999999/password",
++          HttpMethod.PATCH, new HttpEntity<>(correctPassword, headers), ErrorEntity.class);
++      assertEquals(HttpStatus.NOT_FOUND, missingPassword.getStatusCode());
++  }
+   
+ 
+ 

@@ -1,0 +1,127 @@
+diff --git a/sm-shop/src/main/java/com/salesmanager/shop/store/api/exception/RestErrorHandler.java b/sm-shop/src/main/java/com/salesmanager/shop/store/api/exception/RestErrorHandler.java
+index 054ea33..c12774f 100755
+--- a/sm-shop/src/main/java/com/salesmanager/shop/store/api/exception/RestErrorHandler.java
++++ b/sm-shop/src/main/java/com/salesmanager/shop/store/api/exception/RestErrorHandler.java
+@@ -8,7 +8,8 @@ import org.slf4j.Logger;
+ import org.slf4j.LoggerFactory;
+ import org.springframework.core.Ordered;
+ import org.springframework.core.annotation.Order;
+-import org.springframework.http.HttpStatus;
++import org.springframework.http.HttpStatus;
++import org.springframework.http.ResponseEntity;
+ import org.springframework.web.bind.annotation.ControllerAdvice;
+ import org.springframework.web.bind.annotation.ExceptionHandler;
+ import org.springframework.web.bind.annotation.RequestMapping;
+@@ -43,7 +44,7 @@ public class RestErrorHandler {
+     @RequestMapping(produces = "application/json")
+     @ExceptionHandler(ServiceRuntimeException.class)
+     @ResponseStatus(HttpStatus.BAD_REQUEST)
+-    public @ResponseBody ErrorEntity handleServiceException(ServiceRuntimeException exception) {
++    public @ResponseBody ErrorEntity handleServiceException(ServiceRuntimeException exception) {
+         log.error(exception.getErrorMessage(), exception);
+         Throwable rootCause = exception.getCause();
+         while (rootCause.getCause() != null && rootCause.getCause() != rootCause) {
+@@ -52,7 +53,23 @@ public class RestErrorHandler {
+         ErrorEntity errorEntity = createErrorEntity(exception.getErrorCode()!=null?exception.getErrorCode():"500", exception.getErrorMessage(),
+         		rootCause.getMessage());
+         return errorEntity;
+-    }
++    }
++
++    @RequestMapping(produces = "application/json")
++    @ExceptionHandler(GenericRuntimeException.class)
++    public ResponseEntity<ErrorEntity> handleGenericRuntimeException(GenericRuntimeException exception) {
++        ErrorEntity errorEntity = createErrorEntity(exception.getErrorCode(), exception.getErrorMessage(),
++                exception.getLocalizedMessage());
++        HttpStatus status = HttpStatus.CONFLICT;
++        if (exception.getErrorCode() != null) {
++            try {
++                status = HttpStatus.valueOf(Integer.parseInt(exception.getErrorCode()));
++            } catch (IllegalArgumentException ignored) {
++                // Keep conflict as the default for duplicate customer errors.
++            }
++        }
++        return ResponseEntity.status(status).body(errorEntity);
++    }
+ 
+     @RequestMapping(produces = "application/json")
+     @ExceptionHandler(ConversionRuntimeException.class)
+diff --git a/sm-shop/src/main/java/com/salesmanager/shop/store/controller/customer/facade/CustomerFacadeImpl.java b/sm-shop/src/main/java/com/salesmanager/shop/store/controller/customer/facade/CustomerFacadeImpl.java
+index 60fbf4b..92f4960 100755
+--- a/sm-shop/src/main/java/com/salesmanager/shop/store/controller/customer/facade/CustomerFacadeImpl.java
++++ b/sm-shop/src/main/java/com/salesmanager/shop/store/controller/customer/facade/CustomerFacadeImpl.java
+@@ -82,6 +82,7 @@ import com.salesmanager.shop.populator.customer.ReadableCustomerReviewPopulator;
+ import com.salesmanager.shop.store.api.exception.ConversionRuntimeException;
+ import com.salesmanager.shop.store.api.exception.ResourceNotFoundException;
+ import com.salesmanager.shop.store.api.exception.ServiceRuntimeException;
++import com.salesmanager.shop.store.api.exception.GenericRuntimeException;
+ import com.salesmanager.shop.utils.EmailTemplatesUtils;
+ import com.salesmanager.shop.utils.EmailUtils;
+ import com.salesmanager.shop.utils.ImageFilePath;
+@@ -587,7 +588,7 @@ public class CustomerFacadeImpl implements CustomerFacade {
+ 	//set customer user name
+ 	customer.setUserName(customer.getEmailAddress());
+     if (userExist(customer.getUserName())) {
+-      throw new ServiceRuntimeException("User already exist");
++      throw new GenericRuntimeException("409", "Customer with email [" + customer.getEmailAddress() + "] is already registered");
+     }
+     //end user exists
+ 
+diff --git a/sm-shop/src/test/java/com/salesmanager/test/shop/integration/customer/CustomerRegistrationIntegrationTest.java b/sm-shop/src/test/java/com/salesmanager/test/shop/integration/customer/CustomerRegistrationIntegrationTest.java
+index c4e7163..1e2e168 100755
+--- a/sm-shop/src/test/java/com/salesmanager/test/shop/integration/customer/CustomerRegistrationIntegrationTest.java
++++ b/sm-shop/src/test/java/com/salesmanager/test/shop/integration/customer/CustomerRegistrationIntegrationTest.java
+@@ -4,6 +4,9 @@ import static org.hamcrest.core.Is.is;
+ import static org.junit.Assert.assertNotNull;
+ import static org.junit.Assert.assertThat;
+ import static org.springframework.http.HttpStatus.OK;
++import static org.springframework.http.HttpStatus.CONFLICT;
++import static org.junit.Assert.assertEquals;
++import java.util.UUID;
+ import org.junit.Test;
+ import org.junit.runner.RunWith;
+ import org.springframework.boot.test.context.SpringBootTest;
+@@ -16,6 +19,7 @@ import com.salesmanager.core.business.constants.Constants;
+ import com.salesmanager.core.model.customer.CustomerGender;
+ import com.salesmanager.shop.application.ShopApplication;
+ import com.salesmanager.shop.model.customer.PersistableCustomer;
++import com.salesmanager.shop.model.customer.ReadableCustomer;
+ import com.salesmanager.shop.model.customer.address.Address;
+ import com.salesmanager.shop.store.security.AuthenticationRequest;
+ import com.salesmanager.shop.store.security.AuthenticationResponse;
+@@ -54,4 +58,33 @@ public class CustomerRegistrationIntegrationTest extends ServicesTestSupport {
+ 
+     }
+ 
+-}
+\ No newline at end of file
++    @Test
++    public void duplicateCustomerEmailReturnsConflictForRegistrationAndAdminCreation() {
++        String email = "duplicate-" + UUID.randomUUID() + "@test.com";
++        PersistableCustomer customer = customer(email);
++        HttpEntity<PersistableCustomer> entity = new HttpEntity<>(customer, getHeader());
++
++        assertThat(testRestTemplate.postForEntity("/api/v1/customer/register", entity, PersistableCustomer.class).getStatusCode(), is(OK));
++        int customerCount = fetchCustomers().getCustomers().size();
++
++        assertThat(testRestTemplate.postForEntity("/api/v1/customer/register", entity, PersistableCustomer.class).getStatusCode(), is(CONFLICT));
++        assertThat(testRestTemplate.postForEntity("/api/v1/private/customer", entity, ReadableCustomer.class).getStatusCode(), is(CONFLICT));
++        assertEquals(customerCount, fetchCustomers().getCustomers().size());
++    }
++
++    private PersistableCustomer customer(String email) {
++        PersistableCustomer customer = new PersistableCustomer();
++        customer.setEmailAddress(email);
++        customer.setPassword("clear123");
++        customer.setGender(CustomerGender.M.name());
++        customer.setLanguage("en");
++        Address billing = new Address();
++        billing.setFirstName("duplicate");
++        billing.setLastName("customer");
++        billing.setCountry("BE");
++        customer.setBilling(billing);
++        customer.setStoreCode(Constants.DEFAULT_STORE);
++        return customer;
++    }
++
++}

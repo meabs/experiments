@@ -1,0 +1,148 @@
+diff --git a/sm-shop/src/main/java/com/salesmanager/shop/store/api/exception/CategoryCodeAlreadyExistsException.java b/sm-shop/src/main/java/com/salesmanager/shop/store/api/exception/CategoryCodeAlreadyExistsException.java
+new file mode 100644
+index 0000000..af8c436
+--- /dev/null
++++ b/sm-shop/src/main/java/com/salesmanager/shop/store/api/exception/CategoryCodeAlreadyExistsException.java
+@@ -0,0 +1,10 @@
++package com.salesmanager.shop.store.api.exception;
++
++public class CategoryCodeAlreadyExistsException extends RestApiException {
++
++    private static final long serialVersionUID = 1L;
++
++    public CategoryCodeAlreadyExistsException(String code) {
++        super("409", "Category code already exists: " + code);
++    }
++}
+diff --git a/sm-shop/src/main/java/com/salesmanager/shop/store/api/exception/RestErrorHandler.java b/sm-shop/src/main/java/com/salesmanager/shop/store/api/exception/RestErrorHandler.java
+index 054ea33..d50139b 100755
+--- a/sm-shop/src/main/java/com/salesmanager/shop/store/api/exception/RestErrorHandler.java
++++ b/sm-shop/src/main/java/com/salesmanager/shop/store/api/exception/RestErrorHandler.java
+@@ -86,8 +86,15 @@ public class RestErrorHandler {
+         return errorEntity;
+     }
+ 
+-    @RequestMapping(produces = "application/json")
+-    @ExceptionHandler(RestApiException.class)
++    @RequestMapping(produces = "application/json")
++    @ExceptionHandler(CategoryCodeAlreadyExistsException.class)
++    @ResponseStatus(HttpStatus.CONFLICT)
++    public @ResponseBody ErrorEntity handleCategoryCodeAlreadyExists(CategoryCodeAlreadyExistsException exception) {
++        return createErrorEntity(exception.getErrorCode(), exception.getErrorMessage(), exception.getLocalizedMessage());
++    }
++
++    @RequestMapping(produces = "application/json")
++    @ExceptionHandler(RestApiException.class)
+     @ResponseStatus(HttpStatus.BAD_REQUEST)
+     public @ResponseBody ErrorEntity handleRestApiException(RestApiException exception) {
+         log.error(exception.getErrorMessage(), exception);
+diff --git a/sm-shop/src/main/java/com/salesmanager/shop/store/facade/category/CategoryFacadeImpl.java b/sm-shop/src/main/java/com/salesmanager/shop/store/facade/category/CategoryFacadeImpl.java
+index 3d9067d..687a8a5 100755
+--- a/sm-shop/src/main/java/com/salesmanager/shop/store/facade/category/CategoryFacadeImpl.java
++++ b/sm-shop/src/main/java/com/salesmanager/shop/store/facade/category/CategoryFacadeImpl.java
+@@ -45,6 +45,7 @@ import com.salesmanager.shop.store.api.exception.ResourceNotFoundException;
+ import com.salesmanager.shop.store.api.exception.ServiceRuntimeException;
+ import com.salesmanager.shop.store.api.exception.UnauthorizedException;
+ import com.salesmanager.shop.store.controller.category.facade.CategoryFacade;
++import com.salesmanager.shop.store.api.exception.CategoryCodeAlreadyExistsException;
+ 
+ @Service(value = "categoryFacade")
+ public class CategoryFacadeImpl implements CategoryFacade {
+@@ -166,6 +167,10 @@ public class CategoryFacadeImpl implements CategoryFacade {
+ 					.filter(id -> id > 0)
+ 					.map(categoryService::getById)
+ 					.orElse(new Category());
++			Category existing = categoryService.getByCode(store, category.getCode());
++			if (existing != null && (categoryId == null || !existing.getId().equals(categoryId))) {
++				throw new CategoryCodeAlreadyExistsException(category.getCode());
++			}
+ 
+ 			Category dbCategory = populateCategory(store, category, target);
+ 			saveCategory(store, dbCategory, null);
+diff --git a/sm-shop/src/test/java/com/salesmanager/test/shop/integration/category/CategoryManagementAPIIntegrationTest.java b/sm-shop/src/test/java/com/salesmanager/test/shop/integration/category/CategoryManagementAPIIntegrationTest.java
+index 86987a8..b04f55c 100755
+--- a/sm-shop/src/test/java/com/salesmanager/test/shop/integration/category/CategoryManagementAPIIntegrationTest.java
++++ b/sm-shop/src/test/java/com/salesmanager/test/shop/integration/category/CategoryManagementAPIIntegrationTest.java
+@@ -15,6 +15,7 @@ import org.springframework.boot.test.context.SpringBootTest;
+ import org.springframework.boot.test.context.SpringBootTest.WebEnvironment;
+ import org.springframework.boot.test.web.client.TestRestTemplate;
+ import org.springframework.http.HttpEntity;
++import org.springframework.http.HttpHeaders;
+ import org.springframework.http.HttpMethod;
+ import org.springframework.http.HttpStatus;
+ import org.springframework.http.ResponseEntity;
+@@ -28,6 +29,7 @@ import com.salesmanager.shop.model.catalog.category.CategoryDescription;
+ import com.salesmanager.shop.model.catalog.category.PersistableCategory;
+ import com.salesmanager.shop.model.catalog.category.ReadableCategory;
+ import com.salesmanager.shop.model.catalog.category.ReadableCategoryList;
++import com.salesmanager.shop.store.api.exception.ErrorEntity;
+ import com.salesmanager.shop.model.catalog.manufacturer.PersistableManufacturer;
+ import com.salesmanager.shop.model.catalog.manufacturer.ReadableManufacturer;
+ import com.salesmanager.shop.model.catalog.product.product.PersistableProduct;
+@@ -103,6 +105,59 @@ public class CategoryManagementAPIIntegrationTest extends ServicesTestSupport {
+         assertNotNull(cat.getId());
+ 
+     }
++
++    @Test
++    public void categoryCodeConflictsReturn409AndKeepStoreUnchanged() throws Exception {
++        String code = "duplicate-api-category-" + System.nanoTime();
++        HttpHeaders headers = getHeader();
++
++        PersistableCategory first = new PersistableCategory();
++        first.setCode(code);
++        first.setVisible(true);
++        CategoryDescription description = new CategoryDescription();
++        description.setLanguage("en");
++        description.setName(code);
++        description.setFriendlyUrl(code);
++        description.setTitle(code);
++        first.setDescriptions(List.of(description));
++
++        ResponseEntity<PersistableCategory> created = testRestTemplate.exchange(
++                "/api/v1/private/category", HttpMethod.POST,
++                new HttpEntity<>(first, headers), PersistableCategory.class);
++        assertThat(created.getStatusCode(), is(CREATED));
++
++        PersistableCategory duplicate = new PersistableCategory();
++        duplicate.setCode(code);
++        duplicate.setVisible(true);
++        duplicate.setDescriptions(List.of(description));
++        ResponseEntity<ErrorEntity> duplicateResponse = testRestTemplate.exchange(
++                "/api/v1/private/category", HttpMethod.POST,
++                new HttpEntity<>(duplicate, headers), ErrorEntity.class);
++        assertThat(duplicateResponse.getStatusCode(), is(HttpStatus.CONFLICT));
++        assertThat(duplicateResponse.getBody().getErrorCode(), is("409"));
++
++        PersistableCategory other = new PersistableCategory();
++        other.setCode(code + "-other");
++        other.setVisible(true);
++        other.setDescriptions(List.of(description));
++        ResponseEntity<PersistableCategory> otherCreated = testRestTemplate.exchange(
++                "/api/v1/private/category", HttpMethod.POST,
++                new HttpEntity<>(other, headers), PersistableCategory.class);
++        assertThat(otherCreated.getStatusCode(), is(CREATED));
++
++        duplicate.setId(otherCreated.getBody().getId());
++        ResponseEntity<ErrorEntity> updateResponse = testRestTemplate.exchange(
++                "/api/v1/private/category/" + duplicate.getId(), HttpMethod.PUT,
++                new HttpEntity<>(duplicate, headers), ErrorEntity.class);
++        assertThat(updateResponse.getStatusCode(), is(HttpStatus.CONFLICT));
++        assertThat(updateResponse.getBody().getErrorCode(), is("409"));
++
++        other.setId(otherCreated.getBody().getId());
++        ResponseEntity<PersistableCategory> sameCodeUpdate = testRestTemplate.exchange(
++                "/api/v1/private/category/" + other.getId(), HttpMethod.PUT,
++                new HttpEntity<>(other, headers), PersistableCategory.class);
++        assertThat(sameCodeUpdate.getStatusCode(), is(OK));
++    }
+     
+     /**
+     @Test
+@@ -465,4 +520,4 @@ public class CategoryManagementAPIIntegrationTest extends ServicesTestSupport {
+     }
+         **/
+ 
+-}
+\ No newline at end of file
++}

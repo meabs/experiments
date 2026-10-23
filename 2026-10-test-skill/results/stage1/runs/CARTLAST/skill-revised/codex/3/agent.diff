@@ -1,0 +1,124 @@
+diff --git a/sm-core/src/main/java/com/salesmanager/core/business/services/shoppingcart/ShoppingCartServiceImpl.java b/sm-core/src/main/java/com/salesmanager/core/business/services/shoppingcart/ShoppingCartServiceImpl.java
+index e0d1ce8..b70e039 100755
+--- a/sm-core/src/main/java/com/salesmanager/core/business/services/shoppingcart/ShoppingCartServiceImpl.java
++++ b/sm-core/src/main/java/com/salesmanager/core/business/services/shoppingcart/ShoppingCartServiceImpl.java
+@@ -237,7 +237,8 @@ public class ShoppingCartServiceImpl extends SalesManagerEntityServiceImpl<Long,
+ 
+ 				Set<ShoppingCartItem> items = shoppingCart.getLineItems();
+ 				if (items == null || items.size() == 0) {
+-					shoppingCart.setObsolete(true);
++					// An empty cart is still a valid cart and must remain reusable.
++					shoppingCart.setObsolete(false);
+ 					return shoppingCart;
+ 
+ 				}
+diff --git a/sm-shop/src/main/java/com/salesmanager/shop/store/controller/shoppingCart/facade/ShoppingCartFacadeImpl.java b/sm-shop/src/main/java/com/salesmanager/shop/store/controller/shoppingCart/facade/ShoppingCartFacadeImpl.java
+index 7fdc139..4fcd37c 100755
+--- a/sm-shop/src/main/java/com/salesmanager/shop/store/controller/shoppingCart/facade/ShoppingCartFacadeImpl.java
++++ b/sm-shop/src/main/java/com/salesmanager/shop/store/controller/shoppingCart/facade/ShoppingCartFacadeImpl.java
+@@ -807,11 +807,6 @@ public class ShoppingCartFacadeImpl implements ShoppingCartFacade {
+ 				items.add(shoppingCartItem);
+ 			}
+ 		}
+-		// delete item
+-		if (itemToDelete != null) {
+-			shoppingCartService.deleteShoppingCartItem(itemToDelete.getId());
+-		}
+-
+ 		// remaining items
+ 		if (items.size() > 0) {
+ 			cart.setLineItems(items);
+@@ -820,6 +815,11 @@ public class ShoppingCartFacadeImpl implements ShoppingCartFacade {
+ 		}
+ 
+ 		shoppingCartService.saveOrUpdate(cart);// update cart with remaining items
++		// Save the empty cart before deleting its last item. In this order the
++		// cart remains a persisted, reusable cart rather than being cascaded away.
++		if (itemToDelete != null) {
++			shoppingCartService.deleteShoppingCartItem(itemToDelete.getId());
++		}
+ 		if (items.size() > 0 & returnCart) {
+ 			return this.getByCode(cartCode, merchant, language);
+ 		}
+@@ -915,7 +915,10 @@ public class ShoppingCartFacadeImpl implements ShoppingCartFacade {
+ 			}
+ 
+ 			if (newItems.isEmpty()) {
+-				newItems = null;
++				// Keep the cart itself when its last item is removed. An empty
++				// collection represents an empty, reusable cart; null can cause
++				// the cart to disappear when it is persisted.
++				newItems = new HashSet<com.salesmanager.core.model.shoppingcart.ShoppingCartItem>();
+ 			}
+ 
+ 			cartModel.setLineItems(newItems);
+diff --git a/sm-shop/src/test/java/com/salesmanager/test/shop/integration/cart/EmptyShoppingCartAPIIntegrationTest.java b/sm-shop/src/test/java/com/salesmanager/test/shop/integration/cart/EmptyShoppingCartAPIIntegrationTest.java
+new file mode 100644
+index 0000000..439ba25
+--- /dev/null
++++ b/sm-shop/src/test/java/com/salesmanager/test/shop/integration/cart/EmptyShoppingCartAPIIntegrationTest.java
+@@ -0,0 +1,64 @@
++package com.salesmanager.test.shop.integration.cart;
++
++import static org.junit.jupiter.api.Assertions.assertEquals;
++import static org.junit.jupiter.api.Assertions.assertNotNull;
++import static org.springframework.http.HttpStatus.CREATED;
++import static org.springframework.http.HttpStatus.OK;
++
++import java.math.BigDecimal;
++
++import org.junit.jupiter.api.Test;
++import org.springframework.boot.test.context.SpringBootTest;
++import org.springframework.boot.test.context.SpringBootTest.WebEnvironment;
++import org.springframework.http.HttpEntity;
++import org.springframework.http.HttpMethod;
++import org.springframework.http.ResponseEntity;
++import org.springframework.test.context.junit.jupiter.SpringExtension;
++import org.junit.jupiter.api.extension.ExtendWith;
++import org.springframework.beans.factory.annotation.Autowired;
++import org.springframework.boot.test.web.client.TestRestTemplate;
++
++import com.salesmanager.shop.application.ShopApplication;
++import com.salesmanager.shop.model.catalog.product.ReadableProduct;
++import com.salesmanager.shop.model.shoppingcart.PersistableShoppingCartItem;
++import com.salesmanager.shop.model.shoppingcart.ReadableShoppingCart;
++import com.salesmanager.test.shop.common.ServicesTestSupport;
++
++@SpringBootTest(classes = ShopApplication.class, webEnvironment = WebEnvironment.RANDOM_PORT)
++@ExtendWith(SpringExtension.class)
++class EmptyShoppingCartAPIIntegrationTest extends ServicesTestSupport {
++
++    @Autowired
++    private TestRestTemplate client;
++
++    @Test
++    void deletingLastProductKeepsCartReadableAndReusable() {
++        ReadableProduct product = sampleProduct("emptyCartApi");
++        PersistableShoppingCartItem item = new PersistableShoppingCartItem();
++        item.setProduct(product.getSku());
++        item.setQuantity(1);
++        HttpEntity<PersistableShoppingCartItem> request = new HttpEntity<>(item, getHeader());
++
++        ResponseEntity<ReadableShoppingCart> created = client.postForEntity("/api/v1/cart", request,
++                ReadableShoppingCart.class);
++        assertEquals(CREATED, created.getStatusCode());
++        String code = created.getBody().getCode();
++
++        ResponseEntity<ReadableShoppingCart> deleted = client.exchange(
++                "/api/v1/cart/" + code + "/product/" + product.getSku() + "?body=true", HttpMethod.DELETE,
++                new HttpEntity<>(getHeader()), ReadableShoppingCart.class);
++        assertEquals(OK, deleted.getStatusCode());
++
++        ResponseEntity<ReadableShoppingCart> empty = client.exchange("/api/v1/cart/" + code, HttpMethod.GET,
++                new HttpEntity<>(getHeader()), ReadableShoppingCart.class);
++        assertEquals(OK, empty.getStatusCode());
++        assertNotNull(empty.getBody());
++        assertEquals(0, empty.getBody().getQuantity());
++        assertEquals(BigDecimal.ZERO, empty.getBody().getSubtotal());
++
++        ResponseEntity<ReadableShoppingCart> reused = client.exchange("/api/v1/cart/" + code, HttpMethod.PUT,
++                request, ReadableShoppingCart.class);
++        assertEquals(CREATED, reused.getStatusCode());
++        assertEquals(1, reused.getBody().getQuantity());
++    }
++}

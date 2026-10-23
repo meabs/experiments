@@ -1,0 +1,147 @@
+diff --git a/sm-shop-model/src/main/java/com/salesmanager/shop/model/tax/PersistableTaxRate.java b/sm-shop-model/src/main/java/com/salesmanager/shop/model/tax/PersistableTaxRate.java
+index 0af8cb1..d0b4fe3 100644
+--- a/sm-shop-model/src/main/java/com/salesmanager/shop/model/tax/PersistableTaxRate.java
++++ b/sm-shop-model/src/main/java/com/salesmanager/shop/model/tax/PersistableTaxRate.java
+@@ -4,6 +4,10 @@ import java.math.BigDecimal;
+ import java.util.ArrayList;
+ import java.util.List;
+ 
++import javax.validation.constraints.DecimalMax;
++import javax.validation.constraints.DecimalMin;
++import javax.validation.constraints.NotNull;
++
+ public class PersistableTaxRate extends TaxRateEntity {
+ 
+ 	/**
+@@ -11,6 +15,9 @@ public class PersistableTaxRate extends TaxRateEntity {
+ 	 */
+ 	private static final long serialVersionUID = 1L;
+ 	
++	@NotNull
++	@DecimalMin("0")
++	@DecimalMax("100")
+ 	private BigDecimal rate;
+ 	private String store;
+ 	private String zone;
+diff --git a/sm-shop/src/main/java/com/salesmanager/shop/store/api/v1/tax/TaxRatesApi.java b/sm-shop/src/main/java/com/salesmanager/shop/store/api/v1/tax/TaxRatesApi.java
+index c178a6e..dec26be 100644
+--- a/sm-shop/src/main/java/com/salesmanager/shop/store/api/v1/tax/TaxRatesApi.java
++++ b/sm-shop/src/main/java/com/salesmanager/shop/store/api/v1/tax/TaxRatesApi.java
+@@ -1,5 +1,7 @@
+ package com.salesmanager.shop.store.api.v1.tax;
+ 
++import java.math.BigDecimal;
++
+ import javax.validation.Valid;
+ 
+ import org.slf4j.Logger;
+@@ -16,6 +18,7 @@ import org.springframework.web.bind.annotation.PutMapping;
+ import org.springframework.web.bind.annotation.RequestBody;
+ import org.springframework.web.bind.annotation.RequestMapping;
+ import org.springframework.web.bind.annotation.RequestParam;
++import org.springframework.web.server.ResponseStatusException;
+ import org.springframework.web.bind.annotation.RestController;
+ 
+ import com.salesmanager.core.model.merchant.MerchantStore;
+@@ -59,6 +62,7 @@ public class TaxRatesApi {
+ 	@ApiImplicitParams({ @ApiImplicitParam(name = "store", dataType = "string", defaultValue = "DEFAULT") })
+ 	public Entity create(@ApiIgnore MerchantStore merchantStore, @ApiIgnore Language language,
+ 			@Valid @RequestBody PersistableTaxRate taxRate) {
++		validateRate(taxRate);
+ 
+ 		return taxFacade.createTaxRate(taxRate, merchantStore, language);
+ 
+@@ -82,6 +86,7 @@ public class TaxRatesApi {
+ 	@ApiImplicitParams({ @ApiImplicitParam(name = "store", dataType = "string", defaultValue = "DEFAULT") })
+ 	public void update(@ApiIgnore MerchantStore merchantStore, @PathVariable Long id, @ApiIgnore Language language,
+ 			@Valid @RequestBody PersistableTaxRate taxRate) {
++		validateRate(taxRate);
+ 
+ 		taxRate.setId(id);
+ 		taxFacade.updateTaxRate(id, taxRate, merchantStore, language);
+@@ -119,4 +124,11 @@ public class TaxRatesApi {
+ 
+ 	}
+ 
++	private void validateRate(PersistableTaxRate taxRate) {
++		BigDecimal rate = taxRate.getRate();
++		if (rate == null || rate.compareTo(BigDecimal.ZERO) < 0 || rate.compareTo(new BigDecimal("100")) > 0) {
++			throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Tax rate must be between 0 and 100");
++		}
++	}
++
+ }
+diff --git a/sm-shop/src/test/java/com/salesmanager/test/shop/integration/tax/TaxRateIntegrationTest.java b/sm-shop/src/test/java/com/salesmanager/test/shop/integration/tax/TaxRateIntegrationTest.java
+index 70ba50c..9b0f32a 100644
+--- a/sm-shop/src/test/java/com/salesmanager/test/shop/integration/tax/TaxRateIntegrationTest.java
++++ b/sm-shop/src/test/java/com/salesmanager/test/shop/integration/tax/TaxRateIntegrationTest.java
+@@ -1,6 +1,7 @@
+ package com.salesmanager.test.shop.integration.tax;
+ 
+ import static org.junit.Assert.assertNotNull;
++import static org.junit.Assert.assertEquals;
+ import static org.junit.Assert.assertTrue;
+ 
+ import java.math.BigDecimal;
+@@ -20,6 +21,7 @@ import com.salesmanager.shop.model.entity.EntityExists;
+ import com.salesmanager.shop.model.tax.PersistableTaxClass;
+ import com.salesmanager.shop.model.tax.PersistableTaxRate;
+ import com.salesmanager.shop.model.tax.TaxRateDescription;
++import com.salesmanager.shop.model.tax.ReadableTaxRate;
+ import com.salesmanager.test.shop.common.ServicesTestSupport;
+ 
+ @SpringBootTest(classes = ShopApplication.class, webEnvironment = WebEnvironment.RANDOM_PORT)
+@@ -113,4 +115,53 @@ public class TaxRateIntegrationTest extends ServicesTestSupport {
+ 	
+     }
+ 
++    @Test
++    public void rejectInvalidTaxRatesThroughApiWithoutPersistingOrChangingThem() throws Exception {
++        for (BigDecimal invalidRate : new BigDecimal[] { new BigDecimal("-0.01"), new BigDecimal("100.01") }) {
++            PersistableTaxRate invalid = new PersistableTaxRate();
++            invalid.setCode("invalid-tax-" + invalidRate.toPlainString().replace('.', '_'));
++            invalid.setRate(invalidRate);
++
++            ResponseEntity<Void> response = testRestTemplate.postForEntity(
++                    "/api/v1/private/tax/rate/", new HttpEntity<>(invalid, getHeader()), Void.class);
++
++            assertEquals(400, response.getStatusCodeValue());
++            ResponseEntity<EntityExists> exists = testRestTemplate.exchange(
++                    "/api/v1/private/tax/rate/unique?code=" + invalid.getCode(), HttpMethod.GET,
++                    new HttpEntity<>(getHeader()), EntityExists.class);
++            assertTrue(!exists.getBody().isExists());
++        }
++
++        PersistableTaxRate missingRate = new PersistableTaxRate();
++        missingRate.setCode("invalid-tax-missing");
++        ResponseEntity<Void> missingResponse = testRestTemplate.postForEntity(
++                "/api/v1/private/tax/rate/", new HttpEntity<>(missingRate, getHeader()), Void.class);
++        assertEquals(400, missingResponse.getStatusCodeValue());
++
++        PersistableTaxRate valid = new PersistableTaxRate();
++        valid.setCode("tax-update-validation");
++        valid.setRate(new BigDecimal("5"));
++        valid.setCountry("US");
++        valid.setTaxClass("DEFAULT");
++        valid.setZone("NY");
++        TaxRateDescription description = new TaxRateDescription();
++        description.setLanguage("en");
++        description.setName("Tax update validation");
++        valid.getDescriptions().add(description);
++        Entity created = testRestTemplate.postForEntity("/api/v1/private/tax/rate/",
++                new HttpEntity<>(valid, getHeader()), Entity.class).getBody();
++        assertNotNull(created.getId());
++
++        valid.setRate(new BigDecimal("150"));
++        ResponseEntity<Void> updateResponse = testRestTemplate.exchange(
++                "/api/v1/private/tax/rate/" + created.getId(), HttpMethod.PUT,
++                new HttpEntity<>(valid, getHeader()), Void.class);
++        assertEquals(400, updateResponse.getStatusCodeValue());
++
++        ResponseEntity<ReadableTaxRate> stored = testRestTemplate.exchange(
++                "/api/v1/private/tax/rate/" + created.getId(), HttpMethod.GET,
++                new HttpEntity<>(getHeader()), ReadableTaxRate.class);
++        assertEquals(0, new BigDecimal("5").compareTo(new BigDecimal(stored.getBody().getRate())));
++    }
++
+ }

@@ -1,0 +1,138 @@
+diff --git a/sm-core/src/main/java/com/salesmanager/core/business/repositories/catalog/category/CategoryRepositoryImpl.java b/sm-core/src/main/java/com/salesmanager/core/business/repositories/catalog/category/CategoryRepositoryImpl.java
+index ba6ba6f..c3b9b2e 100755
+--- a/sm-core/src/main/java/com/salesmanager/core/business/repositories/catalog/category/CategoryRepositoryImpl.java
++++ b/sm-core/src/main/java/com/salesmanager/core/business/repositories/catalog/category/CategoryRepositoryImpl.java
+@@ -21,17 +21,16 @@ public class CategoryRepositoryImpl implements CategoryRepositoryCustom {
+ 
+ 		
+ 		StringBuilder qs = new StringBuilder();
+-		qs.append("select category.id, count(product.id) from Product product ");
+-		qs.append("inner join product.categories category ");
+-		qs.append("where category.id in (:cid) ");
+-		qs.append("and product.available=true and product.dateAvailable<=:dt ");
+-		qs.append("group by category.id");
++		qs.append("select productCategory.id, count(distinct product.id) from Product product ");
++		qs.append("inner join product.categories productCategory ");
++		qs.append("where productCategory.id in (:cid) and product.merchantStore.id = :mid ");
++		qs.append("group by productCategory.id");
+ 		
+     	String hql = qs.toString();
+ 		Query q = this.em.createQuery(hql);
+ 
+-    	q.setParameter("cid", categoryIds);
+-    	q.setParameter("dt", new Date());
++		q.setParameter("cid", categoryIds);
++		q.setParameter("mid", store.getId());
+ 
+ 
+     	
+diff --git a/sm-shop/src/main/java/com/salesmanager/shop/store/facade/category/CategoryFacadeImpl.java b/sm-shop/src/main/java/com/salesmanager/shop/store/facade/category/CategoryFacadeImpl.java
+index 3d9067d..2cb74ee 100755
+--- a/sm-shop/src/main/java/com/salesmanager/shop/store/facade/category/CategoryFacadeImpl.java
++++ b/sm-shop/src/main/java/com/salesmanager/shop/store/facade/category/CategoryFacadeImpl.java
+@@ -113,6 +113,22 @@ public class CategoryFacadeImpl implements CategoryFacade {
+ 			Map<Long, ReadableCategory> readableCategoryMap = readableCategories.stream()
+ 					.collect(Collectors.toMap(ReadableCategory::getId, Function.identity()));
+ 
++			List<Object[]> productCounts = categoryService.countProductsByCategories(store,
++					categories.stream().map(Category::getId).collect(Collectors.toList()));
++			Map<Long, Integer> productCountByCategory = productCounts.stream().collect(Collectors.toMap(
++					row -> (Long) row[0], row -> ((Number) row[1]).intValue()));
++			Map<Long, Integer> subtreeProductCounts = new HashMap<>();
++			for (Category category : categories) {
++				int directCount = productCountByCategory.getOrDefault(category.getId(), 0);
++				Category current = category;
++				while (current != null) {
++					subtreeProductCounts.merge(current.getId(), directCount, Integer::sum);
++					current = current.getParent();
++				}
++			}
++			readableCategories.forEach(category -> category.setProductCount(
++					subtreeProductCounts.getOrDefault(category.getId(), 0)));
++
+ 			readableCategories.stream()
+ 					// .filter(ReadableCategory::isVisible)
+ 					.filter(cat -> Objects.nonNull(cat.getParent()))
+diff --git a/sm-shop/src/test/java/com/salesmanager/test/shop/integration/category/CategoryManagementAPIIntegrationTest.java b/sm-shop/src/test/java/com/salesmanager/test/shop/integration/category/CategoryManagementAPIIntegrationTest.java
+index 86987a8..ba351ce 100755
+--- a/sm-shop/src/test/java/com/salesmanager/test/shop/integration/category/CategoryManagementAPIIntegrationTest.java
++++ b/sm-shop/src/test/java/com/salesmanager/test/shop/integration/category/CategoryManagementAPIIntegrationTest.java
+@@ -2,6 +2,7 @@ package com.salesmanager.test.shop.integration.category;
+ 
+ import static org.hamcrest.core.Is.is;
+ import static org.junit.Assert.assertNotNull;
++import static org.junit.Assert.assertEquals;
+ import static org.junit.Assert.assertTrue;
+ import static org.junit.Assert.assertThat;
+ import static org.springframework.http.HttpStatus.CREATED;
+@@ -21,6 +22,7 @@ import org.springframework.http.ResponseEntity;
+ import org.springframework.test.context.junit4.SpringRunner;
+ import com.fasterxml.jackson.databind.ObjectMapper;
+ import com.fasterxml.jackson.databind.ObjectWriter;
++import com.fasterxml.jackson.databind.JsonNode;
+ import com.salesmanager.core.business.constants.Constants;
+ import com.salesmanager.shop.application.ShopApplication;
+ import com.salesmanager.shop.model.catalog.category.Category;
+@@ -41,6 +43,55 @@ public class CategoryManagementAPIIntegrationTest extends ServicesTestSupport {
+     @Autowired
+     private TestRestTemplate testRestTemplate;
+ 
++    @Test
++    public void categoryListCountsProductsInDescendantsOnce() throws Exception {
++        ObjectWriter writer = new ObjectMapper().writer();
++        HttpEntity<String> entity;
++
++        PersistableCategory parent = super.category("COUNT_PARENT_" + System.nanoTime());
++        entity = new HttpEntity<>(writer.writeValueAsString(parent), getHeader());
++        PersistableCategory savedParent = testRestTemplate.postForEntity("/api/v1/private/category", entity,
++                PersistableCategory.class).getBody();
++
++        PersistableCategory child = super.category("COUNT_CHILD_" + System.nanoTime());
++        Category parentReference = new Category();
++        parentReference.setId(savedParent.getId());
++        child.setParent(parentReference);
++        entity = new HttpEntity<>(writer.writeValueAsString(child), getHeader());
++        PersistableCategory savedChild = testRestTemplate.postForEntity("/api/v1/private/category", entity,
++                PersistableCategory.class).getBody();
++
++        PersistableProduct product = super.product("COUNT_PRODUCT_" + System.nanoTime());
++        Category childReference = new Category();
++        childReference.setId(savedChild.getId());
++        childReference.setCode(child.getCode());
++        product.getCategories().add(childReference);
++        Category parentProductReference = new Category();
++        parentProductReference.setId(savedParent.getId());
++        parentProductReference.setCode(parent.getCode());
++        product.getCategories().add(parentProductReference);
++        entity = new HttpEntity<>(writer.writeValueAsString(product), getHeader());
++        assertThat(testRestTemplate.postForEntity("/api/v1/private/product?store=" + Constants.DEFAULT_STORE,
++                entity, PersistableProduct.class).getStatusCode(), is(CREATED));
++
++        JsonNode categories = new ObjectMapper().readTree(testRestTemplate.exchange(
++                "/api/v1/category?count=100", HttpMethod.GET, new HttpEntity<>(getHeader()), String.class)
++                .getBody()).get("categories");
++        JsonNode parentJson = findCategory(categories, savedParent.getId());
++        JsonNode childJson = findCategory(categories, savedChild.getId());
++        assertEquals(1, parentJson.get("productCount").asInt());
++        assertEquals(1, childJson.get("productCount").asInt());
++    }
++
++    private JsonNode findCategory(JsonNode categories, Long id) {
++        for (JsonNode category : categories) {
++            if (id.equals(category.get("id").asLong())) return category;
++            JsonNode found = findCategory(category.get("children"), id);
++            if (found != null) return found;
++        }
++        return null;
++    }
++
+ 
+ 
+     /**
+@@ -465,4 +516,4 @@ public class CategoryManagementAPIIntegrationTest extends ServicesTestSupport {
+     }
+         **/
+ 
+-}
+\ No newline at end of file
++}

@@ -1,0 +1,143 @@
+diff --git a/sm-shop/src/main/java/com/salesmanager/shop/store/api/exception/ConflictException.java b/sm-shop/src/main/java/com/salesmanager/shop/store/api/exception/ConflictException.java
+new file mode 100644
+index 0000000..8127c2e
+--- /dev/null
++++ b/sm-shop/src/main/java/com/salesmanager/shop/store/api/exception/ConflictException.java
+@@ -0,0 +1,10 @@
++package com.salesmanager.shop.store.api.exception;
++
++public class ConflictException extends ServiceRuntimeException {
++
++    private static final long serialVersionUID = 1L;
++
++    public ConflictException(String message) {
++        super("409", message);
++    }
++}
+diff --git a/sm-shop/src/main/java/com/salesmanager/shop/store/api/exception/RestErrorHandler.java b/sm-shop/src/main/java/com/salesmanager/shop/store/api/exception/RestErrorHandler.java
+index 054ea33..947b304 100755
+--- a/sm-shop/src/main/java/com/salesmanager/shop/store/api/exception/RestErrorHandler.java
++++ b/sm-shop/src/main/java/com/salesmanager/shop/store/api/exception/RestErrorHandler.java
+@@ -40,8 +40,17 @@ public class RestErrorHandler {
+     /**
+      * Generic exception serviceException handler
+      */
+-    @RequestMapping(produces = "application/json")
+-    @ExceptionHandler(ServiceRuntimeException.class)
++    @RequestMapping(produces = "application/json")
++    @ExceptionHandler(ConflictException.class)
++    @ResponseStatus(HttpStatus.CONFLICT)
++    public @ResponseBody ErrorEntity handleConflict(ConflictException exception) {
++        ErrorEntity errorEntity = createErrorEntity(exception.getErrorCode(), exception.getErrorMessage(),
++                exception.getLocalizedMessage());
++        return errorEntity;
++    }
++
++    @RequestMapping(produces = "application/json")
++    @ExceptionHandler(ServiceRuntimeException.class)
+     @ResponseStatus(HttpStatus.BAD_REQUEST)
+     public @ResponseBody ErrorEntity handleServiceException(ServiceRuntimeException exception) {
+         log.error(exception.getErrorMessage(), exception);
+diff --git a/sm-shop/src/main/java/com/salesmanager/shop/store/facade/category/CategoryFacadeImpl.java b/sm-shop/src/main/java/com/salesmanager/shop/store/facade/category/CategoryFacadeImpl.java
+index 3d9067d..4016062 100755
+--- a/sm-shop/src/main/java/com/salesmanager/shop/store/facade/category/CategoryFacadeImpl.java
++++ b/sm-shop/src/main/java/com/salesmanager/shop/store/facade/category/CategoryFacadeImpl.java
+@@ -42,6 +42,7 @@ import com.salesmanager.shop.populator.catalog.PersistableCategoryPopulator;
+ import com.salesmanager.shop.populator.catalog.ReadableCategoryPopulator;
+ import com.salesmanager.shop.store.api.exception.OperationNotAllowedException;
+ import com.salesmanager.shop.store.api.exception.ResourceNotFoundException;
++import com.salesmanager.shop.store.api.exception.ConflictException;
+ import com.salesmanager.shop.store.api.exception.ServiceRuntimeException;
+ import com.salesmanager.shop.store.api.exception.UnauthorizedException;
+ import com.salesmanager.shop.store.controller.category.facade.CategoryFacade;
+@@ -166,6 +167,10 @@ public class CategoryFacadeImpl implements CategoryFacade {
+ 					.filter(id -> id > 0)
+ 					.map(categoryService::getById)
+ 					.orElse(new Category());
++			Category existing = categoryService.getByCode(store, category.getCode());
++			if (existing != null && !existing.getId().equals(categoryId)) {
++				throw new ConflictException("Category code [" + category.getCode() + "] already exists");
++			}
+ 
+ 			Category dbCategory = populateCategory(store, category, target);
+ 			saveCategory(store, dbCategory, null);
+diff --git a/sm-shop/src/test/java/com/salesmanager/test/shop/integration/category/CategoryManagementAPIIntegrationTest.java b/sm-shop/src/test/java/com/salesmanager/test/shop/integration/category/CategoryManagementAPIIntegrationTest.java
+index 86987a8..0a03282 100755
+--- a/sm-shop/src/test/java/com/salesmanager/test/shop/integration/category/CategoryManagementAPIIntegrationTest.java
++++ b/sm-shop/src/test/java/com/salesmanager/test/shop/integration/category/CategoryManagementAPIIntegrationTest.java
+@@ -6,6 +6,7 @@ import static org.junit.Assert.assertTrue;
+ import static org.junit.Assert.assertThat;
+ import static org.springframework.http.HttpStatus.CREATED;
+ import static org.springframework.http.HttpStatus.OK;
++import static org.springframework.http.HttpStatus.CONFLICT;
+ import java.util.ArrayList;
+ import java.util.List;
+ import org.junit.Test;
+@@ -15,6 +16,7 @@ import org.springframework.boot.test.context.SpringBootTest;
+ import org.springframework.boot.test.context.SpringBootTest.WebEnvironment;
+ import org.springframework.boot.test.web.client.TestRestTemplate;
+ import org.springframework.http.HttpEntity;
++import org.springframework.http.HttpHeaders;
+ import org.springframework.http.HttpMethod;
+ import org.springframework.http.HttpStatus;
+ import org.springframework.http.ResponseEntity;
+@@ -28,6 +30,7 @@ import com.salesmanager.shop.model.catalog.category.CategoryDescription;
+ import com.salesmanager.shop.model.catalog.category.PersistableCategory;
+ import com.salesmanager.shop.model.catalog.category.ReadableCategory;
+ import com.salesmanager.shop.model.catalog.category.ReadableCategoryList;
++import com.salesmanager.shop.store.api.exception.ErrorEntity;
+ import com.salesmanager.shop.model.catalog.manufacturer.PersistableManufacturer;
+ import com.salesmanager.shop.model.catalog.manufacturer.ReadableManufacturer;
+ import com.salesmanager.shop.model.catalog.product.product.PersistableProduct;
+@@ -103,6 +106,44 @@ public class CategoryManagementAPIIntegrationTest extends ServicesTestSupport {
+         assertNotNull(cat.getId());
+ 
+     }
++
++    @Test
++    public void categoryCodeConflictsAreReturnedByTheHttpApi() throws Exception {
++        String suffix = String.valueOf(System.nanoTime());
++        PersistableCategory first = category("api-code-" + suffix);
++        PersistableCategory second = category("api-other-" + suffix);
++        ObjectMapper mapper = new ObjectMapper();
++        HttpHeaders headers = getHeader();
++
++        ResponseEntity<PersistableCategory> created = testRestTemplate.postForEntity(
++                "/api/v1/private/category", new HttpEntity<>(mapper.writeValueAsString(first), headers),
++                PersistableCategory.class);
++        assertThat(created.getStatusCode(), is(CREATED));
++
++        ResponseEntity<ErrorEntity> duplicateCreate = testRestTemplate.postForEntity(
++                "/api/v1/private/category", new HttpEntity<>(mapper.writeValueAsString(first), headers),
++                ErrorEntity.class);
++        assertThat(duplicateCreate.getStatusCode(), is(CONFLICT));
++        assertThat(duplicateCreate.getBody().getErrorCode(), is("409"));
++
++        ResponseEntity<PersistableCategory> secondCreated = testRestTemplate.postForEntity(
++                "/api/v1/private/category", new HttpEntity<>(mapper.writeValueAsString(second), headers),
++                PersistableCategory.class);
++        assertThat(secondCreated.getStatusCode(), is(CREATED));
++
++        second.setCode(first.getCode());
++        ResponseEntity<ErrorEntity> duplicateUpdate = testRestTemplate.exchange(
++                "/api/v1/private/category/" + secondCreated.getBody().getId(), HttpMethod.PUT,
++                new HttpEntity<>(mapper.writeValueAsString(second), headers), ErrorEntity.class);
++        assertThat(duplicateUpdate.getStatusCode(), is(CONFLICT));
++        assertThat(duplicateUpdate.getBody().getErrorCode(), is("409"));
++
++        second.setCode("api-other-" + suffix);
++        ResponseEntity<PersistableCategory> sameCodeUpdate = testRestTemplate.exchange(
++                "/api/v1/private/category/" + secondCreated.getBody().getId(), HttpMethod.PUT,
++                new HttpEntity<>(mapper.writeValueAsString(second), headers), PersistableCategory.class);
++        assertThat(sameCodeUpdate.getStatusCode(), is(OK));
++    }
+     
+     /**
+     @Test
+@@ -465,4 +506,4 @@ public class CategoryManagementAPIIntegrationTest extends ServicesTestSupport {
+     }
+         **/
+ 
+-}
+\ No newline at end of file
++}

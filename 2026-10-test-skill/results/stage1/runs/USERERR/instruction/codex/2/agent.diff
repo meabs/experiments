@@ -1,0 +1,165 @@
+diff --git a/sm-shop/src/main/java/com/salesmanager/shop/store/api/exception/RestErrorHandler.java b/sm-shop/src/main/java/com/salesmanager/shop/store/api/exception/RestErrorHandler.java
+index 054ea33..09211d8 100755
+--- a/sm-shop/src/main/java/com/salesmanager/shop/store/api/exception/RestErrorHandler.java
++++ b/sm-shop/src/main/java/com/salesmanager/shop/store/api/exception/RestErrorHandler.java
+@@ -8,7 +8,8 @@ import org.slf4j.Logger;
+ import org.slf4j.LoggerFactory;
+ import org.springframework.core.Ordered;
+ import org.springframework.core.annotation.Order;
+-import org.springframework.http.HttpStatus;
++import org.springframework.http.HttpStatus;
++import org.springframework.http.ResponseEntity;
+ import org.springframework.web.bind.annotation.ControllerAdvice;
+ import org.springframework.web.bind.annotation.ExceptionHandler;
+ import org.springframework.web.bind.annotation.RequestMapping;
+@@ -43,16 +44,26 @@ public class RestErrorHandler {
+     @RequestMapping(produces = "application/json")
+     @ExceptionHandler(ServiceRuntimeException.class)
+     @ResponseStatus(HttpStatus.BAD_REQUEST)
+-    public @ResponseBody ErrorEntity handleServiceException(ServiceRuntimeException exception) {
++    public @ResponseBody ErrorEntity handleServiceException(ServiceRuntimeException exception) {
+         log.error(exception.getErrorMessage(), exception);
+         Throwable rootCause = exception.getCause();
+-        while (rootCause.getCause() != null && rootCause.getCause() != rootCause) {
+-            rootCause = rootCause.getCause();
+-        }
+-        ErrorEntity errorEntity = createErrorEntity(exception.getErrorCode()!=null?exception.getErrorCode():"500", exception.getErrorMessage(),
+-        		rootCause.getMessage());
+-        return errorEntity;
+-    }
++        while (rootCause != null && rootCause.getCause() != null && rootCause.getCause() != rootCause) {
++            rootCause = rootCause.getCause();
++        }
++        ErrorEntity errorEntity = createErrorEntity(exception.getErrorCode()!=null?exception.getErrorCode():"500", exception.getErrorMessage(),
++        		rootCause == null ? exception.getLocalizedMessage() : rootCause.getMessage());
++        return errorEntity;
++    }
++
++    @RequestMapping(produces = "application/json")
++    @ExceptionHandler(GenericRuntimeException.class)
++    public ResponseEntity<ErrorEntity> handleGenericRuntimeException(GenericRuntimeException exception) {
++        log.error(exception.getErrorMessage(), exception);
++        ErrorEntity errorEntity = createErrorEntity(exception.getErrorCode(), exception.getErrorMessage(),
++                exception.getLocalizedMessage());
++        HttpStatus status = HttpStatus.resolve(Integer.parseInt(Optional.ofNullable(exception.getErrorCode()).orElse("500")));
++        return new ResponseEntity<>(errorEntity, status == null ? HttpStatus.INTERNAL_SERVER_ERROR : status);
++    }
+ 
+     @RequestMapping(produces = "application/json")
+     @ExceptionHandler(ConversionRuntimeException.class)
+diff --git a/sm-shop/src/main/java/com/salesmanager/shop/store/facade/user/UserFacadeImpl.java b/sm-shop/src/main/java/com/salesmanager/shop/store/facade/user/UserFacadeImpl.java
+index 92a6764..81240d5 100755
+--- a/sm-shop/src/main/java/com/salesmanager/shop/store/facade/user/UserFacadeImpl.java
++++ b/sm-shop/src/main/java/com/salesmanager/shop/store/facade/user/UserFacadeImpl.java
+@@ -311,7 +311,7 @@ public class UserFacadeImpl implements UserFacade {
+ 			// check if user exists
+ 			User tempUser = userService.getByUserName(user.getUserName(), store.getCode());
+ 			if (tempUser != null) {
+-				throw new ServiceRuntimeException(
++				throw new GenericRuntimeException("409",
+ 						"User [" + user.getUserName() + "] already exists for store [" + store.getCode() + "]");
+ 			}
+ 			
+@@ -396,12 +396,17 @@ public class UserFacadeImpl implements UserFacade {
+ 		Validate.notNull(store, "store cannot be null");
+ 
+ 		try {
+-			User userModel = userService.getById(id);
++			User userModel;
++			try {
++				userModel = userService.getById(id, store);
++			} catch (RuntimeException e) {
++				throw new ResourceNotFoundException("User [" + id + "] not found");
++			}
+ 			if (userModel == null) {
+-				throw new ServiceRuntimeException("Cannot find user [" + user.getUserName() + "]");
++				throw new ResourceNotFoundException("User [" + id + "] not found");
+ 			}
+ 			if (userModel.getId().longValue() != id.longValue()) {
+-				throw new ServiceRuntimeException(
++				throw new ResourceNotFoundException(
+ 						"Cannot find user [" + user.getUserName() + "] id or name does not match");
+ 			}
+ 			User auth = userService.getByUserName(authenticatedUser);
+@@ -492,9 +497,14 @@ public class UserFacadeImpl implements UserFacade {
+ 				throw new ServiceRuntimeException("Cannot find user [" + authenticatedUser + "]");
+ 			}
+ 
+-			User userModel = userService.getById(userId);
++			User userModel;
++			try {
++				userModel = userService.findByStore(userId, auth.getMerchantStore().getCode());
++			} catch (RuntimeException e) {
++				throw new ResourceNotFoundException("User [" + userId + "] not found");
++			}
+ 			if (userModel == null) {
+-				throw new ServiceRuntimeException("Cannot find user [" + userId + "]");
++				throw new ResourceNotFoundException("User [" + userId + "] not found");
+ 			}
+ 
+ 			/**
+diff --git a/sm-shop/src/test/java/com/salesmanager/test/shop/integration/user/UserApiIntegrationTest.java b/sm-shop/src/test/java/com/salesmanager/test/shop/integration/user/UserApiIntegrationTest.java
+index 47ccb8f..3087041 100755
+--- a/sm-shop/src/test/java/com/salesmanager/test/shop/integration/user/UserApiIntegrationTest.java
++++ b/sm-shop/src/test/java/com/salesmanager/test/shop/integration/user/UserApiIntegrationTest.java
+@@ -1,6 +1,7 @@
+ package com.salesmanager.test.shop.integration.user;
+ 
+ import static org.junit.Assert.assertNotNull;
++import static org.junit.Assert.assertEquals;
+ import javax.inject.Inject;
+ import org.junit.Test;
+ import org.junit.runner.RunWith;
+@@ -93,6 +94,52 @@ public class UserApiIntegrationTest extends ServicesTestSupport {
+       
+       
+   }
++
++  @Test
++  public void invalidUserRequestsReturnClientErrors() {
++      final long missingId = Long.MAX_VALUE;
++
++      ResponseEntity<Void> missingUpdate = testRestTemplate.exchange(
++          "/api/v1/private/user/" + missingId, HttpMethod.PUT,
++          new HttpEntity<>(existingUser("missing-user"), getHeader()), Void.class);
++      assertEquals(HttpStatus.NOT_FOUND, missingUpdate.getStatusCode());
++
++      UserPassword password = new UserPassword();
++      password.setPassword("wrong-current-password");
++      password.setChangePassword("Password3");
++      ResponseEntity<Void> missingPassword = testRestTemplate.exchange(
++          "/api/v1/private/user/" + missingId + "/password", HttpMethod.PATCH,
++          new HttpEntity<>(password, getHeader()), Void.class);
++      assertEquals(HttpStatus.NOT_FOUND, missingPassword.getStatusCode());
++
++      ResponseEntity<Void> duplicate = testRestTemplate.exchange(
++          "/api/v1/private/user/", HttpMethod.POST,
++          new HttpEntity<>(existingUser("admin@shopizer.com"), getHeader()), Void.class);
++      assertEquals(HttpStatus.CONFLICT, duplicate.getStatusCode());
++
++      UserPassword wrongPassword = new UserPassword();
++      wrongPassword.setPassword("wrong-current-password");
++      wrongPassword.setChangePassword("Password3");
++      ResponseEntity<Void> wrongPasswordResponse = testRestTemplate.exchange(
++          "/api/v1/private/user/" + DEFAULT_USER_ID + "/password", HttpMethod.PATCH,
++          new HttpEntity<>(wrongPassword, getHeader()), Void.class);
++      assertEquals(HttpStatus.BAD_REQUEST, wrongPasswordResponse.getStatusCode());
++  }
++
++  private PersistableUser existingUser(String userName) {
++      PersistableUser user = new PersistableUser();
++      user.setUserName(userName);
++      user.setEmailAddress(userName + "@test.com");
++      user.setFirstName("Duplicate");
++      user.setLastName("User");
++      user.setDefaultLanguage("en");
++      user.setPassword(CREATED_PASSWORD);
++      user.setRepeatPassword(CREATED_PASSWORD);
++      PersistableGroup group = new PersistableGroup();
++      group.setName("ADMIN");
++      user.getGroups().add(group);
++      return user;
++  }
+   
+ 
+ 

@@ -1,0 +1,129 @@
+diff --git a/sm-shop/src/main/java/com/salesmanager/shop/store/api/v1/content/ContentApi.java b/sm-shop/src/main/java/com/salesmanager/shop/store/api/v1/content/ContentApi.java
+index f0c6a31..136713f 100755
+--- a/sm-shop/src/main/java/com/salesmanager/shop/store/api/v1/content/ContentApi.java
++++ b/sm-shop/src/main/java/com/salesmanager/shop/store/api/v1/content/ContentApi.java
+@@ -43,6 +43,7 @@ import com.salesmanager.shop.model.entity.Entity;
+ import com.salesmanager.shop.model.entity.EntityExists;
+ import com.salesmanager.shop.model.entity.ReadableEntityList;
+ import com.salesmanager.shop.store.api.exception.ServiceRuntimeException;
++import com.salesmanager.shop.store.api.exception.ResourceNotFoundException;
+ import com.salesmanager.shop.store.controller.content.facade.ContentFacade;
+ import com.salesmanager.shop.utils.ImageFilePath;
+ 
+@@ -115,12 +116,12 @@ public class ContentApi {
+ 	 * @param language
+ 	 * @return
+ 	 */
+-	@GetMapping(value = {"/content/boxes","/private/content/boxes"}, produces = MediaType.APPLICATION_JSON_VALUE)
++	@GetMapping(value = "/private/content/boxes", produces = MediaType.APPLICATION_JSON_VALUE)
+ 	@ApiOperation(httpMethod = "GET", value = "Get boxes for a given MerchantStore", notes = "", produces = "application/json", response = List.class)
+ 	@ApiImplicitParams({ 
+ 		@ApiImplicitParam(name = "store", dataType = "String", defaultValue = "DEFAULT"),
+ 		@ApiImplicitParam(name = "lang", dataType = "String", defaultValue = "en") })
+-	public ReadableEntityList<ReadableContentBox> boxes(
++	public ReadableEntityList<ReadableContentBox> manageBoxes(
+ 			@ApiIgnore MerchantStore merchantStore,
+ 			@ApiIgnore Language language,
+ 			int page,
+@@ -129,6 +130,18 @@ public class ContentApi {
+ 		return contentFacade.getContentBoxes(ContentType.BOX, merchantStore, language, page, count);
+ 	}
+ 
++	@GetMapping(value = "/content/boxes", produces = MediaType.APPLICATION_JSON_VALUE)
++	public ReadableEntityList<ReadableContentBox> boxes(
++			@ApiIgnore MerchantStore merchantStore, @ApiIgnore Language language, int page, int count) {
++		ReadableEntityList<ReadableContentBox> boxes = contentFacade.getContentBoxes(ContentType.BOX, merchantStore, language, page, count);
++		List<ReadableContentBox> visible = boxes.getItems().stream()
++				.filter(ReadableContentBox::isVisible).collect(java.util.stream.Collectors.toList());
++		boxes.setItems(visible);
++		boxes.setNumber(visible.size());
++		boxes.setRecordsTotal(visible.size());
++		return boxes;
++	}
++
+ 	/**
+ 	 * List specific content box
+ 	 * @param code
+@@ -358,7 +371,11 @@ public class ContentApi {
+ 			@ApiImplicitParam(name = "lang", dataType = "String", defaultValue = "en") })
+ 	public ReadableContentBox getBoxByCode(@PathVariable("code") String code, @ApiIgnore MerchantStore merchantStore,
+ 			@ApiIgnore Language language) {
+-		return contentFacade.getContentBox(code, merchantStore, language);
++		ReadableContentBox box = contentFacade.getContentBox(code, merchantStore, language);
++		if (!box.isVisible()) {
++			throw new ResourceNotFoundException("Resource not found [" + code + "]");
++		}
++		return box;
+ 	}
+ 
+ 
+diff --git a/sm-shop/src/test/java/com/salesmanager/test/shop/integration/content/ContentBoxVisibilityApiIntegrationTest.java b/sm-shop/src/test/java/com/salesmanager/test/shop/integration/content/ContentBoxVisibilityApiIntegrationTest.java
+new file mode 100644
+index 0000000..2b409b0
+--- /dev/null
++++ b/sm-shop/src/test/java/com/salesmanager/test/shop/integration/content/ContentBoxVisibilityApiIntegrationTest.java
+@@ -0,0 +1,64 @@
++package com.salesmanager.test.shop.integration.content;
++
++import static org.junit.Assert.assertEquals;
++import static org.junit.Assert.assertFalse;
++import static org.junit.Assert.assertTrue;
++
++import java.util.Collections;
++import java.util.HashMap;
++import java.util.Map;
++
++import javax.inject.Inject;
++
++import org.junit.Test;
++import org.junit.runner.RunWith;
++import org.springframework.boot.test.context.SpringBootTest;
++import org.springframework.boot.test.context.SpringBootTest.WebEnvironment;
++import org.springframework.boot.test.web.client.TestRestTemplate;
++import org.springframework.http.HttpEntity;
++import org.springframework.http.HttpHeaders;
++import org.springframework.http.HttpMethod;
++import org.springframework.http.HttpStatus;
++import org.springframework.http.ResponseEntity;
++import org.springframework.test.context.junit4.SpringRunner;
++
++import com.salesmanager.shop.application.ShopApplication;
++import com.salesmanager.shop.model.content.box.ReadableContentBox;
++import com.salesmanager.shop.model.entity.ReadableEntityList;
++import com.salesmanager.shop.model.entity.Entity;
++import com.salesmanager.test.shop.common.ServicesTestSupport;
++
++@SpringBootTest(classes = ShopApplication.class, webEnvironment = WebEnvironment.RANDOM_PORT)
++@RunWith(SpringRunner.class)
++public class ContentBoxVisibilityApiIntegrationTest extends ServicesTestSupport {
++
++    @Inject
++    private TestRestTemplate client;
++
++    @Test
++    public void hiddenBoxIsNotExposedByStorefrontApi() {
++        String code = "api-hidden-box";
++        Map<String, Object> box = new HashMap<>();
++        box.put("code", code);
++        box.put("visible", false);
++        Map<String, Object> description = new HashMap<>();
++        description.put("language", "en");
++        description.put("name", "Hidden box");
++        description.put("description", "Not live");
++        box.put("descriptions", Collections.singletonList(description));
++
++        ResponseEntity<Entity> created = client.exchange("/api/v1/private/content/box", HttpMethod.POST,
++                new HttpEntity<>(box, getHeader()), Entity.class);
++        assertEquals(HttpStatus.CREATED, created.getStatusCode());
++
++        HttpHeaders headers = new HttpHeaders();
++        ResponseEntity<ReadableEntityList> list = client.exchange("/api/v1/content/boxes?page=0&count=100",
++                HttpMethod.GET, new HttpEntity<>(headers), ReadableEntityList.class);
++        assertEquals(HttpStatus.OK, list.getStatusCode());
++        assertTrue(list.getBody().getItems().stream().noneMatch(item -> code.equals(((ReadableContentBox) item).getCode())));
++
++        ResponseEntity<String> read = client.exchange("/api/v1/content/boxes/" + code, HttpMethod.GET,
++                new HttpEntity<>(headers), String.class);
++        assertEquals(HttpStatus.NOT_FOUND, read.getStatusCode());
++    }
++}

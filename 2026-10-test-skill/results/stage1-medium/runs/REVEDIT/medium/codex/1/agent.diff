@@ -1,0 +1,223 @@
+diff --git a/sm-core/src/main/java/com/salesmanager/core/business/repositories/catalog/product/review/ProductReviewRepository.java b/sm-core/src/main/java/com/salesmanager/core/business/repositories/catalog/product/review/ProductReviewRepository.java
+index 6ef483a..bb5b3fb 100755
+--- a/sm-core/src/main/java/com/salesmanager/core/business/repositories/catalog/product/review/ProductReviewRepository.java
++++ b/sm-core/src/main/java/com/salesmanager/core/business/repositories/catalog/product/review/ProductReviewRepository.java
+@@ -27,6 +27,9 @@ public interface ProductReviewRepository extends JpaRepository<ProductReview, Lo
+ 	
+ 	@Query("select p from ProductReview p left join fetch p.descriptions pd join fetch p.customer pc join fetch pc.merchantStore pcm left join fetch pc.defaultLanguage pcl left join fetch pc.attributes pca left join fetch pca.customerOption pcao left join fetch pca.customerOptionValue pcav left join fetch pcao.descriptions pcaod left join fetch pcav.descriptions pcavd join fetch p.product pp join fetch pp.merchantStore ppm  join fetch p.product pp join fetch pp.merchantStore ppm left join fetch p.descriptions pd where pp.id = ?1 and pc.id = ?2")
+ 	ProductReview findByProductAndCustomer(Long productId, Long customerId);
++
++	@Query("select p.reviewRating from ProductReview p where p.product.id = ?1")
++	List<Double> findRatingsByProduct(Long productId);
+ 	
+ 	
+ }
+diff --git a/sm-core/src/main/java/com/salesmanager/core/business/services/catalog/product/review/ProductReviewServiceImpl.java b/sm-core/src/main/java/com/salesmanager/core/business/services/catalog/product/review/ProductReviewServiceImpl.java
+index e4068ce..4be76c6 100755
+--- a/sm-core/src/main/java/com/salesmanager/core/business/services/catalog/product/review/ProductReviewServiceImpl.java
++++ b/sm-core/src/main/java/com/salesmanager/core/business/services/catalog/product/review/ProductReviewServiceImpl.java
+@@ -54,6 +54,11 @@ public class ProductReviewServiceImpl extends
+ 	public List<ProductReview> getByProduct(Product product, Language language) {
+ 		return productReviewRepository.findByProduct(product.getId(), language.getId());
+ 	}
++
++	@Override
++	public ProductReview getById(Long id) {
++		return productReviewRepository.findById(id).orElse(null);
++	}
+ 	
+ 	private void saveOrUpdate(ProductReview review) throws ServiceException {
+ 		
+@@ -66,37 +71,24 @@ public class ProductReviewServiceImpl extends
+ 		//refresh product
+ 		Product product = productService.getById(review.getProduct().getId());
+ 		
+-		//ajust product rating
+-		Integer count = 0;
+-		if(product.getProductReviewCount()!=null) {
+-			count = product.getProductReviewCount();
+-		}
+-				
+-		
+-		
+-
+-		BigDecimal averageRating = product.getProductReviewAvg();
+-		if(averageRating==null) {
+-			averageRating = new BigDecimal(0);
+-		}
+-		//get reviews
+-
+-		
+-		BigDecimal totalRating = averageRating.multiply(new BigDecimal(count));
+-		totalRating = totalRating.add(new BigDecimal(review.getReviewRating()));
+-		
+-		count = count + 1;
+-		double avg = totalRating.doubleValue() / count;
+-		
+-		product.setProductReviewAvg(new BigDecimal(avg));
+-		product.setProductReviewCount(count);
+ 		super.save(review);
+-		
++		recalculateProductRating(product);
+ 		productService.update(product);
+-		
+ 		review.setProduct(product);
+ 		
+ 	}
++
++	private void recalculateProductRating(Product product) {
++		List<Double> ratings = productReviewRepository.findRatingsByProduct(product.getId());
++		BigDecimal total = BigDecimal.ZERO;
++		for (Double rating : ratings) {
++			total = total.add(BigDecimal.valueOf(rating));
++		}
++		product.setProductReviewCount(ratings.size());
++		product.setProductReviewAvg(ratings.isEmpty()
++				? BigDecimal.ZERO
++				: total.divide(BigDecimal.valueOf(ratings.size()), 10, java.math.RoundingMode.HALF_UP));
++	}
+ 	
+ 	public void update(ProductReview review) throws ServiceException {
+ 		this.saveOrUpdate(review);
+@@ -106,6 +98,15 @@ public class ProductReviewServiceImpl extends
+ 		this.saveOrUpdate(review);
+ 	}
+ 
++	@Override
++	public void delete(ProductReview review) throws ServiceException {
++		Product product = productService.getById(review.getProduct().getId());
++		super.delete(review);
++		flush();
++		recalculateProductRating(product);
++		productService.update(product);
++	}
++
+ 	/* (non-Javadoc)
+ 	 * @see com.salesmanager.core.business.services.catalog.product.review.ProductReviewService#getByProductNoObjects(com.salesmanager.core.model.catalog.product.Product)
+ 	 */
+diff --git a/sm-shop/src/main/java/com/salesmanager/shop/populator/catalog/PersistableProductReviewPopulator.java b/sm-shop/src/main/java/com/salesmanager/shop/populator/catalog/PersistableProductReviewPopulator.java
+index 5483b34..33a1c03 100755
+--- a/sm-shop/src/main/java/com/salesmanager/shop/populator/catalog/PersistableProductReviewPopulator.java
++++ b/sm-shop/src/main/java/com/salesmanager/shop/populator/catalog/PersistableProductReviewPopulator.java
+@@ -1,9 +1,6 @@
+ package com.salesmanager.shop.populator.catalog;
+ 
+ import java.util.Date;
+-import java.util.HashSet;
+-import java.util.Set;
+-
+ import org.apache.commons.lang3.Validate;
+ 
+ import com.salesmanager.core.business.exception.ConversionException;
+@@ -92,16 +89,21 @@ public class PersistableProductReviewPopulator extends
+ 				throw new ConversionException("Invalid language code, use iso codes (en, fr ...)");
+ 			}
+ 			
+-			ProductReviewDescription description = new ProductReviewDescription();
++			ProductReviewDescription description = null;
++			for (ProductReviewDescription existing : target.getDescriptions()) {
++				if (existing.getLanguage().getId().equals(lang.getId())) {
++					description = existing;
++					break;
++				}
++			}
++			if (description == null) {
++				description = new ProductReviewDescription();
++				description.setLanguage(lang);
++				description.setName("-");
++				description.setProductReview(target);
++				target.getDescriptions().add(description);
++			}
+ 			description.setDescription(source.getDescription());
+-			description.setLanguage(lang);
+-			description.setName("-");
+-			description.setProductReview(target);
+-			
+-			Set<ProductReviewDescription> descriptions = new HashSet<ProductReviewDescription>();
+-			descriptions.add(description);
+-			
+-			target.setDescriptions(descriptions);
+ 			
+ 			
+ 
+diff --git a/sm-shop/src/main/java/com/salesmanager/shop/store/api/v1/product/ProductReviewApi.java b/sm-shop/src/main/java/com/salesmanager/shop/store/api/v1/product/ProductReviewApi.java
+index 688493e..374110a 100755
+--- a/sm-shop/src/main/java/com/salesmanager/shop/store/api/v1/product/ProductReviewApi.java
++++ b/sm-shop/src/main/java/com/salesmanager/shop/store/api/v1/product/ProductReviewApi.java
+@@ -64,10 +64,12 @@ public class ProductReviewApi {
+       @Valid @RequestBody PersistableProductReview review,
+       @ApiIgnore MerchantStore merchantStore,
+       @ApiIgnore Language language,
+-      HttpServletRequest request,
++    HttpServletRequest request,
+       HttpServletResponse response) {
+ 
+     try {
++      review.setProductId(id);
++
+       // rating already exist
+       ProductReview prodReview =
+           productReviewService.getByProductAndCustomer(
+@@ -83,8 +85,6 @@ public class ProductReviewApi {
+         return null;
+       }
+ 
+-      review.setProductId(id);
+-
+       productCommonFacade.saveOrUpdateReview(review, merchantStore, language);
+ 
+       return review;
+@@ -152,7 +152,7 @@ public class ProductReviewApi {
+   })
+   public PersistableProductReview update(
+       @PathVariable final Long id,
+-      @PathVariable final Long reviewId,
++      @PathVariable("reviewid") final Long reviewId,
+       @Valid @RequestBody PersistableProductReview review,
+       @ApiIgnore MerchantStore merchantStore,
+       @ApiIgnore Language language,
+@@ -166,7 +166,8 @@ public class ProductReviewApi {
+         return null;
+       }
+ 
+-      if (prodReview.getCustomer().getId().longValue() != review.getCustomerId().longValue()) {
++      if (prodReview.getProduct().getId().longValue() != id.longValue()
++          || prodReview.getCustomer().getId().longValue() != review.getCustomerId().longValue()) {
+         response.sendError(404, "Product review with id " + reviewId + " does not exist");
+         return null;
+       }
+@@ -178,6 +179,7 @@ public class ProductReviewApi {
+       }
+ 
+       review.setProductId(id);
++      review.setId(reviewId);
+ 
+       productCommonFacade.saveOrUpdateReview(review, merchantStore, language);
+ 
+@@ -208,7 +210,7 @@ public class ProductReviewApi {
+   })
+   public void delete(
+       @PathVariable final Long id,
+-      @PathVariable final Long reviewId,
++      @PathVariable("reviewid") final Long reviewId,
+       @ApiIgnore MerchantStore merchantStore,
+       @ApiIgnore Language language,
+       HttpServletResponse response) {
+diff --git a/sm-shop/src/main/java/com/salesmanager/shop/store/facade/product/ProductCommonFacadeImpl.java b/sm-shop/src/main/java/com/salesmanager/shop/store/facade/product/ProductCommonFacadeImpl.java
+index cd3d302..7fba262 100644
+--- a/sm-shop/src/main/java/com/salesmanager/shop/store/facade/product/ProductCommonFacadeImpl.java
++++ b/sm-shop/src/main/java/com/salesmanager/shop/store/facade/product/ProductCommonFacadeImpl.java
+@@ -306,7 +306,12 @@ public class ProductCommonFacadeImpl implements ProductCommonFacade {
+ 		populator.setCustomerService(customerService);
+ 		populator.setProductService(productService);
+ 
+-		com.salesmanager.core.model.catalog.product.review.ProductReview rev = new com.salesmanager.core.model.catalog.product.review.ProductReview();
++		com.salesmanager.core.model.catalog.product.review.ProductReview rev = review.getId() == null || review.getId() <= 0
++				? new com.salesmanager.core.model.catalog.product.review.ProductReview()
++				: productReviewService.getById(review.getId());
++		if (rev == null) {
++			throw new IllegalArgumentException("Product review with id " + review.getId() + " does not exist");
++		}
+ 		populator.populate(review, rev, store, language);
+ 
+ 		if (review.getId() == null) {
