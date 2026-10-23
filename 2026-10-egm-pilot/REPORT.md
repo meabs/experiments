@@ -196,4 +196,5 @@ scripts/egm_drive.sh say <run> <run>/msgs/NN.md                      # each appr
 EGM_ARGS='-c model_reasoning_effort="medium"' scripts/egm_drive.sh new <run> arms/egm-build.md
 scripts/egm_drive.sh grade <run>
 scripts/export_run.sh <run> <approver transcript>                     # also runs audit_sessions.py and audit_approver.py
+uv run --with matplotlib python3 -I scripts/charts.py <out dir> [font dir]   # the website chart
 ```
