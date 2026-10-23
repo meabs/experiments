@@ -54,6 +54,31 @@ This is the main limit of the pilot: EGM without a human's judgement. A real eng
 - Tokens, cost, time and number of approver turns per EGM run, to price a full trial.
 - Hidden tests passed, per run, for both arms. With 2 or 3 runs per arm, this is a sanity check, not a comparison.
 
+## Follow-up 2: a Claude approver using judgement (design written 2026-10-23, before any run)
+
+In the pilot the approver followed a rule, because Claude, who ran the pilot, knew the hidden tests. Follow-up 2 asks whether an approver who uses judgement gets more out of EGM. The approver is a **fresh Claude agent per run that has never seen the hidden tests or the reference**.
+
+**The approver** (Claude Opus 5.5, a subagent started with no conversation history):
+
+- gets only the brief ([arms/approver-brief.md](arms/approver-brief.md)), which holds the task text and the path of the run's clone, then each of the coding agent's messages, verbatim;
+- may read the clone, to check what the design says about the code. It is told not to read anything else and not to edit files. Its tool calls are audited afterwards for any path outside the clone;
+- answers each gate as the engineer who asked for the feature: approve, push back, ask for changes, choose among options. Its replies are sent to the coding agent verbatim, and saved;
+- has 25 messages per run at most.
+
+Claude, running the experiment, only relays messages, apart from fixed operator messages: the start ([arms/egm-start.md](arms/egm-start.md) or [arms/plan-start.md](arms/plan-start.md)), and in EGM runs the review start once the approver approves the draft ([arms/egm-review-start.md](arms/egm-review-start.md)). The review start includes, up front, the pilot's method correction (spawn every reviewer with `fork_turns "none"`, one stage at a time). The plan arm's Codex home is a fresh one without the plugin (`home-plain`). Claude still applies the pilot's method clause (asking for a review stage to be rerun if the session audit shows reviewers spawned with the whole conversation), but adds nothing about the requirements.
+
+**Arms** (Codex `gpt-5.6-luna`, **medium effort in every session**; DISCOUNT; same grading):
+
+| Arm | Runs | What happens |
+| --- | --- | --- |
+| EGM + approver | 3 | `egm-draft`, then `egm-review` (interactive, all five stages), with the approver at every gate; then a fresh session builds from the approved design ([arms/egm-build.md](arms/egm-build.md)) |
+| plan + approver | 3 | Codex without EGM writes a design to `design_draft.md` ([arms/plan-start.md](arms/plan-start.md)); the approver reviews it, as often as it wants; then the same fresh build session |
+| plain (existing) | 2 | Task only, medium effort: the follow-up's baseline (4/16 twice; 13/16 twice on the diagnostic) |
+
+The plan arm controls for the approver: if EGM + approver does no better than plan + approver, any gain is the approver's, not EGM's.
+
+**Measures, fixed now:** hidden tests passed (the score), and the line-name diagnostic ([scripts/diag_line_name.sh](scripts/diag_line_name.sh)) as a secondary measure; cost of the Codex sessions; number of approver messages; whether the approved design names the totals line `discount`. With 3 runs per arm this is still a pilot: differences of a test or two mean nothing.
+
 ## Amendment log
 
 - 2026-10-23: pilot written at the user's request: "Do the pilot run but actually do a feature, you act as the human approver, be clear in write up we did this to scale the experiment".

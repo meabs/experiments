@@ -19,6 +19,7 @@ CMD="$1"; RUN="$2"; R="$W/egm-runs/$RUN"
 export JAVA_HOME=/opt/homebrew/opt/openjdk@21
 P="/opt/homebrew/opt/openjdk@21/bin:$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 ARGS=(--skip-git-repo-check --json -m gpt-5.6-luna -c 'model_reasoning_effort="low"')
+# EGM_HOME_SRC picks the Codex home copied into each run (default home-egm; home-clean has no plugin).
 # Extra Codex arguments, e.g. EGM_ARGS="--enable multi_agent_v2" (recorded in <run>/args).
 read -r -a EXTRA <<< "${EGM_ARGS:-}"
 ARGS+=(${EXTRA[@]+"${EXTRA[@]}"})
@@ -67,7 +68,7 @@ case "$CMD" in
     rm -rf "$R"; mkdir -p "$R/turns"; echo "$3" > "$R/task"
     git clone -q "$W/shopizer" "$R/repo"; git -C "$R/repo" checkout -q 6a4a0a6
     ( cd "$R/repo" && TRIAL_QUESTION="$3" bash "$E/scripts/setup.sh" )
-    cp -R "$W/home-egm" "$R/home"
+    cp -R "$W/${EGM_HOME_SRC:-home-egm}" "$R/home"
     profile
     turn "$4" -s danger-full-access "${ARGS[@]}" "$(cat "$4")" ;;
   seed)  # seed <run> <task> <design file>: a fresh clone with an approved design at its root, no turn run
@@ -75,7 +76,7 @@ case "$CMD" in
     git clone -q "$W/shopizer" "$R/repo"; git -C "$R/repo" checkout -q 6a4a0a6
     ( cd "$R/repo" && TRIAL_QUESTION="$3" bash "$E/scripts/setup.sh" )
     cp "$4" "$R/repo/design_draft.md"
-    cp -R "$W/home-egm" "$R/home"
+    cp -R "$W/${EGM_HOME_SRC:-home-egm}" "$R/home"
     profile ;;
   say)
     turn "$3" resume -c 'sandbox_mode="danger-full-access"' "${ARGS[@]}" "$(cat "$R/thread")" "$(cat "$3")" ;;
