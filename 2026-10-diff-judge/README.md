@@ -139,3 +139,13 @@ Machine set-up: [2026-10-test-skill-local/setup](../2026-10-test-skill-local/set
 ## Amendment log
 
 - 2026-10-23: design written at the user's request ("Start with #1 (judging diffs)", from a list of ideas for experiments that "challenge the hype"), before any judgement.
+- 2026-10-23, after the dry run and before any scored judgement: **hosted judge only.**
+  - **Why:** the dry run timed the local judge at 324 s and 246 s per judgement. It writes about 6,000 to 7,000 output tokens of reasoning before its verdict. At that speed the 312 local judgements would take about 25 hours, and the fixed fallback (240 judgements) about 19 hours. The budget was about 4 hours. The hosted dry run took 18 judgements at a median of 9 s, with every verdict parsed.
+  - **The user chose:** "Luna only (about 1 hour). This answers the hype question directly: can a model tell broken changes from working ones, and does the agent's success report sway it? H1–H3 are tested on luna, and H4 (local against hosted) is dropped. That departs from your local-against-hosted rule, so it gets recorded as an amendment that quotes you."
+  - **Changes:**
+    - No local judgements. H1 to H3 are tested on the hosted judge, `gpt-5.6-luna`, exactly as defined for the local one. H4 is dropped. Holm is applied over H1 to H3.
+    - The hosted judge runs all 96 items (288 judgements). The fixed size rule no longer applies.
+    - The 24 repeated judgements (stability) are made by the hosted judge.
+    - Every local-against-hosted secondary, the local time, and the energy measure are dropped.
+    - [`scripts/analyse.py`](scripts/analyse.py) tests H1 to H3 on the hosted judge when there are no local judgements. It was checked on synthetic data before any scored judgement.
+  - **Consequences:** this experiment does not compare local and hosted models, unlike the other experiments on this machine. The hosted judge is the same model that wrote every change it judges, so self-preference and skill can't be told apart. That limit applies now to the primary results, not only to a secondary.
