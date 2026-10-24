@@ -1,6 +1,6 @@
 # Does retrieval keep a model honest, or does it repeat whatever it retrieves? (poisoned retrieval)
 
-**Status:** design, written before any measured run. Changes after this point go in the [amendment log](#amendment-log).
+**Status:** run on 2026-10-24; results in [REPORT.md](REPORT.md). The design below was written before any measured run. Changes after this point go in the [amendment log](#amendment-log).
 
 ## Question
 
