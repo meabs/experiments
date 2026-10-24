@@ -165,4 +165,5 @@ uv run --with numpy python3 -I scripts/retrieve.py <hotpot_dev_distractor.json> 
 scripts/run_all.sh <out dir>
 scripts/export.sh <out dir> main
 python3 -I scripts/analyse.py results/main items/retrieved.json > results/analysis.md
+uv run --with matplotlib python3 -I scripts/charts.py results/main <out dir> <Inter font dir>   # the website chart
 ```
