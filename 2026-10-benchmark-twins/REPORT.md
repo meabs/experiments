@@ -12,7 +12,7 @@ Run on 2026-10-23 and 24. The design and hypotheses are in [README.md](README.md
   | local, GSM8K, new names | 59/64 | 59/64 |
   | local, HumanEval, renamed function | 75/80 | 72/80 |
   | hosted, GSM8K, new numbers | 175/184 | 172/184 |
-  | hosted, GSM8K, new names | 63/64 | 63/64 |
+  | hosted, GSM8K, new names | 62/64 | 63/64 |
   | hosted, HumanEval, renamed function | 75/80 | 75/80 |
 
   - **Local, new numbers:** 3.8 points lower on the twins (95% interval −1.6 to +9.2, Holm p 0.46). That is no measurable difference.
@@ -154,6 +154,8 @@ These were not part of the preregistered analysis.
 
 Nothing in the design, hypotheses or analysis. The sensitivity regrade and the other exploratory checks above were added after the results.
 
+Correction, 2026-10-24: the summary table first gave the hosted model's original score on the 64 names items as 63/64. It is 62/64. The hypothesis tables were right.
+
 ## Reproducing
 
 ```
@@ -163,4 +165,5 @@ scripts/run_all.sh <out dir>
 scripts/export.sh <out dir> main
 python3 -I scripts/analyse.py results/main > results/analysis.md
 python3 -I scripts/sensitivity.py results/main items > results/sensitivity.md
+uv run --with matplotlib python3 -I scripts/charts.py results/main <out dir> <Inter font dir>   # the website chart
 ```
