@@ -158,4 +158,5 @@ python3 -I scripts/make_items.py <gsm8k test.jsonl> items/items.json
 scripts/run_all.sh <out dir>
 scripts/export.sh <out dir> main
 python3 -I scripts/analyse.py results/main > results/analysis.md
+uv run --with matplotlib python3 -I scripts/charts.py results/main <out dir> <Inter font dir>   # the website chart
 ```
