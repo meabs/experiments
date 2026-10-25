@@ -203,6 +203,7 @@ python3 -I src/run.py <out dir>                              # all 840 runs, res
 src/export.sh <out dir> main                                 # copy into results/main with personal paths removed
 python3 -I src/analyse.py results/main > results/main/analysis.md
 python3 -I src/show.py results/main S35/falsified/1          # any run's transcript and score
+uv run --with matplotlib python3 -I src/charts.py results/main <out dir> <Inter font dir>   # the website chart
 ```
 
 `python3 -I src/run.py <dir> --only <scenario>/<condition>/<seed>` replays one run.
