@@ -1,6 +1,6 @@
 # Can manipulated evidence mislead an AI security agent?
 
-**Status:** design, written before any measured run. The hypotheses and analysis plan are in [HYPOTHESES.md](HYPOTHESES.md). Changes after the design is pushed go in the [amendment log](#amendment-log).
+**Status:** run on 2026-10-24 and 25; results in [REPORT.md](REPORT.md). The design below was written before any measured run. The hypotheses and analysis plan are in [HYPOTHESES.md](HYPOTHESES.md). Changes after the design is pushed go in the [amendment log](#amendment-log).
 
 A follow-up to [planted-errors](../2026-10-planted-errors/REPORT.md). That experiment changed a number inside a reasoning model's own thinking, and the wrong number reached the answer about a third of the time. This one asks whether the same thing happens when the wrong information arrives the way it would in practice: through the evidence an agent reads while triaging a security alert.
 
