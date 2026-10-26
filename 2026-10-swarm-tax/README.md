@@ -125,6 +125,7 @@ The first two smoke tests (8 team runs on SUPERDEL and TAXRATE, low effort) show
 
    No run read a path outside its clone or ran `mvn install`, and the shared Maven repository was unchanged (checksum of `com/shopizer` before and after).
 2. **Tasks built and validated. Done** (table above).
+   - **Grader check:** one solo run per new task through the final grader (not counted): every change compiled, no existing test broke, and the shared Maven repository was unchanged. Hidden tests passed: PRODUCTQA 14/14, TIERPRICE 13/14, WISHLIST 12/15, BACKINSTOCK 6/13, CARTLIMIT 2/14, in 98 to 158 seconds each. One run is not an estimate, but PRODUCTQA and TIERPRICE may leave little room above solo; this is reported with the results, and the tasks were not changed after seeing it.
 3. **Analysis script written and checked. Done.** [`scripts/analyse.py`](scripts/analyse.py) ran on the three DISCOUNT smoke runs and every section ran. Its best-of-k closed form matched a brute-force average over every ordering in 300 random cases (largest difference 1.4e-14).
 4. **Commit the design as final and push it, with the user's go-ahead, then run.**
 
