@@ -1,0 +1,354 @@
+diff --git a/sm-core-model/src/main/java/com/salesmanager/core/model/catalog/product/Product.java b/sm-core-model/src/main/java/com/salesmanager/core/model/catalog/product/Product.java
+index daac443..1eea96d 100755
+--- a/sm-core-model/src/main/java/com/salesmanager/core/model/catalog/product/Product.java
++++ b/sm-core-model/src/main/java/com/salesmanager/core/model/catalog/product/Product.java
+@@ -19,6 +19,7 @@ import javax.persistence.JoinTable;
+ import javax.persistence.ManyToMany;
+ import javax.persistence.ManyToOne;
+ import javax.persistence.OneToMany;
++import javax.persistence.OrderBy;
+ import javax.persistence.Table;
+ import javax.persistence.TableGenerator;
+ import javax.persistence.Temporal;
+@@ -126,6 +127,10 @@ public class Product extends SalesManagerEntity<Long, Product> implements Audita
+ 	 */
+ 	@OneToMany(fetch = FetchType.LAZY, cascade = CascadeType.ALL, mappedBy = "product")
+ 	private Set<ProductVariant> variants = new HashSet<ProductVariant>();
++
++	@OneToMany(fetch = FetchType.LAZY, cascade = CascadeType.ALL, mappedBy = "product", orphanRemoval = true)
++	@OrderBy("minQuantity ASC")
++	private Set<ProductTier> tiers = new java.util.LinkedHashSet<ProductTier>();
+ 	
+ 	@Column(name="DATE_AVAILABLE")
+ 	@Temporal(TemporalType.TIMESTAMP)
+@@ -550,6 +555,14 @@ public class Product extends SalesManagerEntity<Long, Product> implements Audita
+ 		this.productShipeable = productShipeable;
+ 	}
+ 
++	public Set<ProductTier> getTiers() {
++		return tiers;
++	}
++
++	public void setTiers(Set<ProductTier> tiers) {
++		this.tiers = tiers;
++	}
++
+ 
+ 
+ 
+diff --git a/sm-core-model/src/main/java/com/salesmanager/core/model/catalog/product/ProductTier.java b/sm-core-model/src/main/java/com/salesmanager/core/model/catalog/product/ProductTier.java
+new file mode 100644
+index 0000000..fd0f6fe
+--- /dev/null
++++ b/sm-core-model/src/main/java/com/salesmanager/core/model/catalog/product/ProductTier.java
+@@ -0,0 +1,54 @@
++package com.salesmanager.core.model.catalog.product;
++
++import java.math.BigDecimal;
++
++import javax.persistence.Column;
++import javax.persistence.Entity;
++import javax.persistence.FetchType;
++import javax.persistence.GeneratedValue;
++import javax.persistence.GenerationType;
++import javax.persistence.Id;
++import javax.persistence.JoinColumn;
++import javax.persistence.ManyToOne;
++import javax.persistence.Table;
++import javax.persistence.TableGenerator;
++
++import com.fasterxml.jackson.annotation.JsonIgnore;
++import com.salesmanager.core.model.generic.SalesManagerEntity;
++
++@Entity
++@Table(name = "PRODUCT_TIER")
++public class ProductTier extends SalesManagerEntity<Long, ProductTier> {
++    private static final long serialVersionUID = 1L;
++
++    @Id
++    @Column(name = "PRODUCT_TIER_ID", nullable = false)
++    @TableGenerator(name = "TABLE_GEN", table = "SM_SEQUENCER", pkColumnName = "SEQ_NAME",
++            valueColumnName = "SEQ_COUNT", pkColumnValue = "PRODUCT_TIER_SEQ_NEXT_VAL")
++    @GeneratedValue(strategy = GenerationType.TABLE, generator = "TABLE_GEN")
++    private Long id;
++
++    @JsonIgnore
++    @ManyToOne(fetch = FetchType.LAZY)
++    @JoinColumn(name = "PRODUCT_ID", nullable = false)
++    private Product product;
++
++    @Column(name = "MIN_QUANTITY", nullable = false)
++    private Integer minQuantity;
++
++    @Column(name = "PRICE", nullable = false, precision = 19, scale = 6)
++    private BigDecimal price;
++
++    @Override
++    public Long getId() { return id; }
++
++    @Override
++    public void setId(Long id) { this.id = id; }
++
++    public Product getProduct() { return product; }
++    public void setProduct(Product product) { this.product = product; }
++    public Integer getMinQuantity() { return minQuantity; }
++    public void setMinQuantity(Integer minQuantity) { this.minQuantity = minQuantity; }
++    public BigDecimal getPrice() { return price; }
++    public void setPrice(BigDecimal price) { this.price = price; }
++}
+diff --git a/sm-core/src/main/java/com/salesmanager/core/business/services/order/OrderServiceImpl.java b/sm-core/src/main/java/com/salesmanager/core/business/services/order/OrderServiceImpl.java
+index b6bac52..ff13dba 100755
+--- a/sm-core/src/main/java/com/salesmanager/core/business/services/order/OrderServiceImpl.java
++++ b/sm-core/src/main/java/com/salesmanager/core/business/services/order/OrderServiceImpl.java
+@@ -30,6 +30,7 @@ import com.salesmanager.core.business.exception.ServiceException;
+ import com.salesmanager.core.business.modules.order.InvoiceModule;
+ import com.salesmanager.core.business.repositories.order.OrderRepository;
+ import com.salesmanager.core.business.services.catalog.product.ProductService;
++import com.salesmanager.core.business.services.catalog.pricing.PricingService;
+ import com.salesmanager.core.business.services.common.generic.SalesManagerEntityServiceImpl;
+ import com.salesmanager.core.business.services.customer.CustomerService;
+ import com.salesmanager.core.business.services.order.ordertotal.OrderTotalService;
+@@ -39,6 +40,7 @@ import com.salesmanager.core.business.services.shipping.ShippingService;
+ import com.salesmanager.core.business.services.shoppingcart.ShoppingCartService;
+ import com.salesmanager.core.business.services.tax.TaxService;
+ import com.salesmanager.core.model.catalog.product.Product;
++import com.salesmanager.core.model.catalog.product.ProductTier;
+ import com.salesmanager.core.model.catalog.product.availability.ProductAvailability;
+ import com.salesmanager.core.model.catalog.product.price.FinalPrice;
+ import com.salesmanager.core.model.common.UserContext;
+@@ -83,6 +85,9 @@ public class OrderServiceImpl  extends SalesManagerEntityServiceImpl<Long, Order
+     @Inject
+     private ProductService productService;
+ 
++    @Inject
++    private PricingService pricingService;
++
+     @Inject
+     private TaxService taxService;
+ 
+@@ -234,7 +239,25 @@ public class OrderServiceImpl  extends SalesManagerEntityServiceImpl<Long, Order
+         subTotal.setScale(2, RoundingMode.HALF_UP);
+         for(ShoppingCartItem item : summary.getProducts()) {
+ 
+-            BigDecimal st = item.getItemPrice().multiply(new BigDecimal(item.getQuantity()));
++            // Tier pricing is line-specific and must be selected from the current quantity
++            // on every cart calculation (tiers may have changed since the cart was saved).
++            FinalPrice currentPrice = pricingService.calculateProductPrice(item.getProduct());
++            BigDecimal unitPrice = currentPrice.getFinalPrice();
++            ProductTier selectedTier = null;
++            if (item.getProduct().getTiers() != null) {
++                for (ProductTier tier : item.getProduct().getTiers()) {
++                    if (tier.getMinQuantity() <= item.getQuantity()
++                            && (selectedTier == null || tier.getMinQuantity() > selectedTier.getMinQuantity())) {
++                        selectedTier = tier;
++                    }
++                }
++            }
++            if (selectedTier != null && selectedTier.getPrice().compareTo(unitPrice) < 0) {
++                unitPrice = selectedTier.getPrice();
++            }
++            item.setItemPrice(unitPrice);
++
++            BigDecimal st = unitPrice.multiply(new BigDecimal(item.getQuantity()));
+             item.setSubTotal(st);
+             subTotal = subTotal.add(st);
+             //Other prices
+diff --git a/sm-shop-model/src/main/java/com/salesmanager/shop/model/catalog/product/ProductTierData.java b/sm-shop-model/src/main/java/com/salesmanager/shop/model/catalog/product/ProductTierData.java
+new file mode 100644
+index 0000000..088c8d0
+--- /dev/null
++++ b/sm-shop-model/src/main/java/com/salesmanager/shop/model/catalog/product/ProductTierData.java
+@@ -0,0 +1,13 @@
++package com.salesmanager.shop.model.catalog.product;
++
++import java.math.BigDecimal;
++
++public class ProductTierData {
++    private Integer minQuantity;
++    private BigDecimal price;
++
++    public Integer getMinQuantity() { return minQuantity; }
++    public void setMinQuantity(Integer minQuantity) { this.minQuantity = minQuantity; }
++    public BigDecimal getPrice() { return price; }
++    public void setPrice(BigDecimal price) { this.price = price; }
++}
+diff --git a/sm-shop/src/main/java/com/salesmanager/shop/mapper/cart/ReadableShoppingCartMapper.java b/sm-shop/src/main/java/com/salesmanager/shop/mapper/cart/ReadableShoppingCartMapper.java
+index ba56548..2130fdc 100644
+--- a/sm-shop/src/main/java/com/salesmanager/shop/mapper/cart/ReadableShoppingCartMapper.java
++++ b/sm-shop/src/main/java/com/salesmanager/shop/mapper/cart/ReadableShoppingCartMapper.java
+@@ -105,6 +105,11 @@ public class ReadableShoppingCartMapper implements Mapper<ShoppingCart, Readable
+ 
+ 		destination.setCode(source.getShoppingCartCode());
+ 		int cartQuantity = 0;
++		try {
++			shoppingCartCalculationService.calculate(source, store, language);
++		} catch (Exception e) {
++			throw new ConversionRuntimeException("Unable to recalculate shopping cart", e);
++		}
+ 
+ 		destination.setCustomer(source.getCustomerId());
+ 
+diff --git a/sm-shop/src/main/java/com/salesmanager/shop/populator/shoppingCart/ShoppingCartDataPopulator.java b/sm-shop/src/main/java/com/salesmanager/shop/populator/shoppingCart/ShoppingCartDataPopulator.java
+index b68c3c8..df17662 100755
+--- a/sm-shop/src/main/java/com/salesmanager/shop/populator/shoppingCart/ShoppingCartDataPopulator.java
++++ b/sm-shop/src/main/java/com/salesmanager/shop/populator/shoppingCart/ShoppingCartDataPopulator.java
+@@ -91,11 +91,13 @@ public class ShoppingCartDataPopulator extends AbstractDataPopulator<ShoppingCar
+ 
+     	Validate.notNull(shoppingCart, "Requires ShoppingCart");
+     	Validate.notNull(language, "Requires Language not null");
+-    	int cartQuantity = 0;
++        int cartQuantity = 0;
+         cart.setCode(shoppingCart.getShoppingCartCode());
+         Set<com.salesmanager.core.model.shoppingcart.ShoppingCartItem> items = shoppingCart.getLineItems();
++        OrderTotalSummary orderSummary;
+         List<ShoppingCartItem> shoppingCartItemsList=Collections.emptyList();
+         try{
++            orderSummary = shoppingCartCalculationService.calculate(shoppingCart,store, language);
+             if(items!=null) {
+                 shoppingCartItemsList=new ArrayList<ShoppingCartItem>();
+                 for(com.salesmanager.core.model.shoppingcart.ShoppingCartItem item : items) {
+@@ -183,8 +185,6 @@ public class ShoppingCartDataPopulator extends AbstractDataPopulator<ShoppingCar
+             List<com.salesmanager.core.model.shoppingcart.ShoppingCartItem> productsList = new ArrayList<com.salesmanager.core.model.shoppingcart.ShoppingCartItem>();
+             productsList.addAll(shoppingCart.getLineItems());
+             summary.setProducts(productsList.stream().filter(p -> p.getProduct().isAvailable()).collect(Collectors.toList()));
+-            OrderTotalSummary orderSummary = shoppingCartCalculationService.calculate(shoppingCart,store, language );
+-
+             if(CollectionUtils.isNotEmpty(orderSummary.getTotals())) {
+             	List<OrderTotal> totals = new ArrayList<OrderTotal>();
+             	for(com.salesmanager.core.model.order.OrderTotal t : orderSummary.getTotals()) {
+diff --git a/sm-shop/src/main/java/com/salesmanager/shop/store/api/exception/RestErrorHandler.java b/sm-shop/src/main/java/com/salesmanager/shop/store/api/exception/RestErrorHandler.java
+index 054ea33..22e3b2c 100755
+--- a/sm-shop/src/main/java/com/salesmanager/shop/store/api/exception/RestErrorHandler.java
++++ b/sm-shop/src/main/java/com/salesmanager/shop/store/api/exception/RestErrorHandler.java
+@@ -13,13 +13,21 @@ import org.springframework.web.bind.annotation.ControllerAdvice;
+ import org.springframework.web.bind.annotation.ExceptionHandler;
+ import org.springframework.web.bind.annotation.RequestMapping;
+ import org.springframework.web.bind.annotation.ResponseBody;
+-import org.springframework.web.bind.annotation.ResponseStatus;
++import org.springframework.web.bind.annotation.ResponseStatus;
++import org.springframework.http.converter.HttpMessageNotReadableException;
+ 
+ @Order(Ordered.HIGHEST_PRECEDENCE)
+ @ControllerAdvice({"com.salesmanager.shop.store.api"})
+-public class RestErrorHandler {
++public class RestErrorHandler {
+   
+-    private static final Logger log = LoggerFactory.getLogger(RestErrorHandler.class);
++    private static final Logger log = LoggerFactory.getLogger(RestErrorHandler.class);
++
++    @RequestMapping(produces = "application/json")
++    @ExceptionHandler(HttpMessageNotReadableException.class)
++    @ResponseStatus(HttpStatus.BAD_REQUEST)
++    public @ResponseBody ErrorEntity handleUnreadableMessage(HttpMessageNotReadableException exception) {
++        return createErrorEntity("400", "Invalid request body", exception.getMostSpecificCause().getMessage());
++    }
+ 
+     @RequestMapping(produces = "application/json")
+     @ExceptionHandler(Exception.class)
+diff --git a/sm-shop/src/main/java/com/salesmanager/shop/store/api/v1/product/ProductTierApi.java b/sm-shop/src/main/java/com/salesmanager/shop/store/api/v1/product/ProductTierApi.java
+new file mode 100644
+index 0000000..8146d47
+--- /dev/null
++++ b/sm-shop/src/main/java/com/salesmanager/shop/store/api/v1/product/ProductTierApi.java
+@@ -0,0 +1,101 @@
++package com.salesmanager.shop.store.api.v1.product;
++
++import java.math.BigDecimal;
++import java.util.ArrayList;
++import java.util.Comparator;
++import java.util.HashSet;
++import java.util.List;
++import java.util.Set;
++import java.util.stream.Collectors;
++
++import javax.inject.Inject;
++
++import org.springframework.http.HttpStatus;
++import org.springframework.stereotype.Controller;
++import org.springframework.web.bind.annotation.GetMapping;
++import org.springframework.web.bind.annotation.PathVariable;
++import org.springframework.web.bind.annotation.PutMapping;
++import org.springframework.web.bind.annotation.RequestBody;
++import org.springframework.web.bind.annotation.RequestMapping;
++import org.springframework.web.bind.annotation.ResponseBody;
++import org.springframework.web.bind.annotation.ResponseStatus;
++
++import com.salesmanager.core.business.services.catalog.product.ProductService;
++import com.salesmanager.core.model.catalog.product.Product;
++import com.salesmanager.core.model.catalog.product.ProductTier;
++import com.salesmanager.core.model.merchant.MerchantStore;
++import com.salesmanager.shop.model.catalog.product.ProductTierData;
++import com.salesmanager.shop.store.api.exception.ResourceNotFoundException;
++import com.salesmanager.shop.store.api.exception.RestApiException;
++import com.salesmanager.shop.store.controller.user.facade.UserFacade;
++import com.salesmanager.shop.constants.Constants;
++import springfox.documentation.annotations.ApiIgnore;
++
++@Controller
++@RequestMapping("/api/v1")
++public class ProductTierApi {
++    @Inject private ProductService productService;
++    @Inject private UserFacade userFacade;
++
++    @GetMapping("/private/product/{id}/tiers")
++    @ResponseBody
++    public List<ProductTierData> get(@PathVariable Long id, @ApiIgnore MerchantStore store) {
++        authorize();
++        return data(product(id, store).getTiers());
++    }
++
++    @PutMapping("/private/product/{id}/tiers")
++    @ResponseStatus(HttpStatus.OK)
++    @ResponseBody
++    public List<ProductTierData> replace(@PathVariable Long id, @RequestBody List<ProductTierData> request,
++            @ApiIgnore MerchantStore store) {
++        authorize();
++        if (request == null || request.size() > 10) bad("At most 10 tiers are allowed");
++        Product product = product(id, store);
++        Set<Integer> quantities = new HashSet<>();
++        List<ProductTierData> sorted = new ArrayList<>(request);
++        sorted.sort(Comparator.nullsFirst(Comparator.comparing(ProductTierData::getMinQuantity,
++                Comparator.nullsFirst(Comparator.naturalOrder()))));
++        BigDecimal previousPrice = null;
++        for (ProductTierData input : sorted) {
++            if (input == null || input.getMinQuantity() == null || input.getMinQuantity() < 2
++                    || input.getPrice() == null || input.getPrice().compareTo(BigDecimal.ZERO) <= 0
++                    || !quantities.add(input.getMinQuantity())) bad("Invalid product tier");
++            if (previousPrice != null && input.getPrice().compareTo(previousPrice) >= 0)
++                bad("Higher quantities must have lower prices");
++            previousPrice = input.getPrice();
++        }
++        Set<ProductTier> tiers = new java.util.LinkedHashSet<>();
++        for (ProductTierData input : sorted) {
++            ProductTier tier = new ProductTier();
++            tier.setProduct(product);
++            tier.setMinQuantity(input.getMinQuantity());
++            tier.setPrice(input.getPrice());
++            tiers.add(tier);
++        }
++        product.setTiers(tiers);
++        try { productService.saveProduct(product); }
++        catch (Exception e) { throw new RestApiException("Unable to save product tiers"); }
++        return data(product.getTiers());
++    }
++
++    private Product product(Long id, MerchantStore store) {
++        Product product = productService.retrieveById(id, store).orElse(null);
++        if (product == null) throw new ResourceNotFoundException("Product not found");
++        return product;
++    }
++
++    private List<ProductTierData> data(Set<ProductTier> tiers) {
++        return tiers.stream().sorted(Comparator.comparing(ProductTier::getMinQuantity)).map(t -> {
++            ProductTierData d = new ProductTierData(); d.setMinQuantity(t.getMinQuantity()); d.setPrice(t.getPrice()); return d;
++        }).collect(Collectors.toList());
++    }
++
++    private void bad(String message) { throw new RestApiException(message); }
++    private void authorize() {
++        String user = userFacade.authenticatedUser();
++        if (user == null) throw new com.salesmanager.shop.store.api.exception.UnauthorizedException();
++        userFacade.authorizedGroup(user, java.util.stream.Stream.of(Constants.GROUP_SUPERADMIN, Constants.GROUP_ADMIN,
++                Constants.GROUP_ADMIN_CATALOGUE, Constants.GROUP_ADMIN_RETAIL).collect(Collectors.toList()));
++    }
++}

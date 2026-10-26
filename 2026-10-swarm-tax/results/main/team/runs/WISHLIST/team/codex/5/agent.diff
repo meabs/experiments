@@ -1,0 +1,205 @@
+diff --git a/sm-core-model/src/main/java/com/salesmanager/core/model/customer/WishlistItem.java b/sm-core-model/src/main/java/com/salesmanager/core/model/customer/WishlistItem.java
+new file mode 100644
+index 0000000..7791b65
+--- /dev/null
++++ b/sm-core-model/src/main/java/com/salesmanager/core/model/customer/WishlistItem.java
+@@ -0,0 +1,25 @@
++package com.salesmanager.core.model.customer;
++
++import java.io.Serializable;
++import java.util.Date;
++import javax.persistence.*;
++import com.salesmanager.core.model.merchant.MerchantStore;
++
++/** A customer's saved product SKU, scoped to a merchant store. */
++@Entity
++@Table(name="WISHLIST_ITEM", uniqueConstraints=@UniqueConstraint(name="WISHLIST_CUSTOMER_SKU_UK", columnNames={"CUSTOMER_ID","MERCHANT_ID","SKU"}), indexes={@Index(name="WISHLIST_STORE_IDX", columnList="MERCHANT_ID"), @Index(name="WISHLIST_SKU_IDX", columnList="SKU")})
++public class WishlistItem implements Serializable {
++ private static final long serialVersionUID=1L;
++ @Id @GeneratedValue(strategy=GenerationType.TABLE, generator="TABLE_GEN")
++ @TableGenerator(name="TABLE_GEN", table="SM_SEQUENCER", pkColumnName="SEQ_NAME", valueColumnName="SEQ_COUNT", pkColumnValue="WISHLIST_SEQ_NEXT_VAL")
++ @Column(name="WISHLIST_ID") private Long id;
++ @Column(name="CUSTOMER_ID",nullable=false) private Long customerId;
++ @ManyToOne(fetch=FetchType.LAZY,optional=false) @JoinColumn(name="MERCHANT_ID",nullable=false) private MerchantStore merchantStore;
++ @Column(name="SKU",nullable=false,length=255) private String sku;
++ @Temporal(TemporalType.TIMESTAMP) @Column(name="CREATED_AT",nullable=false) private Date createdAt=new Date();
++ public Long getId(){return id;} public void setId(Long v){id=v;}
++ public Long getCustomerId(){return customerId;} public void setCustomerId(Long v){customerId=v;}
++ public MerchantStore getMerchantStore(){return merchantStore;} public void setMerchantStore(MerchantStore v){merchantStore=v;}
++ public String getSku(){return sku;} public void setSku(String v){sku=v;}
++ public Date getCreatedAt(){return createdAt;} public void setCreatedAt(Date v){createdAt=v;}
++}
+diff --git a/sm-core/src/main/java/com/salesmanager/core/business/repositories/customer/WishlistItemRepository.java b/sm-core/src/main/java/com/salesmanager/core/business/repositories/customer/WishlistItemRepository.java
+new file mode 100644
+index 0000000..b73896e
+--- /dev/null
++++ b/sm-core/src/main/java/com/salesmanager/core/business/repositories/customer/WishlistItemRepository.java
+@@ -0,0 +1,12 @@
++package com.salesmanager.core.business.repositories.customer;
++import java.util.*;
++import org.springframework.data.jpa.repository.*;
++import com.salesmanager.core.model.customer.WishlistItem;
++public interface WishlistItemRepository extends JpaRepository<WishlistItem,Long> {
++ List<WishlistItem> findByCustomerIdAndMerchantStoreIdOrderByCreatedAtDesc(Long customerId,Integer storeId);
++ Optional<WishlistItem> findByCustomerIdAndMerchantStoreIdAndSku(Long customerId,Integer storeId,String sku);
++ void deleteByCustomerIdAndMerchantStoreIdAndSku(Long customerId,Integer storeId,String sku);
++ void deleteBySkuAndMerchantStoreId(String sku,Integer storeId);
++ @Query("select w.sku as sku, count(distinct w.customerId) as count from WishlistItem w where w.merchantStore.id = ?1 group by w.sku order by count(distinct w.customerId) desc, w.sku asc")
++ List<Object[]> popular(Integer storeId);
++}
+diff --git a/sm-core/src/main/java/com/salesmanager/core/business/services/catalog/product/ProductServiceImpl.java b/sm-core/src/main/java/com/salesmanager/core/business/services/catalog/product/ProductServiceImpl.java
+index 883ae07..1177e69 100755
+--- a/sm-core/src/main/java/com/salesmanager/core/business/services/catalog/product/ProductServiceImpl.java
++++ b/sm-core/src/main/java/com/salesmanager/core/business/services/catalog/product/ProductServiceImpl.java
+@@ -32,6 +32,7 @@ import com.salesmanager.core.business.services.catalog.product.image.ProductImag
+ import com.salesmanager.core.business.services.catalog.product.price.ProductPriceService;
+ import com.salesmanager.core.business.services.catalog.product.relationship.ProductRelationshipService;
+ import com.salesmanager.core.business.services.catalog.product.review.ProductReviewService;
++import com.salesmanager.core.business.services.customer.WishlistService;
+ import com.salesmanager.core.business.services.common.generic.SalesManagerEntityServiceImpl;
+ import com.salesmanager.core.business.utils.CatalogServiceHelper;
+ import com.salesmanager.core.business.utils.CoreConfiguration;
+@@ -62,6 +63,9 @@ public class ProductServiceImpl extends SalesManagerEntityServiceImpl<Long, Prod
+ 	@Inject
+ 	ProductAvailabilityService productAvailabilityService;
+ 
++	@Inject
++	WishlistService wishlistService;
++
+ 	@Inject
+ 	ProductPriceService productPriceService;
+ 
+@@ -218,6 +222,11 @@ public class ProductServiceImpl extends SalesManagerEntityServiceImpl<Long, Prod
+ 		product = this.getById(product.getId());// Prevents detached entity
+ 												// error
+ 		product.setCategories(null);
++		try {
++			if (product.getSku() != null) wishlistService.purgeSku(product.getSku(), product.getMerchantStore());
++			final MerchantStore wishlistStore = product.getMerchantStore();
++			if (product.getVariants() != null) product.getVariants().forEach(v -> { if (v.getSku() != null) { try { wishlistService.purgeSku(v.getSku(), wishlistStore); } catch (ServiceException e) { throw new RuntimeException(e); } } });
++		} catch (ServiceException e) { throw e; }
+ 
+ 		Set<ProductImage> images = product.getImages();
+ 
+diff --git a/sm-core/src/main/java/com/salesmanager/core/business/services/customer/WishlistService.java b/sm-core/src/main/java/com/salesmanager/core/business/services/customer/WishlistService.java
+new file mode 100644
+index 0000000..0c1270e
+--- /dev/null
++++ b/sm-core/src/main/java/com/salesmanager/core/business/services/customer/WishlistService.java
+@@ -0,0 +1,12 @@
++package com.salesmanager.core.business.services.customer;
++import java.util.*;
++import com.salesmanager.core.business.exception.ServiceException;
++import com.salesmanager.core.model.customer.WishlistItem;
++import com.salesmanager.core.model.merchant.MerchantStore;
++public interface WishlistService {
++ List<WishlistItem> get(Long customerId, MerchantStore store) throws ServiceException;
++ WishlistItem add(Long customerId,String sku,MerchantStore store) throws ServiceException;
++ void remove(Long customerId,String sku,MerchantStore store) throws ServiceException;
++ List<Object[]> popular(MerchantStore store) throws ServiceException;
++ void purgeSku(String sku, MerchantStore store) throws ServiceException;
++}
+diff --git a/sm-core/src/main/java/com/salesmanager/core/business/services/customer/WishlistServiceImpl.java b/sm-core/src/main/java/com/salesmanager/core/business/services/customer/WishlistServiceImpl.java
+new file mode 100644
+index 0000000..f8ebcd0
+--- /dev/null
++++ b/sm-core/src/main/java/com/salesmanager/core/business/services/customer/WishlistServiceImpl.java
+@@ -0,0 +1,18 @@
++package com.salesmanager.core.business.services.customer;
++import java.util.*;
++import javax.inject.Inject;
++import org.springframework.stereotype.Service;
++import org.springframework.transaction.annotation.Transactional;
++import com.salesmanager.core.business.exception.ServiceException;
++import com.salesmanager.core.business.repositories.customer.WishlistItemRepository;
++import com.salesmanager.core.model.customer.WishlistItem;
++import com.salesmanager.core.model.merchant.MerchantStore;
++@Service("wishlistService") @Transactional
++public class WishlistServiceImpl implements WishlistService {
++ @Inject private WishlistItemRepository repository;
++ public List<WishlistItem> get(Long c,MerchantStore s){return repository.findByCustomerIdAndMerchantStoreIdOrderByCreatedAtDesc(c,s.getId());}
++ public WishlistItem add(Long c,String sku,MerchantStore s){Optional<WishlistItem> old=repository.findByCustomerIdAndMerchantStoreIdAndSku(c,s.getId(),sku); if(old.isPresent()) return old.get(); WishlistItem w=new WishlistItem();w.setCustomerId(c);w.setSku(sku);w.setMerchantStore(s);return repository.save(w);}
++ public void remove(Long c,String sku,MerchantStore s){repository.deleteByCustomerIdAndMerchantStoreIdAndSku(c,s.getId(),sku);}
++ public List<Object[]> popular(MerchantStore s){return repository.popular(s.getId());}
++ public void purgeSku(String sku,MerchantStore store){repository.deleteBySkuAndMerchantStoreId(sku,store.getId());}
++}
+diff --git a/sm-shop-model/src/main/java/com/salesmanager/shop/model/wishlist/PersistableWishlistItem.java b/sm-shop-model/src/main/java/com/salesmanager/shop/model/wishlist/PersistableWishlistItem.java
+new file mode 100644
+index 0000000..86432e6
+--- /dev/null
++++ b/sm-shop-model/src/main/java/com/salesmanager/shop/model/wishlist/PersistableWishlistItem.java
+@@ -0,0 +1,2 @@
++package com.salesmanager.shop.model.wishlist;
++public class PersistableWishlistItem { private String product; public String getProduct(){return product;} public void setProduct(String v){product=v;} }
+diff --git a/sm-shop-model/src/main/java/com/salesmanager/shop/model/wishlist/ReadableWishlist.java b/sm-shop-model/src/main/java/com/salesmanager/shop/model/wishlist/ReadableWishlist.java
+new file mode 100644
+index 0000000..4930b49
+--- /dev/null
++++ b/sm-shop-model/src/main/java/com/salesmanager/shop/model/wishlist/ReadableWishlist.java
+@@ -0,0 +1,3 @@
++package com.salesmanager.shop.model.wishlist;
++import java.util.*;
++public class ReadableWishlist { private int count; private List<ReadableWishlistItem> items; public ReadableWishlist(List<ReadableWishlistItem> i){items=i;count=i.size();} public int getCount(){return count;} public List<ReadableWishlistItem> getItems(){return items;} }
+diff --git a/sm-shop-model/src/main/java/com/salesmanager/shop/model/wishlist/ReadableWishlistItem.java b/sm-shop-model/src/main/java/com/salesmanager/shop/model/wishlist/ReadableWishlistItem.java
+new file mode 100644
+index 0000000..0488cb7
+--- /dev/null
++++ b/sm-shop-model/src/main/java/com/salesmanager/shop/model/wishlist/ReadableWishlistItem.java
+@@ -0,0 +1,3 @@
++package com.salesmanager.shop.model.wishlist;
++import java.util.Date;
++public class ReadableWishlistItem { private String sku; private Date addedAt; public ReadableWishlistItem(){} public ReadableWishlistItem(String s,Date d){sku=s;addedAt=d;} public String getSku(){return sku;} public void setSku(String v){sku=v;} public Date getAddedAt(){return addedAt;} public void setAddedAt(Date v){addedAt=v;} }
+diff --git a/sm-shop-model/src/main/java/com/salesmanager/shop/model/wishlist/WishlistPopularItem.java b/sm-shop-model/src/main/java/com/salesmanager/shop/model/wishlist/WishlistPopularItem.java
+new file mode 100644
+index 0000000..def9458
+--- /dev/null
++++ b/sm-shop-model/src/main/java/com/salesmanager/shop/model/wishlist/WishlistPopularItem.java
+@@ -0,0 +1,2 @@
++package com.salesmanager.shop.model.wishlist;
++public class WishlistPopularItem { private String sku; private long count; public WishlistPopularItem(){} public WishlistPopularItem(String s,long c){sku=s;count=c;} public String getSku(){return sku;} public void setSku(String v){sku=v;} public long getCount(){return count;} public void setCount(long v){count=v;} }
+diff --git a/sm-shop/src/main/java/com/salesmanager/shop/store/api/v1/WishlistPrivateApi.java b/sm-shop/src/main/java/com/salesmanager/shop/store/api/v1/WishlistPrivateApi.java
+new file mode 100644
+index 0000000..633a0dd
+--- /dev/null
++++ b/sm-shop/src/main/java/com/salesmanager/shop/store/api/v1/WishlistPrivateApi.java
+@@ -0,0 +1,3 @@
++package com.salesmanager.shop.store.api.v1;
++import java.util.*; import javax.inject.Inject; import org.springframework.web.bind.annotation.*; import com.salesmanager.core.business.services.customer.WishlistService; import com.salesmanager.core.model.merchant.MerchantStore; import com.salesmanager.shop.model.wishlist.WishlistPopularItem; import springfox.documentation.annotations.ApiIgnore;
++@RestController @RequestMapping("/api/v1/private/wishlists") public class WishlistPrivateApi { @Inject private WishlistService service; @GetMapping("/popular") public List<WishlistPopularItem> popular(@ApiIgnore MerchantStore s) throws Exception {List<WishlistPopularItem> out=new ArrayList<>(); for(Object[] x:service.popular(s)){if(out.size()==10)break;out.add(new WishlistPopularItem((String)x[0],((Number)x[1]).longValue()));}return out;} }
+diff --git a/sm-shop/src/main/java/com/salesmanager/shop/store/api/v1/customer/WishlistApi.java b/sm-shop/src/main/java/com/salesmanager/shop/store/api/v1/customer/WishlistApi.java
+new file mode 100644
+index 0000000..acddd02
+--- /dev/null
++++ b/sm-shop/src/main/java/com/salesmanager/shop/store/api/v1/customer/WishlistApi.java
+@@ -0,0 +1,31 @@
++package com.salesmanager.shop.store.api.v1.customer;
++import java.security.Principal;
++import java.util.*;
++import javax.inject.Inject;
++import javax.servlet.http.HttpServletRequest;
++import org.springframework.http.*;
++import org.springframework.web.bind.annotation.*;
++import com.salesmanager.core.business.services.catalog.product.ProductService;
++import com.salesmanager.core.business.services.customer.CustomerService;
++import com.salesmanager.core.business.services.customer.WishlistService;
++import com.salesmanager.core.model.catalog.product.Product;
++import com.salesmanager.core.model.customer.Customer;
++import com.salesmanager.core.model.merchant.MerchantStore;
++import com.salesmanager.core.model.reference.language.Language;
++import com.salesmanager.shop.model.shoppingcart.PersistableShoppingCartItem;
++import com.salesmanager.shop.model.shoppingcart.ReadableShoppingCart;
++import com.salesmanager.shop.model.wishlist.*;
++import com.salesmanager.shop.store.controller.shoppingCart.facade.ShoppingCartFacade;
++import springfox.documentation.annotations.ApiIgnore;
++
++@RestController @RequestMapping("/api/v1")
++public class WishlistApi {
++ @Inject private WishlistService wishlistService; @Inject private CustomerService customerService; @Inject private ProductService productService; @Inject private ShoppingCartFacade cartFacade;
++ private Customer customer(HttpServletRequest r,MerchantStore s){Principal p=r.getUserPrincipal(); if(p==null) throw new org.springframework.web.server.ResponseStatusException(HttpStatus.UNAUTHORIZED); Customer c=customerService.getByNick(p.getName(),s.getId()); if(c==null) throw new org.springframework.web.server.ResponseStatusException(HttpStatus.UNAUTHORIZED); return c;}
++ private Product product(String sku,MerchantStore s){try{return productService.getBySku(sku,s);}catch(Exception e){return null;}}
++ @GetMapping("/auth/customer/wishlist") public ReadableWishlist list(@ApiIgnore MerchantStore s,HttpServletRequest r) throws Exception {Customer c=customer(r,s); List<ReadableWishlistItem> out=new ArrayList<>(); wishlistService.get(c.getId(),s).forEach(w->out.add(new ReadableWishlistItem(w.getSku(),w.getCreatedAt()))); return new ReadableWishlist(out);}
++ @PostMapping("/auth/customer/wishlist") public ResponseEntity<ReadableWishlistItem> addBody(@RequestBody PersistableWishlistItem body,@ApiIgnore MerchantStore s,HttpServletRequest r) throws Exception { return add(body.getProduct(),s,r); }
++ @PostMapping("/auth/customer/wishlist/{sku}") public ResponseEntity<ReadableWishlistItem> add(@PathVariable String sku,@ApiIgnore MerchantStore s,HttpServletRequest r) throws Exception {Customer c=customer(r,s); Product p=product(sku,s); if(p==null) return ResponseEntity.badRequest().build(); List<?> all=wishlistService.get(c.getId(),s); if(all.size()>=50 && !wishlistService.get(c.getId(),s).stream().anyMatch(w->w.getSku().equals(sku))) return ResponseEntity.badRequest().build(); com.salesmanager.core.model.customer.WishlistItem w=wishlistService.add(c.getId(),sku,s); return ResponseEntity.status(all.stream().anyMatch(x->((com.salesmanager.core.model.customer.WishlistItem)x).getSku().equals(sku))?HttpStatus.OK:HttpStatus.CREATED).body(new ReadableWishlistItem(w.getSku(),w.getCreatedAt()));}
++ @DeleteMapping("/auth/customer/wishlist/{sku}") public ResponseEntity<Void> remove(@PathVariable String sku,@ApiIgnore MerchantStore s,HttpServletRequest r) throws Exception {Customer c=customer(r,s); if(!wishlistService.get(c.getId(),s).stream().anyMatch(w->w.getSku().equals(sku)))return ResponseEntity.notFound().build(); wishlistService.remove(c.getId(),sku,s); return ResponseEntity.noContent().build();}
++ @PostMapping("/auth/customer/wishlist/{sku}/cart/{cartCode}") public ResponseEntity<ReadableShoppingCart> move(@PathVariable String sku,@PathVariable String cartCode,@ApiIgnore MerchantStore s,@ApiIgnore Language l,HttpServletRequest r){Customer c=customer(r,s); Product p=product(sku,s); if(p==null)return ResponseEntity.notFound().build(); if(!p.isAvailable())return ResponseEntity.status(HttpStatus.CONFLICT).build(); try {PersistableShoppingCartItem i=new PersistableShoppingCartItem();i.setProduct(sku);i.setQuantity(1);ReadableShoppingCart cart=cartFacade.modifyCart(cartCode,i,s,l);wishlistService.remove(c.getId(),sku,s);return ResponseEntity.ok(cart);}catch(Exception e){return ResponseEntity.status(HttpStatus.NOT_FOUND).build();}}
++}

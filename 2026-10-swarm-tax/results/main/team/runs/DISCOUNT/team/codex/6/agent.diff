@@ -1,0 +1,313 @@
+diff --git a/sm-core-model/src/main/java/com/salesmanager/core/model/discount/DiscountCode.java b/sm-core-model/src/main/java/com/salesmanager/core/model/discount/DiscountCode.java
+new file mode 100644
+index 0000000..ee28d47
+--- /dev/null
++++ b/sm-core-model/src/main/java/com/salesmanager/core/model/discount/DiscountCode.java
+@@ -0,0 +1,35 @@
++package com.salesmanager.core.model.discount;
++
++import java.math.BigDecimal;
++import java.util.Date;
++import javax.persistence.*;
++import com.salesmanager.core.model.generic.SalesManagerEntity;
++import com.salesmanager.core.model.merchant.MerchantStore;
++
++@Entity
++@Table(name="DISCOUNT_CODE", uniqueConstraints=@UniqueConstraint(columnNames={"MERCHANT_ID","CODE_KEY"}))
++public class DiscountCode extends SalesManagerEntity<Long, DiscountCode> {
++ private static final long serialVersionUID=1L;
++ @Id @GeneratedValue(strategy=GenerationType.AUTO) private Long id;
++ @ManyToOne(fetch=FetchType.LAZY, optional=false) @JoinColumn(name="MERCHANT_ID",nullable=false) private MerchantStore merchantStore;
++ @Column(nullable=false) private String code;
++ @Column(name="CODE_KEY",nullable=false) private String codeKey;
++ @Enumerated(EnumType.STRING) @Column(nullable=false) private DiscountCodeType type;
++ @Column(nullable=false,precision=19,scale=4) private BigDecimal value;
++ @Column(nullable=false) private boolean active=true;
++ @Temporal(TemporalType.TIMESTAMP) private Date startDate;
++ @Temporal(TemporalType.TIMESTAMP) private Date endDate;
++ @Column(precision=19,scale=4) private BigDecimal minimumSpend;
++ @Column(length=4000) private String categoryIds;
++ public Long getId(){return id;} public void setId(Long v){id=v;}
++ public MerchantStore getMerchantStore(){return merchantStore;} public void setMerchantStore(MerchantStore v){merchantStore=v;}
++ public String getCode(){return code;} public void setCode(String v){code=v; codeKey=v==null?null:v.trim().toLowerCase(java.util.Locale.ROOT);}
++ public String getCodeKey(){return codeKey;} public void setCodeKey(String v){codeKey=v;}
++ public DiscountCodeType getType(){return type;} public void setType(DiscountCodeType v){type=v;}
++ public BigDecimal getValue(){return value;} public void setValue(BigDecimal v){value=v;}
++ public boolean isActive(){return active;} public void setActive(boolean v){active=v;}
++ public Date getStartDate(){return startDate;} public void setStartDate(Date v){startDate=v;}
++ public Date getEndDate(){return endDate;} public void setEndDate(Date v){endDate=v;}
++ public BigDecimal getMinimumSpend(){return minimumSpend;} public void setMinimumSpend(BigDecimal v){minimumSpend=v;}
++ public String getCategoryIds(){return categoryIds;} public void setCategoryIds(String v){categoryIds=v;}
++}
+diff --git a/sm-core-model/src/main/java/com/salesmanager/core/model/discount/DiscountCodeType.java b/sm-core-model/src/main/java/com/salesmanager/core/model/discount/DiscountCodeType.java
+new file mode 100644
+index 0000000..bd1353c
+--- /dev/null
++++ b/sm-core-model/src/main/java/com/salesmanager/core/model/discount/DiscountCodeType.java
+@@ -0,0 +1,2 @@
++package com.salesmanager.core.model.discount;
++public enum DiscountCodeType { PERCENT, AMOUNT }
+diff --git a/sm-core/src/main/java/com/salesmanager/core/business/modules/order/total/PromoCodeCalculatorModule.java b/sm-core/src/main/java/com/salesmanager/core/business/modules/order/total/PromoCodeCalculatorModule.java
+index 07e1cf4..c489165 100644
+--- a/sm-core/src/main/java/com/salesmanager/core/business/modules/order/total/PromoCodeCalculatorModule.java
++++ b/sm-core/src/main/java/com/salesmanager/core/business/modules/order/total/PromoCodeCalculatorModule.java
+@@ -5,14 +5,15 @@ import java.util.Date;
+ 
+ import org.apache.commons.lang3.StringUtils;
+ import org.apache.commons.lang3.Validate;
+-import org.kie.api.runtime.KieSession;
+-import org.kie.internal.io.ResourceFactory;
+ import org.springframework.beans.factory.annotation.Autowired;
+ import org.springframework.stereotype.Component;
+ 
+ import com.salesmanager.core.business.configuration.DroolsBeanFactory;
+ import com.salesmanager.core.business.constants.Constants;
+ import com.salesmanager.core.business.services.catalog.pricing.PricingService;
++import com.salesmanager.core.business.services.discount.DiscountCodeService;
++import com.salesmanager.core.model.discount.DiscountCode;
++import com.salesmanager.core.model.discount.DiscountCodeType;
+ import com.salesmanager.core.model.catalog.product.Product;
+ import com.salesmanager.core.model.catalog.product.price.FinalPrice;
+ import com.salesmanager.core.model.customer.Customer;
+@@ -27,8 +28,7 @@ import com.salesmanager.core.modules.order.total.OrderTotalPostProcessorModule;
+ public class PromoCodeCalculatorModule implements OrderTotalPostProcessorModule {
+ 	
+ 	
+-	@Autowired
+-	private DroolsBeanFactory droolsBeanFactory;
++	@Autowired private DiscountCodeService discountCodeService;
+ 	
+ 	@Autowired
+ 	private PricingService pricingService;
+@@ -70,22 +70,19 @@ public class PromoCodeCalculatorModule implements OrderTotalPostProcessorModule
+ 			return null;
+ 		}
+ 		
+-		KieSession kieSession=droolsBeanFactory.getKieSession(ResourceFactory.newClassPathResource("com/salesmanager/drools/rules/PromoCoupon.drl"));
+-		
+-		OrderTotalResponse resp = new OrderTotalResponse();
+-		
+-		OrderTotalInputParameters inputParameters = new OrderTotalInputParameters();
+-		inputParameters.setPromoCode(summary.getPromoCode());
+-		inputParameters.setDate(new Date());
+-		
+-        kieSession.insert(inputParameters);
+-        kieSession.setGlobal("total",resp);
+-        kieSession.fireAllRules();
+-
+-		if(resp.getDiscount() != null) {
++		DiscountCode discount = discountCodeService.find(store, summary.getPromoCode()).orElse(null);
++		if(discount != null && discount.isActive() && (discount.getStartDate()==null || !new Date().before(discount.getStartDate())) && (discount.getEndDate()==null || !new Date().after(discount.getEndDate()))) {
++			BigDecimal cartSubtotal=BigDecimal.ZERO;
++			for (ShoppingCartItem i : summary.getProducts()) if(i.getSubTotal()!=null) cartSubtotal=cartSubtotal.add(i.getSubTotal());
++			if (discount.getMinimumSpend()!=null && cartSubtotal.compareTo(discount.getMinimumSpend())<0) return null;
++			if (discount.getCategoryIds()!=null && !discount.getCategoryIds().trim().isEmpty()) {
++				boolean eligible=false;
++				for (com.salesmanager.core.model.catalog.category.Category c : product.getCategories()) for(String id:discount.getCategoryIds().split(",")) if(c.getId()!=null && (c.getId().toString().equals(id.trim()) || (c.getLineage()!=null && c.getLineage().contains("/"+id.trim()+"/")))) eligible=true;
++				if(!eligible) return null;
++			}
+ 			
+ 			OrderTotal orderTotal = null;
+-			if(resp.getDiscount() != null) {
++			if(discount.getValue() != null) {
+ 					orderTotal = new OrderTotal();
+ 					orderTotal.setOrderTotalCode(Constants.OT_DISCOUNT_TITLE);
+ 					orderTotal.setOrderTotalType(OrderTotalType.SUBTOTAL);
+@@ -95,9 +92,9 @@ public class PromoCodeCalculatorModule implements OrderTotalPostProcessorModule
+ 					//calculate discount that will be added as a negative value
+ 					FinalPrice productPrice = pricingService.calculateProductPrice(product);
+ 					
+-					Double discount = resp.getDiscount();
+-					BigDecimal reduction = productPrice.getFinalPrice().multiply(new BigDecimal(discount));
+-					reduction = reduction.multiply(new BigDecimal(shoppingCartItem.getQuantity()));
++				BigDecimal reduction = discount.getType()==DiscountCodeType.PERCENT ? productPrice.getFinalPrice().multiply(discount.getValue()).divide(new BigDecimal("100"), 2, java.math.RoundingMode.HALF_UP) : (summary.getProducts().indexOf(shoppingCartItem)==0 ? discount.getValue().min(cartSubtotal) : BigDecimal.ZERO);
++				reduction = reduction.multiply(new BigDecimal(shoppingCartItem.getQuantity()));
++				reduction = reduction.setScale(2, java.math.RoundingMode.HALF_UP);
+ 					
+ 					orderTotal.setValue(reduction);//discount value
+ 					
+diff --git a/sm-core/src/main/java/com/salesmanager/core/business/repositories/discount/DiscountCodeRepository.java b/sm-core/src/main/java/com/salesmanager/core/business/repositories/discount/DiscountCodeRepository.java
+new file mode 100644
+index 0000000..809fb21
+--- /dev/null
++++ b/sm-core/src/main/java/com/salesmanager/core/business/repositories/discount/DiscountCodeRepository.java
+@@ -0,0 +1,9 @@
++package com.salesmanager.core.business.repositories.discount;
++import java.util.*;
++import org.springframework.data.jpa.repository.JpaRepository;
++import com.salesmanager.core.model.discount.DiscountCode;
++public interface DiscountCodeRepository extends JpaRepository<DiscountCode,Long> {
++ Optional<DiscountCode> findByMerchantStoreIdAndCodeKey(Integer storeId,String codeKey);
++ List<DiscountCode> findByMerchantStoreId(Integer storeId);
++ boolean existsByMerchantStoreIdAndCodeKey(Integer storeId,String codeKey);
++}
+diff --git a/sm-core/src/main/java/com/salesmanager/core/business/services/discount/DiscountCodeService.java b/sm-core/src/main/java/com/salesmanager/core/business/services/discount/DiscountCodeService.java
+new file mode 100644
+index 0000000..23747fe
+--- /dev/null
++++ b/sm-core/src/main/java/com/salesmanager/core/business/services/discount/DiscountCodeService.java
+@@ -0,0 +1,5 @@
++package com.salesmanager.core.business.services.discount;
++import java.util.*;
++import com.salesmanager.core.model.discount.DiscountCode;
++import com.salesmanager.core.model.merchant.MerchantStore;
++public interface DiscountCodeService { DiscountCode save(DiscountCode d, MerchantStore s); List<DiscountCode> list(MerchantStore s); Optional<DiscountCode> find(MerchantStore s,String code); void delete(Long id,MerchantStore s); }
+diff --git a/sm-core/src/main/java/com/salesmanager/core/business/services/discount/DiscountCodeServiceImpl.java b/sm-core/src/main/java/com/salesmanager/core/business/services/discount/DiscountCodeServiceImpl.java
+new file mode 100644
+index 0000000..3733a1a
+--- /dev/null
++++ b/sm-core/src/main/java/com/salesmanager/core/business/services/discount/DiscountCodeServiceImpl.java
+@@ -0,0 +1,24 @@
++package com.salesmanager.core.business.services.discount;
++import java.math.BigDecimal; import java.util.*; import javax.inject.Inject;
++import org.springframework.stereotype.Service;
++import com.salesmanager.core.business.repositories.discount.DiscountCodeRepository;
++import com.salesmanager.core.model.discount.*; import com.salesmanager.core.model.merchant.MerchantStore;
++@Service("discountCodeService") public class DiscountCodeServiceImpl implements DiscountCodeService {
++ @Inject private DiscountCodeRepository repo;
++ public DiscountCode save(DiscountCode d,MerchantStore s){
++  if(d==null||d.getCode()==null||d.getCode().trim().isEmpty()||d.getType()==null||d.getValue()==null) throw new IllegalArgumentException("code, type and value are required");
++  if(d.getType()==DiscountCodeType.PERCENT && (d.getValue().compareTo(BigDecimal.ZERO)<0||d.getValue().compareTo(new BigDecimal("100"))>0)) throw new IllegalArgumentException("percent must be 0..100");
++  if(d.getType()==DiscountCodeType.AMOUNT && d.getValue().compareTo(BigDecimal.ZERO)<0) throw new IllegalArgumentException("amount must be non-negative");
++  if(d.getStartDate()!=null&&d.getEndDate()!=null&&d.getStartDate().after(d.getEndDate())) throw new IllegalArgumentException("startDate must not be after endDate");
++  if (d.getId()!=null) {
++   DiscountCode existing=repo.findById(d.getId()).orElseThrow(() -> new NoSuchElementException("discount code not found"));
++   if (existing.getMerchantStore()==null || !existing.getMerchantStore().getId().equals(s.getId())) throw new NoSuchElementException("discount code not found");
++  }
++  d.setMerchantStore(s); String key=d.getCode().trim().toLowerCase(Locale.ROOT); d.setCodeKey(key);
++  Optional<DiscountCode> old=repo.findByMerchantStoreIdAndCodeKey(s.getId(),key); if(old.isPresent()&&(d.getId()==null||!old.get().getId().equals(d.getId()))) throw new IllegalStateException("discount code already exists");
++  return repo.save(d);
++ }
++ public List<DiscountCode> list(MerchantStore s){return repo.findByMerchantStoreId(s.getId());}
++ public Optional<DiscountCode> find(MerchantStore s,String code){return repo.findByMerchantStoreIdAndCodeKey(s.getId(),code.trim().toLowerCase(Locale.ROOT));}
++ public void delete(Long id,MerchantStore s){repo.findById(id).filter(x->x.getMerchantStore().getId().equals(s.getId())).ifPresent(repo::delete);}
++}
+diff --git a/sm-shop-model/src/main/java/com/salesmanager/shop/model/discount/PersistableDiscountCode.java b/sm-shop-model/src/main/java/com/salesmanager/shop/model/discount/PersistableDiscountCode.java
+new file mode 100644
+index 0000000..69db4dc
+--- /dev/null
++++ b/sm-shop-model/src/main/java/com/salesmanager/shop/model/discount/PersistableDiscountCode.java
+@@ -0,0 +1,6 @@
++package com.salesmanager.shop.model.discount;
++import java.math.BigDecimal; import java.util.Date; import javax.validation.constraints.*;
++import com.salesmanager.core.model.discount.DiscountCodeType;
++public class PersistableDiscountCode { private Long id; @NotBlank private String code; @NotNull private DiscountCodeType type; @NotNull @DecimalMin("0") private BigDecimal value; private boolean active=true; private Date startDate,endDate; private BigDecimal minimumSpend; private String categoryIds;
++ public BigDecimal getMinimumSubtotal(){return minimumSpend;} public void setMinimumSubtotal(BigDecimal v){minimumSpend=v;} public String getCategories(){return categoryIds;} public void setCategories(String v){categoryIds=v;}
++ public Long getId(){return id;} public void setId(Long v){id=v;} public String getCode(){return code;} public void setCode(String v){code=v;} public DiscountCodeType getType(){return type;} public void setType(DiscountCodeType v){type=v;} public BigDecimal getValue(){return value;} public void setValue(BigDecimal v){value=v;} public boolean isActive(){return active;} public void setActive(boolean v){active=v;} public Date getStartDate(){return startDate;} public void setStartDate(Date v){startDate=v;} public Date getEndDate(){return endDate;} public void setEndDate(Date v){endDate=v;} public BigDecimal getMinimumSpend(){return minimumSpend;} public void setMinimumSpend(BigDecimal v){minimumSpend=v;} public String getCategoryIds(){return categoryIds;} public void setCategoryIds(String v){categoryIds=v;} }
+diff --git a/sm-shop/src/main/java/com/salesmanager/shop/mapper/cart/ReadableShoppingCartMapper.java b/sm-shop/src/main/java/com/salesmanager/shop/mapper/cart/ReadableShoppingCartMapper.java
+index ba56548..de45a96 100644
+--- a/sm-shop/src/main/java/com/salesmanager/shop/mapper/cart/ReadableShoppingCartMapper.java
++++ b/sm-shop/src/main/java/com/salesmanager/shop/mapper/cart/ReadableShoppingCartMapper.java
+@@ -27,6 +27,7 @@ import com.salesmanager.core.business.services.catalog.pricing.PricingService;
+ import com.salesmanager.core.business.services.catalog.product.attribute.ProductAttributeService;
+ import com.salesmanager.core.business.services.catalog.product.variant.ProductVariantService;
+ import com.salesmanager.core.business.services.shoppingcart.ShoppingCartCalculationService;
++import com.salesmanager.core.business.services.discount.DiscountCodeService;
+ import com.salesmanager.core.model.catalog.product.attribute.ProductAttribute;
+ import com.salesmanager.core.model.catalog.product.attribute.ProductOption;
+ import com.salesmanager.core.model.catalog.product.attribute.ProductOptionDescription;
+@@ -60,6 +61,7 @@ public class ReadableShoppingCartMapper implements Mapper<ShoppingCart, Readable
+ 
+ 	@Autowired
+ 	private ShoppingCartCalculationService shoppingCartCalculationService;
++	@Autowired private DiscountCodeService discountCodeService;
+ 
+ 	@Autowired
+ 	private PricingService pricingService;
+@@ -111,18 +113,10 @@ public class ReadableShoppingCartMapper implements Mapper<ShoppingCart, Readable
+ 		try {
+ 
+ 			if (!StringUtils.isBlank(source.getPromoCode())) {
+-				Date promoDateAdded = source.getPromoAdded();// promo valid 1 day
+-				if (promoDateAdded == null) {
+-					promoDateAdded = new Date();
+-				}
+-				Instant instant = promoDateAdded.toInstant();
+-				ZonedDateTime zdt = instant.atZone(ZoneId.systemDefault());
+-				LocalDate date = zdt.toLocalDate();
+-				// date added < date + 1 day
+-				LocalDate tomorrow = LocalDate.now().plusDays(1);
+-				if (date.isBefore(tomorrow)) {
+-					destination.setPromoCode(source.getPromoCode());
+-				}
++				com.salesmanager.core.model.discount.DiscountCode dc=discountCodeService.find(store, source.getPromoCode()).orElse(null);
++				Date now=new Date();
++				if (dc!=null && dc.isActive() && (dc.getStartDate()==null||!now.before(dc.getStartDate())) && (dc.getEndDate()==null||!now.after(dc.getEndDate()))) destination.setPromoCode(source.getPromoCode());
++				else source.setPromoCode(null);
+ 			}
+ 
+ 			Set<com.salesmanager.core.model.shoppingcart.ShoppingCartItem> items = source.getLineItems();
+diff --git a/sm-shop/src/main/java/com/salesmanager/shop/store/api/v1/discount/DiscountCodeApi.java b/sm-shop/src/main/java/com/salesmanager/shop/store/api/v1/discount/DiscountCodeApi.java
+new file mode 100644
+index 0000000..82597b1
+--- /dev/null
++++ b/sm-shop/src/main/java/com/salesmanager/shop/store/api/v1/discount/DiscountCodeApi.java
+@@ -0,0 +1,13 @@
++package com.salesmanager.shop.store.api.v1.discount;
++import java.util.*; import javax.inject.Inject; import javax.validation.Valid;
++import org.springframework.http.*; import org.springframework.web.bind.annotation.*;
++import com.salesmanager.core.business.services.discount.DiscountCodeService; import com.salesmanager.core.model.discount.DiscountCode; import com.salesmanager.core.model.merchant.MerchantStore;
++import com.salesmanager.shop.model.discount.PersistableDiscountCode; import springfox.documentation.annotations.ApiIgnore;
++@RestController @RequestMapping("/api/v1/private/discounts") public class DiscountCodeApi {
++ @Inject private DiscountCodeService service;
++ @PostMapping public ResponseEntity<DiscountCode> create(@Valid @RequestBody PersistableDiscountCode in,@ApiIgnore MerchantStore store){return new ResponseEntity<>(service.save(convert(in,null),store),HttpStatus.CREATED);}
++ @GetMapping public List<DiscountCode> list(@ApiIgnore MerchantStore store){return service.list(store);}
++ @PutMapping("/{id}") public DiscountCode update(@PathVariable Long id,@Valid @RequestBody PersistableDiscountCode in,@ApiIgnore MerchantStore store){try{return service.save(convert(in,id),store);}catch(NoSuchElementException e){throw new org.springframework.web.server.ResponseStatusException(HttpStatus.NOT_FOUND,e.getMessage());}}
++ @DeleteMapping("/{id}") @ResponseStatus(HttpStatus.NO_CONTENT) public void delete(@PathVariable Long id,@ApiIgnore MerchantStore store){service.delete(id,store);}
++ private DiscountCode convert(PersistableDiscountCode x,Long id){DiscountCode d=new DiscountCode(); d.setId(id); d.setCode(x.getCode()); d.setType(x.getType()); d.setValue(x.getValue()); d.setActive(x.isActive()); d.setStartDate(x.getStartDate()); d.setEndDate(x.getEndDate()); d.setMinimumSpend(x.getMinimumSpend()); d.setCategoryIds(x.getCategoryIds()); return d;}
++}
+diff --git a/sm-shop/src/main/java/com/salesmanager/shop/store/api/v1/shoppingCart/ShoppingCartApi.java b/sm-shop/src/main/java/com/salesmanager/shop/store/api/v1/shoppingCart/ShoppingCartApi.java
+index 7c300f2..ff47e71 100755
+--- a/sm-shop/src/main/java/com/salesmanager/shop/store/api/v1/shoppingCart/ShoppingCartApi.java
++++ b/sm-shop/src/main/java/com/salesmanager/shop/store/api/v1/shoppingCart/ShoppingCartApi.java
+@@ -105,6 +105,9 @@ public class ShoppingCartApi {
+ 			return new ResponseEntity<>(cart, HttpStatus.CREATED);
+ 
+ 		} catch (Exception e) {
++			if (e instanceof IllegalArgumentException) {
++				throw new org.springframework.web.server.ResponseStatusException(HttpStatus.BAD_REQUEST, e.getMessage(), e);
++			}
+ 			if(e instanceof ResourceNotFoundException) {
+ 				throw (ResourceNotFoundException)e;
+ 			} else {
+@@ -136,6 +139,9 @@ public class ShoppingCartApi {
+ 			return new ResponseEntity<>(cart, HttpStatus.CREATED);
+ 
+ 		} catch (Exception e) {
++			if (e instanceof IllegalArgumentException) {
++				throw new org.springframework.web.server.ResponseStatusException(HttpStatus.BAD_REQUEST, e.getMessage(), e);
++			}
+ 			if(e instanceof ResourceNotFoundException) {
+ 				throw (ResourceNotFoundException)e;
+ 			} else {
+diff --git a/sm-shop/src/main/java/com/salesmanager/shop/store/controller/shoppingCart/facade/ShoppingCartFacadeImpl.java b/sm-shop/src/main/java/com/salesmanager/shop/store/controller/shoppingCart/facade/ShoppingCartFacadeImpl.java
+index 7fdc139..6003c08 100755
+--- a/sm-shop/src/main/java/com/salesmanager/shop/store/controller/shoppingCart/facade/ShoppingCartFacadeImpl.java
++++ b/sm-shop/src/main/java/com/salesmanager/shop/store/controller/shoppingCart/facade/ShoppingCartFacadeImpl.java
+@@ -37,6 +37,7 @@ import com.salesmanager.core.business.services.catalog.product.ProductService;
+ import com.salesmanager.core.business.services.catalog.product.attribute.ProductAttributeService;
+ import com.salesmanager.core.business.services.shoppingcart.ShoppingCartCalculationService;
+ import com.salesmanager.core.business.services.shoppingcart.ShoppingCartService;
++import com.salesmanager.core.business.services.discount.DiscountCodeService;
+ //import com.salesmanager.core.business.utils.ProductPriceUtils;
+ import com.salesmanager.core.model.catalog.product.Product;
+ import com.salesmanager.core.model.catalog.product.attribute.ProductAttribute;
+@@ -74,6 +75,7 @@ public class ShoppingCartFacadeImpl implements ShoppingCartFacade {
+ 
+ 	@Inject
+ 	private ShoppingCartService shoppingCartService;
++	@Inject private DiscountCodeService discountCodeService;
+ 
+ 	@Inject
+ 	private ShoppingCartCalculationService shoppingCartCalculationService;
+@@ -1151,6 +1153,10 @@ public class ShoppingCartFacadeImpl implements ShoppingCartFacade {
+ 			throws Exception {
+ 
+ 		ShoppingCart cart = shoppingCartService.getByCode(cartCode, store);
++		if (cart == null) throw new ResourceNotFoundException("Cart not found");
++		if (StringUtils.isBlank(promo) || !discountCodeService.find(store, promo).filter(d -> d.isActive()).filter(d -> d.getStartDate()==null || !new Date().before(d.getStartDate())).filter(d -> d.getEndDate()==null || !new Date().after(d.getEndDate())).isPresent()) {
++			throw new IllegalArgumentException("Invalid or inactive discount code");
++		}
+ 
+ 		cart.setPromoCode(promo);
+ 		cart.setPromoAdded(new Date());

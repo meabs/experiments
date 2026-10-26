@@ -1,0 +1,220 @@
+diff --git a/sm-core-model/src/main/java/com/salesmanager/core/model/catalog/product/Product.java b/sm-core-model/src/main/java/com/salesmanager/core/model/catalog/product/Product.java
+index daac443..e41eeb6 100755
+--- a/sm-core-model/src/main/java/com/salesmanager/core/model/catalog/product/Product.java
++++ b/sm-core-model/src/main/java/com/salesmanager/core/model/catalog/product/Product.java
+@@ -126,6 +126,24 @@ public class Product extends SalesManagerEntity<Long, Product> implements Audita
+ 	 */
+ 	@OneToMany(fetch = FetchType.LAZY, cascade = CascadeType.ALL, mappedBy = "product")
+ 	private Set<ProductVariant> variants = new HashSet<ProductVariant>();
++
++	@OneToMany(fetch = FetchType.LAZY, cascade = CascadeType.ALL, mappedBy = "product", orphanRemoval = true)
++	private Set<WholesalePriceTier> wholesalePriceTiers = new HashSet<WholesalePriceTier>();
++
++	public Set<WholesalePriceTier> getWholesalePriceTiers() { return wholesalePriceTiers; }
++	public void setWholesalePriceTiers(Set<WholesalePriceTier> tiers) {
++		this.wholesalePriceTiers = tiers == null ? new HashSet<WholesalePriceTier>() : tiers;
++	}
++	/** Returns the applicable tier price, capped at the product's normal final price. */
++	public BigDecimal getPriceForQuantity(int quantity, BigDecimal finalPrice) {
++		BigDecimal result = finalPrice;
++		if (result == null || wholesalePriceTiers == null) return result;
++		for (WholesalePriceTier tier : wholesalePriceTiers) {
++			if (tier.getMinQuantity() != null && tier.getPrice() != null && quantity >= tier.getMinQuantity()
++					&& tier.getPrice().compareTo(result) < 0) result = tier.getPrice();
++		}
++		return result;
++	}
+ 	
+ 	@Column(name="DATE_AVAILABLE")
+ 	@Temporal(TemporalType.TIMESTAMP)
+diff --git a/sm-core-model/src/main/java/com/salesmanager/core/model/catalog/product/WholesalePriceTier.java b/sm-core-model/src/main/java/com/salesmanager/core/model/catalog/product/WholesalePriceTier.java
+new file mode 100644
+index 0000000..92eeec9
+--- /dev/null
++++ b/sm-core-model/src/main/java/com/salesmanager/core/model/catalog/product/WholesalePriceTier.java
+@@ -0,0 +1,50 @@
++package com.salesmanager.core.model.catalog.product;
++
++import java.io.Serializable;
++import java.math.BigDecimal;
++import javax.persistence.Column;
++import javax.persistence.Entity;
++import javax.persistence.GeneratedValue;
++import javax.persistence.GenerationType;
++import javax.persistence.Id;
++import javax.persistence.JoinColumn;
++import javax.persistence.ManyToOne;
++import javax.persistence.Table;
++import javax.persistence.TableGenerator;
++
++import com.fasterxml.jackson.annotation.JsonIgnore;
++import com.salesmanager.core.model.generic.SalesManagerEntity;
++
++/** A quantity break price belonging to one product. */
++@Entity
++@Table(name = "PRODUCT_WHOLESALE_TIER")
++public class WholesalePriceTier extends SalesManagerEntity<Long, WholesalePriceTier> implements Serializable {
++    private static final long serialVersionUID = 1L;
++
++    @Id
++    @Column(name = "TIER_ID", nullable = false, unique = true)
++    @TableGenerator(name = "TABLE_GEN", table = "SM_SEQUENCER", pkColumnName = "SEQ_NAME",
++            valueColumnName = "SEQ_COUNT", pkColumnValue = "PRODUCT_WHOLESALE_TIER_SEQ_NEXT_VAL")
++    @GeneratedValue(strategy = GenerationType.TABLE, generator = "TABLE_GEN")
++    private Long id;
++
++    @JsonIgnore
++    @ManyToOne
++    @JoinColumn(name = "PRODUCT_ID", nullable = false)
++    private Product product;
++
++    @Column(name = "MIN_QUANTITY", nullable = false)
++    private Integer minQuantity;
++
++    @Column(name = "PRICE", nullable = false, precision = 19, scale = 4)
++    private BigDecimal price;
++
++    @Override public Long getId() { return id; }
++    @Override public void setId(Long id) { this.id = id; }
++    public Product getProduct() { return product; }
++    public void setProduct(Product product) { this.product = product; }
++    public Integer getMinQuantity() { return minQuantity; }
++    public void setMinQuantity(Integer minQuantity) { this.minQuantity = minQuantity; }
++    public BigDecimal getPrice() { return price; }
++    public void setPrice(BigDecimal price) { this.price = price; }
++}
+diff --git a/sm-core/src/main/java/com/salesmanager/core/business/services/order/OrderServiceImpl.java b/sm-core/src/main/java/com/salesmanager/core/business/services/order/OrderServiceImpl.java
+index b6bac52..0bf7322 100755
+--- a/sm-core/src/main/java/com/salesmanager/core/business/services/order/OrderServiceImpl.java
++++ b/sm-core/src/main/java/com/salesmanager/core/business/services/order/OrderServiceImpl.java
+@@ -234,6 +234,15 @@ public class OrderServiceImpl  extends SalesManagerEntityServiceImpl<Long, Order
+         subTotal.setScale(2, RoundingMode.HALF_UP);
+         for(ShoppingCartItem item : summary.getProducts()) {
+ 
++            // Quantity breaks are evaluated on every calculation so changes to tiers
++            // also reprice items already present in a cart.
++            if (item.getProduct() != null && item.getQuantity() != null) {
++                BigDecimal basePrice = item.getFinalPrice() != null
++                        ? item.getFinalPrice().getFinalPrice() : item.getItemPrice();
++                BigDecimal tierPrice = item.getProduct().getPriceForQuantity(item.getQuantity(), basePrice);
++                if (tierPrice != null) item.setItemPrice(tierPrice);
++            }
++
+             BigDecimal st = item.getItemPrice().multiply(new BigDecimal(item.getQuantity()));
+             item.setSubTotal(st);
+             subTotal = subTotal.add(st);
+diff --git a/sm-core/src/main/java/com/salesmanager/core/business/services/shoppingcart/ShoppingCartServiceImpl.java b/sm-core/src/main/java/com/salesmanager/core/business/services/shoppingcart/ShoppingCartServiceImpl.java
+index e0d1ce8..4d77453 100755
+--- a/sm-core/src/main/java/com/salesmanager/core/business/services/shoppingcart/ShoppingCartServiceImpl.java
++++ b/sm-core/src/main/java/com/salesmanager/core/business/services/shoppingcart/ShoppingCartServiceImpl.java
+@@ -350,7 +350,7 @@ public class ShoppingCartServiceImpl extends SalesManagerEntityServiceImpl<Long,
+ 
+ 		// set item price
+ 		FinalPrice price = pricingService.calculateProductPrice(product, attributesList);
+-		item.setItemPrice(price.getFinalPrice());
++		item.setItemPrice(product.getPriceForQuantity(item.getQuantity(), price.getFinalPrice()));
+ 		item.setFinalPrice(price);
+ 
+ 		BigDecimal subTotal = item.getItemPrice().multiply(new BigDecimal(item.getQuantity()));
+diff --git a/sm-shop-model/src/main/java/com/salesmanager/shop/model/catalog/product/ProductWholesalePriceTier.java b/sm-shop-model/src/main/java/com/salesmanager/shop/model/catalog/product/ProductWholesalePriceTier.java
+new file mode 100644
+index 0000000..c95cdc9
+--- /dev/null
++++ b/sm-shop-model/src/main/java/com/salesmanager/shop/model/catalog/product/ProductWholesalePriceTier.java
+@@ -0,0 +1,14 @@
++package com.salesmanager.shop.model.catalog.product;
++
++import java.io.Serializable;
++import java.math.BigDecimal;
++
++public class ProductWholesalePriceTier implements Serializable {
++    private static final long serialVersionUID = 1L;
++    private Integer minQuantity;
++    private BigDecimal price;
++    public Integer getMinQuantity() { return minQuantity; }
++    public void setMinQuantity(Integer minQuantity) { this.minQuantity = minQuantity; }
++    public BigDecimal getPrice() { return price; }
++    public void setPrice(BigDecimal price) { this.price = price; }
++}
+diff --git a/sm-shop/src/main/java/com/salesmanager/shop/store/api/v1/product/ProductApi.java b/sm-shop/src/main/java/com/salesmanager/shop/store/api/v1/product/ProductApi.java
+index 2352a42..7f2398e 100755
+--- a/sm-shop/src/main/java/com/salesmanager/shop/store/api/v1/product/ProductApi.java
++++ b/sm-shop/src/main/java/com/salesmanager/shop/store/api/v1/product/ProductApi.java
+@@ -5,6 +5,10 @@ import static org.springframework.http.MediaType.APPLICATION_JSON_VALUE;
+ import java.io.IOException;
+ import java.util.ArrayList;
+ import java.util.List;
++import java.util.Set;
++import java.util.HashSet;
++import java.util.Comparator;
++import java.math.BigDecimal;
+ 
+ import javax.inject.Inject;
+ import javax.servlet.http.HttpServletRequest;
+@@ -35,12 +39,14 @@ import com.salesmanager.core.business.services.catalog.category.CategoryService;
+ import com.salesmanager.core.business.services.catalog.product.ProductService;
+ import com.salesmanager.core.model.catalog.category.Category;
+ import com.salesmanager.core.model.catalog.product.Product;
++import com.salesmanager.core.model.catalog.product.WholesalePriceTier;
+ import com.salesmanager.core.model.catalog.product.ProductCriteria;
+ import com.salesmanager.core.model.merchant.MerchantStore;
+ import com.salesmanager.core.model.reference.language.Language;
+ import com.salesmanager.shop.model.catalog.product.LightPersistableProduct;
+ import com.salesmanager.shop.model.catalog.product.ReadableProduct;
+ import com.salesmanager.shop.model.catalog.product.ReadableProductList;
++import com.salesmanager.shop.model.catalog.product.ProductWholesalePriceTier;
+ import com.salesmanager.shop.model.catalog.product.product.PersistableProduct;
+ import com.salesmanager.shop.model.entity.Entity;
+ import com.salesmanager.shop.model.entity.EntityExists;
+@@ -74,6 +80,51 @@ import springfox.documentation.annotations.ApiIgnore;
+ 		@Tag(name = "Product definition  resource, add product to category", description = "View product, Add product, edit product and delete product") })
+ public class ProductApi {
+ 
++	@GetMapping(value = "/private/product/{id}/tiers", produces = APPLICATION_JSON_VALUE)
++	public ResponseEntity<List<ProductWholesalePriceTier>> getWholesaleTiers(@PathVariable Long id,
++			@ApiIgnore MerchantStore merchantStore) {
++		Product product;
++		try { product = productService.retrieveById(id, merchantStore).orElse(null); }
++		catch (RuntimeException e) { product = null; }
++		if (product == null || product.getMerchantStore() == null || !product.getMerchantStore().getId().equals(merchantStore.getId()))
++			return new ResponseEntity<>(HttpStatus.NOT_FOUND);
++		List<ProductWholesalePriceTier> result = new ArrayList<>();
++		for (WholesalePriceTier tier : product.getWholesalePriceTiers()) {
++			ProductWholesalePriceTier dto = new ProductWholesalePriceTier();
++			dto.setMinQuantity(tier.getMinQuantity()); dto.setPrice(tier.getPrice()); result.add(dto);
++		}
++		result.sort(Comparator.comparing(ProductWholesalePriceTier::getMinQuantity));
++		return ResponseEntity.ok(result);
++	}
++
++	@org.springframework.web.bind.annotation.PutMapping(value = "/private/product/{id}/tiers", consumes = APPLICATION_JSON_VALUE, produces = APPLICATION_JSON_VALUE)
++	public ResponseEntity<?> putWholesaleTiers(@PathVariable Long id, @RequestBody List<ProductWholesalePriceTier> tiers,
++			@ApiIgnore MerchantStore merchantStore) {
++		Product product;
++		try { product = productService.retrieveById(id, merchantStore).orElse(null); }
++		catch (RuntimeException e) { product = null; }
++		if (product == null || product.getMerchantStore() == null || !product.getMerchantStore().getId().equals(merchantStore.getId()))
++			return new ResponseEntity<>(HttpStatus.NOT_FOUND);
++		if (tiers == null || tiers.size() > 10) return ResponseEntity.badRequest().body("At most 10 tiers are allowed");
++		for (ProductWholesalePriceTier tier : tiers)
++			if (tier == null) return ResponseEntity.badRequest().body("Each tier requires minQuantity >= 2 and price > 0");
++		List<ProductWholesalePriceTier> sorted = new ArrayList<>(tiers);
++		sorted.sort(Comparator.comparing(ProductWholesalePriceTier::getMinQuantity, Comparator.nullsFirst(Comparator.naturalOrder())));
++		Integer previousQuantity = null; BigDecimal previousPrice = null;
++		for (ProductWholesalePriceTier tier : sorted) {
++			if (tier == null || tier.getMinQuantity() == null || tier.getMinQuantity() < 2 || tier.getPrice() == null || tier.getPrice().compareTo(BigDecimal.ZERO) <= 0)
++				return ResponseEntity.badRequest().body("Each tier requires minQuantity >= 2 and price > 0");
++			if (previousQuantity != null && (tier.getMinQuantity().equals(previousQuantity) || tier.getPrice().compareTo(previousPrice) >= 0))
++				return ResponseEntity.badRequest().body("Tier quantities must be unique and prices strictly decrease");
++			previousQuantity = tier.getMinQuantity(); previousPrice = tier.getPrice();
++		}
++		Set<WholesalePriceTier> replacement = new HashSet<>();
++		for (ProductWholesalePriceTier dto : sorted) { WholesalePriceTier tier = new WholesalePriceTier(); tier.setProduct(product); tier.setMinQuantity(dto.getMinQuantity()); tier.setPrice(dto.getPrice()); replacement.add(tier); }
++		product.setWholesalePriceTiers(replacement);
++		try { productService.update(product); } catch (Exception e) { LOGGER.error("Error updating wholesale tiers", e); return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).build(); }
++		return getWholesaleTiers(id, merchantStore);
++	}
++
+ 	@Inject
+ 	private CategoryService categoryService;
+ 
