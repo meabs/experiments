@@ -166,6 +166,7 @@ python3 -I scripts/extra_checks.py results/main/solo results/main/team results/m
 python3 -I scripts/make_trial.py --followup               # then: trialrig run trial-team-spec.local.toml --out <out dir>/team-spec
 scripts/export.sh <out dir>/team-spec followup/team-spec
 python3 -I scripts/analyse_followup.py results/main/solo results/main/team results/followup/team-spec > results/followup-analysis.md
+uv run --with matplotlib python3 -I scripts/charts.py <out dir> <Inter font dir>   # the website chart
 ```
 
 Both analyses give the same output from the exported results as from the original run folders (checked).
