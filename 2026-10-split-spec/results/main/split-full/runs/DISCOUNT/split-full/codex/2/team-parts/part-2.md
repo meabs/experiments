@@ -1,0 +1,5 @@
+# Part 2 — merchant discount admin API
+
+Read `TASK.md` first. Own the protected merchant CRUD endpoint and its shop-layer request/response models/facade: `/api/v1/private/discounts` POST/GET and `/{id}` PUT/DELETE, store supplied by the existing `?store=` merchant-context mechanism. Return 201 with an id on create, 409 for case-insensitive duplicate codes, and 400 for validation failures; scope every operation to the current `MerchantStore`. Preserve merchant-written code casing and JSON date/enum/optional-field shape. Follow existing private API security/context conventions.
+
+Files owned: new/modified files under `sm-shop/src/main/java/com/salesmanager/shop/store/api/v1/` for the discount controller, shop DTOs, and `sm-shop/src/main/java/com/salesmanager/shop/store/controller/` discount facade (plus focused tests if needed). Do not edit core discount persistence/service implementation or shopping-cart facade/mapper files. Consume Part 1's CRUD service methods and discount domain/DTO types; Part 3 consumes the same service for shopper application.

@@ -1,6 +1,6 @@
 # Split the work, split the spec? Coding agents that divide a feature (Codex)
 
-**Final design, committed and pushed 2026-10-26 before any measured run.** Later changes go in the amendment log at the bottom.
+**Final design, committed and pushed 2026-10-26 before any measured run. Results: [REPORT.md](REPORT.md).** Later changes go in the amendment log at the bottom.
 
 ## Why
 
@@ -126,3 +126,5 @@ python3 -I scripts/analyse.py <out dir>/solo <out dir>/team-spec <out dir>/split
 - 2026-10-26: draft design written at the user's request ("Merge and start the next experiment"), after swarm-tax's write-up was merged. Tasks, hidden tests, references, grader, sandbox and analysis code reused from swarm-tax; `verify.sh` also keeps the planner's part files and leaves them out of the graded diff; `audit_run.py` also records, per coder, what it read, the files it patched and when it worked.
 - 2026-10-26: smoke test run and recorded ("Before the runs"); the audit's `TASK.md` check corrected so a search that excludes the file doesn't count as reading it.
 - 2026-10-26: design committed as final and pushed at the user's go-ahead ("Yes"), before any measured run. The four trial files run side by side, each 2 runs at a time.
+- 2026-10-26 17:55: paused at the user's request ("pause for 2hrs then start"). 13 finished runs were kept; the 8 in progress were stopped, set aside unanalysed, and rerun from scratch on restart. The Maven repository was unchanged at the pause. Restarted early at 19:20, when the user said usage had reset ("Usage has reset start").
+- 2026-10-26: runs finished (all 144 ok; Maven repository unchanged). Results exported to `results/main`, analysed with the fixed `scripts/analyse.py`, and written up in [REPORT.md](REPORT.md). Added after the runs: `scripts/charts.py` (the chart) and post-hoc checks on start-up crashes and on the two coders that opened `TASK.md`, labelled as such in the report.

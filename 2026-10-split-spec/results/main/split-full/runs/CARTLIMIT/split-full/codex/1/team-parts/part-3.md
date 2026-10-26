@@ -1,0 +1,5 @@
+Part 3 owns cart mutation enforcement and returned warning data.
+
+Read TASK.md first. Enforce product min/max/pack and store maxLines/maxUnits atomically for POST /api/v1/cart, PUT /api/v1/cart/{code}, and POST /api/v1/cart/{code}/multi; reject with HTTP 400 and errorCode rule names without changing any line on failure. Store caps apply only when a change adds lines/units, while product rules apply to added/changed lines; quantity 0 removes. Add limitWarnings to every returned cart and compute current violations (including rules introduced after cart creation). Integrate through the existing shopping-cart facade/API, model DTOs, mapper/populator, and exception handler as needed.
+
+Owned files: cart-related classes under sm-shop-model and sm-shop (shopping cart API/facade/mapper/populator/models and cart-specific exceptions), plus core cart service classes only where necessary. Do not edit admin controllers or Part 1 persistence/service files. Consume Part 1's store/product limit service methods (inspect their names/signatures once available).

@@ -1,0 +1,7 @@
+Part 1 — persistence and domain/service support
+
+Read TASK.md first. Implement the reusable domain and business-service layer for product purchase limits and store cart caps. Add nullable integer fields (or equivalent persisted model) for Product minPerCart, maxPerCart, packSize and MerchantStore maxLines, maxUnits, with getters/setters and persistence mapping. Provide service/repository APIs that other parts can call to load/update limits by product id and store, and load/update store cart rules; enforce store ownership checks as needed. Include validation helpers/constants or a shared limit-rules service for whole-number >=1 and cross-field constraints, but do not implement REST controllers or cart mutation logic.
+
+Files owned: sm-core-model Product and MerchantStore model files; new/changed persistence repository and service interfaces/implementations under sm-core; any directly-needed model-module files. Do not edit sm-shop API, cart facade/mapper, or readable DTO files owned by other parts.
+
+Other parts rely on the class/method names you expose. Prefer a cohesive service (for example ProductLimitService and CartRuleService, or a combined CartLimitService) with methods to get/set product limits and store rules, returning null fields when unset and throwing/returning clear validation errors. Part 2’s admin API will call these methods; Part 3’s cart enforcement and warning mapper will call the read methods.

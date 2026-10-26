@@ -1,0 +1,3 @@
+Part 2 — private tiers REST API
+
+Implement PUT/GET /api/v1/private/product/{id}/tiers in the existing private product API area. Read TASK.md first. Own sm-shop API/controller files and any API DTO/validation classes under sm-shop-model or sm-shop that are needed. Use the tier service/domain supplied by Part 1 (retrieve by product id and MerchantStore; replace list). Enforce 404 for missing/wrong-store products, 400 for malformed/invalid tier lists, and return sorted stored tiers with HTTP 200. Preserve existing endpoint security/store conventions. Do not edit core cart or persistence files except narrowly required imports. Run focused tests/compile.

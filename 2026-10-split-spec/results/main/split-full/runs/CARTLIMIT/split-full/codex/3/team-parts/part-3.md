@@ -1,0 +1,5 @@
+Part 3 owns cart enforcement and shopper-visible warnings.
+
+Read TASK.md first. Enforce product min/max/pack and store maxLines/maxUnits atomically on POST /cart, PUT /cart/{code}, and POST /cart/{code}/multi. Removing quantity 0 is always allowed; caps apply only when adding a line/units, while product rules apply to changed/added lines. Reject with HTTP 400 and errorCode exactly MIN_PER_CART, MAX_PER_CART, PACK_SIZE, MAX_LINES, or MAX_UNITS; multi requests must leave the cart untouched on any failure. Add limitWarnings to every returned cart with sku/rule entries (sku null for store caps), including carts that became invalid after rules changed.
+
+Files owned: sm-shop cart API/facade implementation and interface as needed, cart model/populator/mapper/readable DTOs, and cart-specific exception/error handling. Consume Part 1's rule service/domain accessors. Avoid editing admin API files owned by Part 2 or core model/service files owned by Part 1 unless a tiny compile-only adjustment is unavoidable.

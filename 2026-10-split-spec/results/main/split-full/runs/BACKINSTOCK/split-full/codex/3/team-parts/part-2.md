@@ -1,0 +1,5 @@
+Part 2 owns the HTTP/API and transport models for stock alerts.
+
+Read TASK.md first. Add shopper endpoints POST/DELETE under /api/v1/products/{sku}/alerts and protected admin GET endpoints /api/v1/private/stock-alerts and /outbox, with correct store query handling, status codes, validation, error mapping, ordering, and JSON shapes. Scope files to sm-shop/src/main/java/com/salesmanager/shop/store/api/v1 (new stock-alert controller and narrowly related exception/config files) and sm-shop-model/src/main/java/com/salesmanager/shop/model (new request/response DTOs). Follow patterns in existing ProductApi/ProductInventoryApi and private endpoint security. Use the StockAlertService/domain API from Part 1 (expected operations create/cancel/list/listOutbox and status filtering); do not implement persistence or inventory transition logic. Run focused Maven tests/compile if practical.
+
+Part 1 provides the service and alert/outbox domain classes. Part 3 updates inventory and will call the service's restock notification hook; your controller should consume the stable service methods and readable DTO mapping.

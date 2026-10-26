@@ -1,0 +1,3 @@
+Part 3 — cart tier pricing and response totals
+
+Implement tier-aware cart repricing. Read TASK.md first. Own cart/order calculation and cart population/mapper files (primarily sm-core ShoppingCartServiceImpl/OrderServiceImpl or calculation service, plus sm-shop cart DTO populators/mappers as needed). For each line, use only that product's tiers and quantity, choosing largest reached minQuantity, but never above the product's own effective price (including special price). Recalculate on every cart return/quantity change/tier change; ensure line subTotal and cart subtotal/total reflect tier prices. Use the tier service/domain from Part 1. Do not edit product API or tier persistence files. Run focused tests/compile.

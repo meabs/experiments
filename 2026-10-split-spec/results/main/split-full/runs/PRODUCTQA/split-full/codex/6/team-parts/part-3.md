@@ -1,0 +1,5 @@
+# Part 3: HTTP APIs and authentication integration
+
+Read `TASK.md` first. Own the REST endpoints for all customer, public, and admin product-question operations. Add or modify API controller classes under `sm-shop/src/main/java/com/salesmanager/shop/store/api/v1/**` only. Implement exact paths, verbs, status codes, request bodies, query validation, 400/404/409 behavior, store selection, and customer/admin authentication conventions already used by this project. Customer endpoints must derive the logged-in customer from the customer JWT rather than trusting request ids; public listing must be unauthenticated; admin endpoints must use the existing private security path. Return the DTOs/envelopes from Part 2 and delegate business rules to Part 1’s service/facade.
+
+Files owned: new or changed API controller files under `sm-shop/src/main/java/com/salesmanager/shop/store/api/v1/**`; you may add narrowly scoped exception-handler/controller support in that API package if needed, but do not edit core or shop-model/facade files. Coordinate by using the public method names exposed by Parts 1 and 2.

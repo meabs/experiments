@@ -1,0 +1,9 @@
+# Part 1: question domain, persistence, and service
+
+Read `TASK.md` first. Own the new question domain and business layer only. Add the question entity/model and status type under the existing `sm-shop-model`/core model conventions, repository interfaces/queries under `sm-core/src/main/java/com/salesmanager/core/business/repositories`, and a service interface/implementation under `sm-core/src/main/java/com/salesmanager/core/business/services`.
+
+The service must expose the operations the REST parts need: create a trimmed customer question for a SKU with validation and the three-pending limit; list a customer's questions newest first; list a store's questions by status oldest first; list published questions for a SKU newest answered first; answer (publish/replace answer), reject, and lookup by id. It must resolve products/customers/stores using existing services/repositories, enforce 404/400/409 semantics through the project's existing exception conventions, set timestamps, and ensure product deletion cascades/removes questions.
+
+Files owned: new question model/entity/DTO classes in `sm-shop-model/src/main/java/com/salesmanager/shop/model/...` and/or core model equivalents as required by conventions; new question repository files in `sm-core/src/main/java/com/salesmanager/core/business/repositories/...`; new question service files in `sm-core/src/main/java/com/salesmanager/core/business/services/...`; and the minimal existing product entity mapping needed for cascade deletion. Do not edit REST API files owned by Parts 2 or 3.
+
+Part 2 relies on the service's customer-facing methods and question response/request model names. Part 3 relies on its admin list/answer/reject methods and the same response model. Coordinate names by making public, obvious methods such as `askQuestion`, `findByCustomer`, `findPublicBySku`, `findByStoreAndStatus`, `answer`, and `reject` (adjust to project conventions if needed).

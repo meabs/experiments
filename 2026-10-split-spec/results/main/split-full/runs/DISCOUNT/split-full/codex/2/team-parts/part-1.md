@@ -1,0 +1,7 @@
+# Part 1 — discount domain and persistence
+
+Read `TASK.md` first. Own the discount-code domain and persistence in `sm-core-model` and `sm-core` (and only supporting shared model files needed for this domain). Add the persisted store-scoped discount entity, type/value/date/category fields, repository/DAO and a service API/implementation that validates input, enforces case-insensitive uniqueness per merchant store, resolves categories, and exposes lookup/application calculation to the cart layer. Provide stable public methods for create/update/list/delete, `findByStoreAndCodeIgnoreCase`, and an evaluation method that accepts a cart/store/date and returns an optional computed discount/eligibility result. Handle defaults and validation rules from TASK.md, including category hierarchy and half-up currency rounding. Do not edit shop API/controllers or shopping-cart facade/mapper files; Part 2 and Part 3 consume your service and DTO contracts.
+
+Files owned: new/modified files under `sm-core-model/src/main/java/com/salesmanager/core/model/` for discounts, and `sm-core/src/main/java/com/salesmanager/core/business/services/` (plus persistence configuration/tests if required). Coordinate names/signatures with the other parts through the shared filesystem.
+
+Part 2 will call your CRUD service using `MerchantStore`; Part 3 will call your code lookup/evaluation service from cart code and mapper. Keep those calls usable without HTTP concerns.

@@ -1,0 +1,5 @@
+Read TASK.md first. Own all shopper and admin stock-alert HTTP endpoints and their request/response mapping. Implement POST/DELETE `/api/v1/products/{sku}/alerts` and GET `/api/v1/private/stock-alerts` plus `/outbox`, including store resolution, validation, status filtering and exact HTTP statuses/error behavior. Match the authentication/merchant-store conventions of existing v1 private APIs; shopper endpoints must remain unauthenticated. Use the alert service and shared DTOs supplied by part 1.
+
+Files owned: sm-shop/src/main/java/com/salesmanager/shop/store/api/** (new stock-alert controller(s) and endpoint-specific mapper/request classes), plus sm-shop-model API DTO files only if part 1 did not add them. Avoid changing inventory or product controllers. The service methods expected from part 1 are create-or-return-pending, cancel-pending, list-alerts, and list-outbox.
+
+Run focused compilation/tests for the shop module and preserve existing API conventions for MerchantStore, Language, exception translation, and JSON dates.

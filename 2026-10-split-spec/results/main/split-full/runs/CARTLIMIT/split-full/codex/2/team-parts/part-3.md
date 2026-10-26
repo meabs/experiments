@@ -1,0 +1,5 @@
+Read TASK.md first. Own cart mutation enforcement and shopper-facing warnings. Enforce product min/max/pack and store maxLines/maxUnits atomically for POST /api/v1/cart, PUT /api/v1/cart/{code}, and POST /api/v1/cart/{code}/multi; return HTTP 400 with errorCode MIN_PER_CART, MAX_PER_CART, PACK_SIZE, MAX_LINES, or MAX_UNITS, leaving the cart unchanged on rejection. Apply the specified distinction between checking product limits on changed lines and caps only on additions/increased units. Add limitWarnings to every returned cart, including existing carts that violate rules.
+
+Files owned: sm-shop/src/main/java/com/salesmanager/shop/store/controller/shoppingCart/**, sm-shop/src/main/java/com/salesmanager/shop/store/api/v1/shoppingCart/ShoppingCartApi.java, sm-shop/src/main/java/com/salesmanager/shop/populator/shoppingCart/**, and sm-shop-model/src/main/java/com/salesmanager/shop/model/shoppingcart/** only for warning/error DTOs. Do not edit core domain or admin API files.
+
+Rely on part 1's Product/MerchantStore limit fields/services and part 2's DTOs only if useful. Preserve existing cart behavior/statuses except required 400 responses and warning field.

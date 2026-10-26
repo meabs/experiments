@@ -1,0 +1,7 @@
+# Part 1: core product-question domain and persistence
+
+Read `TASK.md` first. Own the core model and service/repository layer only. Add the persistent product-question entity/value types, status representation, repository, and service APIs/implementation needed by the shop layer. Wire the customer/product relationships and deletion cascade so deleting a product removes its questions without preventing product deletion. Implement validation/business rules that belong below HTTP (trim/length checks, pending-count limit, rejected-answer conflict, status transitions, store/product/customer filtering, and ordering) and expose clear methods for create, customer list, public published list, admin status list, answer, reject, and lookup by id/SKU. Match the project’s existing JPA/service conventions.
+
+Files owned: `sm-core-model/src/main/java/com/salesmanager/core/model/**` files needed for the new entity/status; `sm-core/src/main/java/com/salesmanager/core/business/repositories/**` files for its repository; `sm-core/src/main/java/com/salesmanager/core/business/services/**` files for its service. You may update the existing Product/Customer model files in `sm-core-model` when required for mappings/cascade, but do not edit `sm-shop`.
+
+The shop layer will rely on the service and entity methods you provide; keep names and signatures discoverable/public and document any checked/runtime exceptions needed for HTTP mapping. Part 2 will provide shop DTOs/populators/facade mapping; Part 3 will provide controllers and request authentication.

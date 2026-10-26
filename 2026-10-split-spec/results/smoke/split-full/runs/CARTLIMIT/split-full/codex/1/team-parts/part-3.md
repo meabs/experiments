@@ -1,0 +1,5 @@
+Part 3 — cart enforcement and warning projection
+
+Read TASK.md first. Own cart-facing files under sm-shop/src/main/java/com/salesmanager/shop/store/controller/shoppingCart, sm-shop/src/main/java/com/salesmanager/shop/store/api/v1/shoppingCart, sm-shop/src/main/java/com/salesmanager/shop/model/shoppingcart, and any cart-related core service file not changed by Part 1 that is necessary for atomic validation. Enforce product min/max/pack and store maxLines/maxUnits on POST /cart, PUT /cart/{code}, and POST /cart/{code}/multi; rejected changes must be atomic and expose a 400 errorCode matching the rule. Apply the specified add/change versus removal/fix semantics. Add limitWarnings to returned cart DTOs, with SKU or null as required, including warnings for carts that became invalid after rules changed.
+
+Call the product/store limit accessors and services provided by Part 1. Part 2 provides only the admin configuration endpoints; do not edit its API files. Preserve existing cart behavior and run relevant module tests.

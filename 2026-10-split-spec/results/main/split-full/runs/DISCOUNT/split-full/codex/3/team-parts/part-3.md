@@ -1,0 +1,3 @@
+Part 3 — shopper cart integration and totals
+
+Read TASK.md first. Own shopper promo application and cart rendering in sm-shop plus any cart-facing model changes needed in sm-core-model/sm-shop-model, and remove the hard-coded Test1234 rule. Update POST /api/v1/cart/{cartCode}/promo/{code} behavior to validate before replacing an existing code and return 400 when not applicable. Recompute discounts on every cart read, clear stale codes, expose promoCode/totals discount/total, support category eligibility and persistent (non-one-day) expiry semantics by calling Part 1's DiscountService evaluation methods. Avoid editing admin API files owned by Part 2; rely on DiscountService and domain types from Part 1.

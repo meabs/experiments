@@ -1,0 +1,3 @@
+Part 3 owns the protected admin popular-wishlist report API. Read TASK.md first.
+
+Own a new controller under sm-shop/src/main/java/com/salesmanager/shop/store/api/v1 (for example wishlist/WishlistAdministrationApi.java) and any report-only DTOs under sm-shop/src/main/java/com/salesmanager/shop/model/**. Implement GET /api/v1/private/wishlists/popular with the existing admin authorization conventions and @ApiIgnore MerchantStore resolved from ?store=. Return the Part 1 WishlistService.popular(store) result as [{sku,count}], ordered and capped exactly as specified. Do not edit Part 1 or Part 2 files; rely on their service interface/domain report type.

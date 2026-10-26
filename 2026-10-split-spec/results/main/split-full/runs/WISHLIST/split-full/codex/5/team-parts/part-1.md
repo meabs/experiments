@@ -1,0 +1,5 @@
+Part 1 owns the wishlist domain and service layer. Read TASK.md first.
+
+Own these files (create them as needed): sm-core-model/src/main/java/com/salesmanager/core/model/customer/wishlist/**, sm-core/src/main/java/com/salesmanager/core/business/repositories/wishlist/**, and sm-core/src/main/java/com/salesmanager/core/business/services/customer/wishlist/**. Add the necessary product-deletion cleanup hook in the product service/repository files if required; that is also owned by this part.
+
+Implement persistence keyed by customer, store, and product/SKU, newest-first ordering, 50-item limit, duplicate handling, popular aggregation (top 10 with count desc and SKU asc), and exceptions/status-signaling needed by APIs. Expose clear methods such as getWishlist(customer, store), add(customer, store, sku), remove(...), moveToCart(...), and popular(store). Reuse existing ProductService, ProductAvailabilityService, ShoppingCartService, and repositories. Part 2 and Part 3 will call this service; keep their integration stable and document method signatures in interfaces.

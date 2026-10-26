@@ -1,0 +1,5 @@
+Part 1 owns the persistence/domain and reusable validation services for purchase limits.
+
+Files owned: sm-core-model/src/main/java/com/salesmanager/core/model/catalog/product/Product.java; sm-core-model/src/main/java/com/salesmanager/core/model/merchant/MerchantStore.java; new model classes under sm-core-model/src/main/java/com/salesmanager/core/model (for product limits/store cart rules); sm-core/src/main/java/com/salesmanager/core/business/services/catalog/product/**; sm-core/src/main/java/com/salesmanager/core/business/services/system/** (only additions needed for limits/rules); and matching repository/DAO or mapping files in those modules.
+
+Implement nullable minPerCart/maxPerCart/packSize on Product and nullable maxLines/maxUnits on MerchantStore (or equivalent entities), plus service methods to read/update them with validation and store ownership checks. Expose a reusable validator (class/method names documented in code) that cart code can call and rule/error constants MIN_PER_CART, MAX_PER_CART, PACK_SIZE, MAX_LINES, MAX_UNITS. Do not edit HTTP controllers or cart facade/populator files; Part 2 and Part 3 consume these services.
