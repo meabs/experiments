@@ -72,6 +72,8 @@ def main(home, clone):
         "verdicts": verdicts, "final_verdict": verdicts[-1] if verdicts else None,
         "mvn_install": sum(1 for c in cmds if re.search(r"\bmvnw?\b[^\n]*\binstall\b", c)),
         "paths_outside_clone": outside,
+        "read_task_md": {r: any("TASK.md" in c for t in subs if t["agent_path"] and (("review" in t["agent_path"]) == (r == "reviewer"))
+                                for c in t["commands"]) for r in ("coder", "reviewer")},
         "tokens": tot, "cost": round(cost(tot), 5),
         "per_thread": [{"role": t["role"], "agent_path": t["agent_path"], "tokens": (t["tokens"] or {}).get("total_tokens", 0),
                         "cost": round(cost(t["tokens"]), 5) if t["tokens"] else 0, "edits": t["edits"],

@@ -9,7 +9,7 @@ Secondary: whether the coder and the reviewer read TASK.md (a command of theirs 
 
 Usage: python3 -I analyse_followup.py <main solo dir> <main team dir> <team-spec dir> > results/followup-analysis.md
 """
-import glob, json, os, random, re, statistics as st, sys
+import os, random, re, statistics as st, sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import analyse  # noqa: E402
@@ -19,19 +19,9 @@ from extra_checks import added, coverage, spec  # noqa: E402
 ARMS = ["solo", "team", "team-spec"]
 
 
-def read_task_md(out, r):
-    """(coder read TASK.md, reviewer read TASK.md) from the subagents' commands in the session files."""
-    import audit_run
-    tid = f"{r['task']}_{r['arm']}_codex_{r['rep']}".lower().replace("-", "_")
-    got = {"coder": False, "reviewer": False}
-    for f in glob.glob(os.path.join(out, "agent-homes", tid, ".codex", "sessions", "**", "rollout*.jsonl"), recursive=True):
-        t = audit_run.thread(f)
-        if t["role"] != "subagent" or not t["agent_path"]:
-            continue
-        role = "reviewer" if "review" in t["agent_path"] else "coder"
-        if any("TASK.md" in c for c in t["commands"]):
-            got[role] = True
-    return got
+def read_task_md(r):
+    """(coder read TASK.md, reviewer read TASK.md): a command of theirs names it (sessions.json, from audit_run.py)."""
+    return (r["sessions"] or {}).get("read_task_md") or {"coder": False, "reviewer": False}
 
 
 def main(solo_dir, team_dir, spec_dir):
@@ -68,7 +58,7 @@ def main(solo_dir, team_dir, spec_dir):
     for a in ARMS:
         rs = [r for r in runs if r["arm"] == a]
         appr = [r for r in rs if (r["sessions"] or {}).get("final_verdict") == "APPROVE"]
-        reads = [read_task_md(where[a], r) for r in rs] if a == "team-spec" else None
+        reads = [read_task_md(r) for r in rs] if a == "team-spec" else None
         out.append(f"| {a} | {len(rs)} | ${st.mean(r['cost'] for r in rs):.3f} | {st.mean(r['spec'] for r in rs):.2f} | "
                    f"{len(appr) if a != 'solo' else '—'} | {sum(not r['verified'] for r in appr) if a != 'solo' else '—'} | "
                    f"{sum(x['coder'] for x in reads) if reads else '—'} | {sum(x['reviewer'] for x in reads) if reads else '—'} |")

@@ -1,0 +1,263 @@
+diff --git a/sm-core-model/src/main/java/com/salesmanager/core/model/catalog/product/Product.java b/sm-core-model/src/main/java/com/salesmanager/core/model/catalog/product/Product.java
+index daac443..3d53425 100755
+--- a/sm-core-model/src/main/java/com/salesmanager/core/model/catalog/product/Product.java
++++ b/sm-core-model/src/main/java/com/salesmanager/core/model/catalog/product/Product.java
+@@ -19,6 +19,7 @@ import javax.persistence.JoinTable;
+ import javax.persistence.ManyToMany;
+ import javax.persistence.ManyToOne;
+ import javax.persistence.OneToMany;
++import javax.persistence.OrderBy;
+ import javax.persistence.Table;
+ import javax.persistence.TableGenerator;
+ import javax.persistence.Temporal;
+@@ -126,6 +127,13 @@ public class Product extends SalesManagerEntity<Long, Product> implements Audita
+ 	 */
+ 	@OneToMany(fetch = FetchType.LAZY, cascade = CascadeType.ALL, mappedBy = "product")
+ 	private Set<ProductVariant> variants = new HashSet<ProductVariant>();
++
++	@OneToMany(fetch = FetchType.LAZY, cascade = CascadeType.ALL, mappedBy = "product", orphanRemoval = true)
++	@OrderBy("minQuantity ASC")
++	private Set<ProductPriceTier> priceTiers = new java.util.LinkedHashSet<ProductPriceTier>();
++
++	public Set<ProductPriceTier> getPriceTiers() { return priceTiers; }
++	public void setPriceTiers(Set<ProductPriceTier> priceTiers) { this.priceTiers = priceTiers; }
+ 	
+ 	@Column(name="DATE_AVAILABLE")
+ 	@Temporal(TemporalType.TIMESTAMP)
+diff --git a/sm-core-model/src/main/java/com/salesmanager/core/model/catalog/product/ProductPriceTier.java b/sm-core-model/src/main/java/com/salesmanager/core/model/catalog/product/ProductPriceTier.java
+new file mode 100644
+index 0000000..09122c4
+--- /dev/null
++++ b/sm-core-model/src/main/java/com/salesmanager/core/model/catalog/product/ProductPriceTier.java
+@@ -0,0 +1,37 @@
++package com.salesmanager.core.model.catalog.product;
++
++import java.math.BigDecimal;
++import javax.persistence.*;
++import com.salesmanager.core.model.generic.SalesManagerEntity;
++
++/** Quantity break price owned by one product. */
++@Entity
++@Table(name = "PRODUCT_PRICE_TIER", uniqueConstraints = @UniqueConstraint(columnNames = {"PRODUCT_ID", "MIN_QUANTITY"}))
++public class ProductPriceTier extends SalesManagerEntity<Long, ProductPriceTier> {
++    @Id
++    @GeneratedValue(strategy = GenerationType.TABLE, generator = "TABLE_GEN")
++    @TableGenerator(name = "TABLE_GEN", table = "SM_SEQUENCER", pkColumnName = "SEQ_NAME", valueColumnName = "SEQ_COUNT", pkColumnValue = "PRODUCT_PRICE_TIER_SEQ_NEXT_VAL")
++    @Column(name = "TIER_ID")
++    private Long id;
++
++    @ManyToOne(fetch = FetchType.LAZY, optional = false)
++    @JoinColumn(name = "PRODUCT_ID", nullable = false)
++    private Product product;
++
++    @Column(name = "MIN_QUANTITY", nullable = false)
++    private Integer minQuantity;
++
++    @Column(name = "PRICE", nullable = false, precision = 19, scale = 2)
++    private BigDecimal price;
++
++    public ProductPriceTier() {}
++    public ProductPriceTier(Integer minQuantity, BigDecimal price) { this.minQuantity = minQuantity; this.price = price; }
++    public Long getId() { return id; }
++    public void setId(Long id) { this.id = id; }
++    public Product getProduct() { return product; }
++    public void setProduct(Product product) { this.product = product; }
++    public Integer getMinQuantity() { return minQuantity; }
++    public void setMinQuantity(Integer minQuantity) { this.minQuantity = minQuantity; }
++    public BigDecimal getPrice() { return price; }
++    public void setPrice(BigDecimal price) { this.price = price; }
++}
+diff --git a/sm-core/src/main/java/com/salesmanager/core/business/repositories/catalog/product/ProductPriceTierRepository.java b/sm-core/src/main/java/com/salesmanager/core/business/repositories/catalog/product/ProductPriceTierRepository.java
+new file mode 100644
+index 0000000..5f7fb96
+--- /dev/null
++++ b/sm-core/src/main/java/com/salesmanager/core/business/repositories/catalog/product/ProductPriceTierRepository.java
+@@ -0,0 +1,10 @@
++package com.salesmanager.core.business.repositories.catalog.product;
++
++import java.util.List;
++import org.springframework.data.jpa.repository.JpaRepository;
++import com.salesmanager.core.model.catalog.product.ProductPriceTier;
++
++public interface ProductPriceTierRepository extends JpaRepository<ProductPriceTier, Long> {
++    List<ProductPriceTier> findByProductIdOrderByMinQuantityAsc(Long productId);
++    void deleteByProductId(Long productId);
++}
+diff --git a/sm-core/src/main/java/com/salesmanager/core/business/services/shoppingcart/ShoppingCartService.java b/sm-core/src/main/java/com/salesmanager/core/business/services/shoppingcart/ShoppingCartService.java
+index 6fad8bf..141793c 100755
+--- a/sm-core/src/main/java/com/salesmanager/core/business/services/shoppingcart/ShoppingCartService.java
++++ b/sm-core/src/main/java/com/salesmanager/core/business/services/shoppingcart/ShoppingCartService.java
+@@ -41,6 +41,7 @@ public interface ShoppingCartService extends SalesManagerEntityService<Long, Sho
+ 	 * @throws ServiceException
+ 	 */
+ 	ShoppingCartItem populateShoppingCartItem(Product product, MerchantStore store) throws ServiceException;
++	void refreshItemPrice(ShoppingCartItem item) throws ServiceException;
+ 
+ 	void deleteCart(ShoppingCart cart) throws ServiceException;
+ 
+@@ -64,4 +65,4 @@ public interface ShoppingCartService extends SalesManagerEntityService<Long, Sho
+ 	 */
+ 	void deleteShoppingCartItem(Long id);
+ 
+-}
+\ No newline at end of file
++}
+diff --git a/sm-core/src/main/java/com/salesmanager/core/business/services/shoppingcart/ShoppingCartServiceImpl.java b/sm-core/src/main/java/com/salesmanager/core/business/services/shoppingcart/ShoppingCartServiceImpl.java
+index e0d1ce8..af4efc5 100755
+--- a/sm-core/src/main/java/com/salesmanager/core/business/services/shoppingcart/ShoppingCartServiceImpl.java
++++ b/sm-core/src/main/java/com/salesmanager/core/business/services/shoppingcart/ShoppingCartServiceImpl.java
+@@ -9,6 +9,7 @@ import com.salesmanager.core.business.services.catalog.product.ProductService;
+ import com.salesmanager.core.business.services.catalog.product.attribute.ProductAttributeService;
+ import com.salesmanager.core.business.services.common.generic.SalesManagerEntityServiceImpl;
+ import com.salesmanager.core.model.catalog.product.Product;
++import com.salesmanager.core.model.catalog.product.ProductPriceTier;
+ import com.salesmanager.core.model.catalog.product.attribute.ProductAttribute;
+ import com.salesmanager.core.model.catalog.product.price.FinalPrice;
+ import com.salesmanager.core.model.common.UserContext;
+@@ -284,11 +285,22 @@ public class ShoppingCartServiceImpl extends SalesManagerEntityServiceImpl<Long,
+ 
+ 		// set item price
+ 		FinalPrice price = pricingService.calculateProductPrice(product);
+-		item.setItemPrice(price.getFinalPrice());
++		item.setItemPrice(tierPrice(product, item.getQuantity(), price.getFinalPrice()));
+ 		return item;
+ 
+ 	}
+ 
++	@Override
++	public void refreshItemPrice(ShoppingCartItem item) throws ServiceException {
++		if (item == null || item.getProduct() == null) return;
++		List<ProductAttribute> attrs = new ArrayList<ProductAttribute>();
++		if (item.getProduct().getAttributes() != null) attrs.addAll(item.getProduct().getAttributes());
++		FinalPrice price = pricingService.calculateProductPrice(item.getProduct(), attrs);
++		item.setFinalPrice(price);
++		item.setItemPrice(tierPrice(item.getProduct(), item.getQuantity(), price.getFinalPrice()));
++		item.setSubTotal(item.getItemPrice().multiply(new BigDecimal(item.getQuantity())));
++	}
++
+ 	@Transactional
+ 	private void getPopulatedItem(final ShoppingCartItem item, MerchantStore store) throws Exception {
+ 
+@@ -350,7 +362,7 @@ public class ShoppingCartServiceImpl extends SalesManagerEntityServiceImpl<Long,
+ 
+ 		// set item price
+ 		FinalPrice price = pricingService.calculateProductPrice(product, attributesList);
+-		item.setItemPrice(price.getFinalPrice());
++		item.setItemPrice(tierPrice(product, item.getQuantity(), price.getFinalPrice()));
+ 		item.setFinalPrice(price);
+ 
+ 		BigDecimal subTotal = item.getItemPrice().multiply(new BigDecimal(item.getQuantity()));
+@@ -358,6 +370,19 @@ public class ShoppingCartServiceImpl extends SalesManagerEntityServiceImpl<Long,
+ 
+ 	}
+ 
++	/** Select the highest reached break, while never charging more than the product price. */
++	private BigDecimal tierPrice(Product product, Integer quantity, BigDecimal ownPrice) {
++		if (product.getPriceTiers() == null || quantity == null || ownPrice == null) return ownPrice;
++		BigDecimal selected = ownPrice;
++		for (ProductPriceTier tier : product.getPriceTiers()) {
++			if (tier.getMinQuantity() != null && tier.getPrice() != null
++					&& quantity >= tier.getMinQuantity() && tier.getPrice().compareTo(selected) < 0) {
++				selected = tier.getPrice();
++			}
++		}
++		return selected;
++	}
++
+ 	@Override
+ 	public List<ShippingProduct> createShippingProduct(final ShoppingCart cart) throws ServiceException {
+ 		/**
+diff --git a/sm-shop-model/src/main/java/com/salesmanager/shop/model/catalog/product/ProductPriceTier.java b/sm-shop-model/src/main/java/com/salesmanager/shop/model/catalog/product/ProductPriceTier.java
+new file mode 100644
+index 0000000..7f292a0
+--- /dev/null
++++ b/sm-shop-model/src/main/java/com/salesmanager/shop/model/catalog/product/ProductPriceTier.java
+@@ -0,0 +1,7 @@
++package com.salesmanager.shop.model.catalog.product;
++import java.math.BigDecimal;
++public class ProductPriceTier {
++ private Integer minQuantity; private BigDecimal price;
++ public Integer getMinQuantity(){return minQuantity;} public void setMinQuantity(Integer v){minQuantity=v;}
++ public BigDecimal getPrice(){return price;} public void setPrice(BigDecimal v){price=v;}
++}
+diff --git a/sm-shop/src/main/java/com/salesmanager/shop/store/api/v1/product/ProductPriceTierApi.java b/sm-shop/src/main/java/com/salesmanager/shop/store/api/v1/product/ProductPriceTierApi.java
+new file mode 100644
+index 0000000..96fb3fb
+--- /dev/null
++++ b/sm-shop/src/main/java/com/salesmanager/shop/store/api/v1/product/ProductPriceTierApi.java
+@@ -0,0 +1,44 @@
++package com.salesmanager.shop.store.api.v1.product;
++
++import java.util.ArrayList;
++import java.util.Comparator;
++import java.util.HashSet;
++import java.util.List;
++import java.util.Set;
++import javax.inject.Inject;
++import javax.servlet.http.HttpServletResponse;
++import org.springframework.transaction.annotation.Transactional;
++import org.springframework.http.MediaType;
++import org.springframework.web.bind.annotation.*;
++import com.salesmanager.core.business.services.catalog.product.ProductService;
++import com.salesmanager.core.model.catalog.product.Product;
++import com.salesmanager.core.model.catalog.product.ProductPriceTier;
++import com.salesmanager.core.model.merchant.MerchantStore;
++import springfox.documentation.annotations.ApiIgnore;
++
++@RestController
++@RequestMapping("/api/v1")
++public class ProductPriceTierApi {
++ @Inject private ProductService productService;
++
++ @GetMapping(value="/private/product/{id}/tiers", produces=MediaType.APPLICATION_JSON_VALUE)
++ public List<com.salesmanager.shop.model.catalog.product.ProductPriceTier> get(@PathVariable Long id, @ApiIgnore MerchantStore store, HttpServletResponse response) throws Exception {
++   Product p=productService.findOne(id,store); if(p==null){response.sendError(404); return null;}
++   List<com.salesmanager.shop.model.catalog.product.ProductPriceTier> out=new ArrayList<>();
++   for(ProductPriceTier t:p.getPriceTiers()){com.salesmanager.shop.model.catalog.product.ProductPriceTier d=new com.salesmanager.shop.model.catalog.product.ProductPriceTier(); d.setMinQuantity(t.getMinQuantity()); d.setPrice(t.getPrice()); out.add(d);}
++   out.sort(Comparator.comparing(com.salesmanager.shop.model.catalog.product.ProductPriceTier::getMinQuantity)); return out;
++ }
++
++ @PutMapping(value="/private/product/{id}/tiers", produces=MediaType.APPLICATION_JSON_VALUE)
++ @Transactional
++ public List<com.salesmanager.shop.model.catalog.product.ProductPriceTier> put(@PathVariable Long id, @RequestBody List<com.salesmanager.shop.model.catalog.product.ProductPriceTier> body, @ApiIgnore MerchantStore store, HttpServletResponse response) throws Exception {
++   Product p=productService.findOne(id,store); if(p==null){response.sendError(404); return null;}
++   if(body==null || body.size()>10){response.sendError(400,"At most 10 tiers"); return null;}
++   Set<Integer> seen=new HashSet<>(); List<com.salesmanager.shop.model.catalog.product.ProductPriceTier> sorted=new ArrayList<>(body);
++   for(com.salesmanager.shop.model.catalog.product.ProductPriceTier d: sorted){if(d==null||d.getMinQuantity()==null||d.getPrice()==null||d.getMinQuantity()<2||d.getPrice().signum()<=0||!seen.add(d.getMinQuantity())){response.sendError(400,"Invalid tier"); return null;}}
++   sorted.sort(Comparator.comparing(com.salesmanager.shop.model.catalog.product.ProductPriceTier::getMinQuantity));
++   for(int i=1;i<sorted.size();i++) if(sorted.get(i).getPrice().compareTo(sorted.get(i-1).getPrice())>=0){response.sendError(400,"Higher quantities must cost less"); return null;}
++   p.getPriceTiers().clear(); for(com.salesmanager.shop.model.catalog.product.ProductPriceTier d:sorted){ProductPriceTier t=new ProductPriceTier(d.getMinQuantity(),d.getPrice()); t.setProduct(p); p.getPriceTiers().add(t);} productService.update(p);
++   return get(id,store,response);
++ }
++}
+diff --git a/sm-shop/src/main/java/com/salesmanager/shop/store/controller/shoppingCart/facade/ShoppingCartFacadeImpl.java b/sm-shop/src/main/java/com/salesmanager/shop/store/controller/shoppingCart/facade/ShoppingCartFacadeImpl.java
+index 7fdc139..60bd832 100755
+--- a/sm-shop/src/main/java/com/salesmanager/shop/store/controller/shoppingCart/facade/ShoppingCartFacadeImpl.java
++++ b/sm-shop/src/main/java/com/salesmanager/shop/store/controller/shoppingCart/facade/ShoppingCartFacadeImpl.java
+@@ -599,11 +599,7 @@ public class ShoppingCartFacadeImpl implements ShoppingCartFacade {
+ 
+ 				LOG.info("Updating cart entry quantity to" + newQuantity);
+ 				entryToUpdate.setQuantity((int) newQuantity);
+-				List<ProductAttribute> productAttributes = new ArrayList<ProductAttribute>();
+-				productAttributes.addAll(entryToUpdate.getProduct().getAttributes());
+-				final FinalPrice finalPrice = pricingService.calculateProductPrice(entryToUpdate.getProduct(),
+-						productAttributes);
+-				entryToUpdate.setItemPrice(finalPrice.getFinalPrice());
++				shoppingCartService.refreshItemPrice(entryToUpdate);
+ 				shoppingCartService.saveOrUpdate(cartModel);
+ 
+ 				LOG.info("Cart entry updated with desired quantity");
+@@ -649,12 +645,7 @@ public class ShoppingCartFacadeImpl implements ShoppingCartFacade {
+ 			LOG.info("Updating cart entry quantity to" + item.getQuantity());
+ 			entryToUpdate.setQuantity((int) item.getQuantity());
+ 
+-			List<ProductAttribute> productAttributes = new ArrayList<ProductAttribute>();
+-			productAttributes.addAll(entryToUpdate.getProduct().getAttributes());
+-
+-			final FinalPrice finalPrice = pricingService.calculateProductPrice(entryToUpdate.getProduct(),
+-					productAttributes);
+-			entryToUpdate.setItemPrice(finalPrice.getFinalPrice());
++			shoppingCartService.refreshItemPrice(entryToUpdate);
+ 
+ 			cartItems.add(entryToUpdate);
+ 
