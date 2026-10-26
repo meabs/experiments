@@ -148,6 +148,35 @@ uv run trialrig run ~/code/experiments/2026-10-swarm-tax/trial-team.local.toml -
 uv run trialrig run ~/code/experiments/2026-10-swarm-tax/trial-team-full.local.toml --agent codex --out <dir>/team-full
 ```
 
+## Follow-up: shared spec
+
+**Designed after the main runs and before any follow-up run, at the user's go-ahead ("Yes"). Not yet run.**
+
+**Why.** In the main runs the team arm scored 0.31 below solo, and its code compiled but broke the API that the task spelled out (wrong JSON shapes, wrong status codes). Its diffs contain fewer of the task's stated field names and statuses (0.63 against solo's 0.84; results/extra-checks.md). That fits a hand-off loss: the coder and the reviewer see only what the planner chooses to pass on. It can't be confirmed from the transcripts, because Codex stores the planner's messages to its subagents encrypted. This follow-up tests it directly.
+
+**Arm team-spec.** The team arm exactly (same model, effort, tools, one coder, one reviewer, one fix round, timeout), with two changes:
+
+- the rig copies the task's prompt into the clone as `TASK.md`, folded into the single starting commit so it never shows in the agent's diff (scripts/setup-spec.sh);
+- the instruction (arms/team-spec.md) tells the planner that `TASK.md` holds the task word for word, to tell the coder to read it first and treat it as the specification (the plan adds to it, it does not replace it), and to tell the reviewer to check the change against it and nothing else.
+
+6 tasks × 6 runs = 36 runs, three at a time, about $4 and about an hour, graded by the same scripts/verify.sh. The solo and team runs are the main trial's, not rerun.
+
+**Hypotheses and analysis** (scripts/analyse_followup.py, written and exercised before the run):
+
+- H4: team-spec scores higher than team. One-sided within-task permutation test, 100,000 shuffles, seed 1.
+- H5: team-spec against solo. Two-sided, the same test.
+- Holm over H4 and H5 at 0.05; 95% bootstrap intervals within tasks (10,000, seed 1).
+- Secondary: whether the coder and the reviewer actually read `TASK.md` (a command of theirs names it, from the session files), spec details in the diffs, cost, the rubber stamp rate.
+
+**Reading the result, fixed now.** The team–solo gap in the main runs is 0.31.
+
+- If H4 holds and team-spec closes at least half that gap (scores 0.41 or more), most of the team's loss is the hand-off, and the fix is cheap: give every agent the spec itself, not a summary.
+- If H4 holds but team-spec closes less than half the gap, the hand-off explains some of the loss, and splitting the work costs the rest.
+- If H4 fails, the hand-off is not the main cause.
+- If fewer than half the team-spec runs show the coder reading `TASK.md`, the arm did not happen as designed, and that is reported instead of a verdict.
+
+**Limits.** The follow-up runs hours after the main runs, so a change on the hosted model's side between them can't be ruled out. It tests one way of sharing the spec.
+
 ## Amendment log
 
 - 2026-10-26: first draft written at the user's request ("Based on the theme of my site I want one new experiment idea that challenges and tests something in industry hype" … "Yes please"): 20 small fixes plus DISCOUNT, low effort.
@@ -156,3 +185,5 @@ uv run trialrig run ~/code/experiments/2026-10-swarm-tax/trial-team-full.local.t
 - 2026-10-26, before any measured run: the rig's dropped arm prompts found and worked around; the rig fix opened as PR #3 at the user's request ("Fix the rig and push a pr as well"). The team prompts were made explicit about the collaboration tools before the cause was found; they are kept, since they only state how Codex's tools are called.
 - 2026-10-26: design committed as final and pushed at the user's go-ahead ("Go for it"), before any measured run. The three trial files run side by side, each 3 runs at a time.
 - 2026-10-26, during the measured run (amended at the user's choice, "Fix and rerun"): the team arm texts named `send_message` as the way to pass faults back to the coder. In Codex `send_message` does not start a new turn, so a coder that had already finished never acted on it and the planner waited on `wait_agent` until the rig's one-hour timeout, with no fix round. At about 50 minutes, 3 of the 9 team runs started were stuck this way (the planner used only `send_message`); runs whose planner chose `followup_task` finished normally. Both team texts now name `followup_task` and say why. The team and team-full runs made so far (9 and 33 started) were stopped and set aside, not analysed, and both arms rerun from scratch. The 36 solo runs, which were complete and unaffected, are kept. The shared Maven repository's checksum was unchanged when the runs were stopped. The stuck runs are reported as a finding: how easily a team's hand-off fails silently.
+- 2026-10-26, after the measured run: checks not in the design, added at the user's go-ahead ("Yes") and labelled as such (scripts/extra_checks.py, results/extra-checks.md): best-of-k with an own-tests picker and an oracle picker, spec details in the diffs, and tasks won. The pre-registered best-of-k picker kept every run (every solo run compiled, and no run in any arm wrote a test), so it equals the solo mean; the own-tests picker ties for the same reason.
+- 2026-10-26, after the measured run, before any follow-up run: follow-up arm team-spec designed ("Follow-up: shared spec"), with its analysis script written and exercised on the main runs. It runs only after the user's OK.
