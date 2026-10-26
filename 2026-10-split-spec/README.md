@@ -1,6 +1,6 @@
 # Split the work, split the spec? Coding agents that divide a feature (Codex)
 
-**Draft design, 2026-10-26. Not yet final: it is committed and pushed before any measured run, then changed only through the amendment log at the bottom.**
+**Final design, committed and pushed 2026-10-26 before any measured run.** Later changes go in the amendment log at the bottom.
 
 ## Why
 
@@ -104,7 +104,7 @@ Arms are compared by the mean, over the 6 tasks, of each task's mean score, so e
    - **Audit fix found here:** a split-part coder ran `rg … --glob '!TASK.md'`, a search that excludes the file, and the first audit counted it as opening `TASK.md`. The check now ignores a mention preceded by `!`, and still counts reads by absolute path (tested).
    - **Ceiling risk, noted and not acted on:** these two tasks scored high in the smoke runs, and one agent already passed 91.7% of PRODUCTQA in swarm-tax, so PRODUCTQA leaves little room above solo. The tasks are not changed after seeing this.
 2. **Analysis script run on the smoke runs. Done.** Every section ran on the four smoke runs together with swarm-tax's solo and team-spec runs (used only to exercise the script).
-3. **Design committed as final and pushed, then run,** after the user's OK.
+3. **Design committed as final and pushed, then run. Done** (the user: "Yes").
 
 ## Known limits
 
@@ -125,3 +125,4 @@ python3 -I scripts/analyse.py <out dir>/solo <out dir>/team-spec <out dir>/split
 
 - 2026-10-26: draft design written at the user's request ("Merge and start the next experiment"), after swarm-tax's write-up was merged. Tasks, hidden tests, references, grader, sandbox and analysis code reused from swarm-tax; `verify.sh` also keeps the planner's part files and leaves them out of the graded diff; `audit_run.py` also records, per coder, what it read, the files it patched and when it worked.
 - 2026-10-26: smoke test run and recorded ("Before the runs"); the audit's `TASK.md` check corrected so a search that excludes the file doesn't count as reading it.
+- 2026-10-26: design committed as final and pushed at the user's go-ahead ("Yes"), before any measured run. The four trial files run side by side, each 2 runs at a time.
