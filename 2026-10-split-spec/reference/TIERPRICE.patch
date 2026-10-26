@@ -1,0 +1,287 @@
+diff --git a/sm-core-model/src/main/java/com/salesmanager/core/model/catalog/product/price/ProductPriceTier.java b/sm-core-model/src/main/java/com/salesmanager/core/model/catalog/product/price/ProductPriceTier.java
+new file mode 100644
+index 000000000..65ff69c67
+--- /dev/null
++++ b/sm-core-model/src/main/java/com/salesmanager/core/model/catalog/product/price/ProductPriceTier.java
+@@ -0,0 +1,41 @@
++package com.salesmanager.core.model.catalog.product.price;
++
++import java.math.BigDecimal;
++
++import javax.persistence.Column;
++import javax.persistence.Entity;
++import javax.persistence.GeneratedValue;
++import javax.persistence.GenerationType;
++import javax.persistence.Id;
++import javax.persistence.Table;
++import javax.persistence.UniqueConstraint;
++
++/** A quantity price tier: from minQuantity units on a cart line, each unit costs price (reference implementation for TIERPRICE). */
++@Entity
++@Table(name = "PRODUCT_PRICE_TIER", uniqueConstraints = @UniqueConstraint(columnNames = { "PRODUCT_ID", "MIN_QUANTITY" }))
++public class ProductPriceTier {
++
++	@Id
++	@GeneratedValue(strategy = GenerationType.IDENTITY)
++	@Column(name = "PRODUCT_PRICE_TIER_ID")
++	private Long id;
++
++	/** The product's id, kept as a plain column so deleting a product is never blocked by its tiers. */
++	@Column(name = "PRODUCT_ID", nullable = false)
++	private Long productId;
++
++	@Column(name = "MIN_QUANTITY", nullable = false)
++	private int minQuantity;
++
++	@Column(name = "TIER_PRICE", nullable = false, precision = 19, scale = 4)
++	private BigDecimal price;
++
++	public Long getId() { return id; }
++	public void setId(Long id) { this.id = id; }
++	public Long getProductId() { return productId; }
++	public void setProductId(Long productId) { this.productId = productId; }
++	public int getMinQuantity() { return minQuantity; }
++	public void setMinQuantity(int minQuantity) { this.minQuantity = minQuantity; }
++	public BigDecimal getPrice() { return price; }
++	public void setPrice(BigDecimal price) { this.price = price; }
++}
+diff --git a/sm-core/src/main/java/com/salesmanager/core/business/repositories/catalog/product/price/ProductPriceTierRepository.java b/sm-core/src/main/java/com/salesmanager/core/business/repositories/catalog/product/price/ProductPriceTierRepository.java
+new file mode 100644
+index 000000000..67719e49f
+--- /dev/null
++++ b/sm-core/src/main/java/com/salesmanager/core/business/repositories/catalog/product/price/ProductPriceTierRepository.java
+@@ -0,0 +1,21 @@
++package com.salesmanager.core.business.repositories.catalog.product.price;
++
++import java.util.List;
++
++import org.springframework.data.jpa.repository.JpaRepository;
++import org.springframework.data.jpa.repository.Modifying;
++import org.springframework.data.jpa.repository.Query;
++import org.springframework.transaction.annotation.Transactional;
++
++import com.salesmanager.core.model.catalog.product.price.ProductPriceTier;
++
++public interface ProductPriceTierRepository extends JpaRepository<ProductPriceTier, Long> {
++
++	@Query("select t from ProductPriceTier t where t.productId = ?1 order by t.minQuantity")
++	List<ProductPriceTier> findByProduct(Long productId);
++
++	@Transactional
++	@Modifying
++	@Query("delete from ProductPriceTier t where t.productId = ?1")
++	void deleteByProduct(Long productId);
++}
+diff --git a/sm-core/src/main/java/com/salesmanager/core/business/services/shoppingcart/ShoppingCartServiceImpl.java b/sm-core/src/main/java/com/salesmanager/core/business/services/shoppingcart/ShoppingCartServiceImpl.java
+index e0d1ce8d1..cec0561bb 100755
+--- a/sm-core/src/main/java/com/salesmanager/core/business/services/shoppingcart/ShoppingCartServiceImpl.java
++++ b/sm-core/src/main/java/com/salesmanager/core/business/services/shoppingcart/ShoppingCartServiceImpl.java
+@@ -51,6 +51,9 @@ public class ShoppingCartServiceImpl extends SalesManagerEntityServiceImpl<Long,
+ 	@Inject
+ 	private PricingService pricingService;
+ 
++	@Inject
++	private com.salesmanager.core.business.repositories.catalog.product.price.ProductPriceTierRepository priceTierRepository;
++
+ 	@Inject
+ 	private ProductAttributeService productAttributeService;
+ 
+@@ -350,7 +353,7 @@ public class ShoppingCartServiceImpl extends SalesManagerEntityServiceImpl<Long,
+ 
+ 		// set item price
+ 		FinalPrice price = pricingService.calculateProductPrice(product, attributesList);
+-		item.setItemPrice(price.getFinalPrice());
++		item.setItemPrice(tierPrice(product, item.getQuantity(), price.getFinalPrice()));
+ 		item.setFinalPrice(price);
+ 
+ 		BigDecimal subTotal = item.getItemPrice().multiply(new BigDecimal(item.getQuantity()));
+@@ -358,6 +361,20 @@ public class ShoppingCartServiceImpl extends SalesManagerEntityServiceImpl<Long,
+ 
+ 	}
+ 
++	/** The unit price for a line of this quantity: the tier with the largest minimum the quantity reaches, never above the normal price. */
++	private BigDecimal tierPrice(Product product, Integer quantity, BigDecimal normal) {
++		BigDecimal unit = normal;
++		if (quantity == null || product.getId() == null) {
++			return unit;
++		}
++		for (com.salesmanager.core.model.catalog.product.price.ProductPriceTier t : priceTierRepository.findByProduct(product.getId())) {
++			if (quantity >= t.getMinQuantity() && t.getPrice().compareTo(unit) < 0) {
++				unit = t.getPrice();
++			}
++		}
++		return unit;
++	}
++
+ 	@Override
+ 	public List<ShippingProduct> createShippingProduct(final ShoppingCart cart) throws ServiceException {
+ 		/**
+diff --git a/sm-shop/src/main/java/com/salesmanager/shop/store/api/v1/product/ProductPriceTierApi.java b/sm-shop/src/main/java/com/salesmanager/shop/store/api/v1/product/ProductPriceTierApi.java
+new file mode 100644
+index 000000000..43a51270c
+--- /dev/null
++++ b/sm-shop/src/main/java/com/salesmanager/shop/store/api/v1/product/ProductPriceTierApi.java
+@@ -0,0 +1,140 @@
++package com.salesmanager.shop.store.api.v1.product;
++
++import java.math.BigDecimal;
++import java.util.ArrayList;
++import java.util.Collections;
++import java.util.HashSet;
++import java.util.LinkedHashMap;
++import java.util.List;
++import java.util.Map;
++import java.util.Set;
++import java.util.stream.Collectors;
++
++import org.springframework.beans.factory.annotation.Autowired;
++import org.springframework.http.HttpStatus;
++import org.springframework.http.ResponseEntity;
++import org.springframework.transaction.annotation.Transactional;
++import org.springframework.web.bind.annotation.GetMapping;
++import org.springframework.web.bind.annotation.PathVariable;
++import org.springframework.web.bind.annotation.PutMapping;
++import org.springframework.web.bind.annotation.RequestBody;
++import org.springframework.web.bind.annotation.RequestMapping;
++import org.springframework.web.bind.annotation.RestController;
++
++import com.salesmanager.core.business.repositories.catalog.product.price.ProductPriceTierRepository;
++import com.salesmanager.core.business.services.catalog.product.ProductService;
++import com.salesmanager.core.model.catalog.product.Product;
++import com.salesmanager.core.model.catalog.product.price.ProductPriceTier;
++import com.salesmanager.core.model.merchant.MerchantStore;
++
++import io.swagger.annotations.ApiImplicitParam;
++import io.swagger.annotations.ApiImplicitParams;
++import springfox.documentation.annotations.ApiIgnore;
++
++/** Admin API for a product's quantity price tiers (reference implementation for TIERPRICE). */
++@RestController
++@RequestMapping("/api/v1/private/product/{id}/tiers")
++@ApiImplicitParams({ @ApiImplicitParam(name = "store", dataType = "String", defaultValue = "DEFAULT") })
++public class ProductPriceTierApi {
++
++	static final int MAX_TIERS = 10;
++
++	@Autowired
++	private ProductPriceTierRepository repository;
++
++	@Autowired
++	private ProductService productService;
++
++	@GetMapping
++	public ResponseEntity<?> list(@PathVariable Long id, @ApiIgnore MerchantStore store) {
++		if (product(id, store) == null) {
++			return ResponseEntity.status(HttpStatus.NOT_FOUND).build();
++		}
++		return ResponseEntity.ok(readable(repository.findByProduct(id)));
++	}
++
++	@PutMapping
++	@Transactional
++	public ResponseEntity<?> replace(@PathVariable Long id, @RequestBody Object body, @ApiIgnore MerchantStore store) {
++		if (product(id, store) == null) {
++			return ResponseEntity.status(HttpStatus.NOT_FOUND).build();
++		}
++		if (!(body instanceof List)) {
++			return bad("the body must be a list of tiers");
++		}
++		List<ProductPriceTier> tiers = new ArrayList<>();
++		Set<Integer> seen = new HashSet<>();
++		for (Object o : (List<?>) body) {
++			if (!(o instanceof Map)) {
++				return bad("each tier must be an object");
++			}
++			Map<?, ?> m = (Map<?, ?>) o;
++			Integer min;
++			BigDecimal price;
++			try {
++				min = wholeNumber(m.get("minQuantity"));
++				price = m.get("price") == null ? null : new BigDecimal(String.valueOf(m.get("price")));
++			} catch (NumberFormatException e) {
++				return bad("minQuantity must be a whole number and price a number");
++			}
++			if (min == null || price == null) {
++				return bad("minQuantity and price are required");
++			}
++			if (min < 2) {
++				return bad("minQuantity must be at least 2");
++			}
++			if (price.signum() <= 0) {
++				return bad("price must be more than 0");
++			}
++			if (!seen.add(min)) {
++				return bad("two tiers have minQuantity " + min);
++			}
++			ProductPriceTier t = new ProductPriceTier();
++			t.setProductId(id);
++			t.setMinQuantity(min);
++			t.setPrice(price);
++			tiers.add(t);
++		}
++		if (tiers.size() > MAX_TIERS) {
++			return bad("at most " + MAX_TIERS + " tiers");
++		}
++		tiers.sort((a, b) -> Integer.compare(a.getMinQuantity(), b.getMinQuantity()));
++		for (int i = 1; i < tiers.size(); i++) {
++			if (tiers.get(i).getPrice().compareTo(tiers.get(i - 1).getPrice()) >= 0) {
++				return bad("a tier for more units must have a lower price");
++			}
++		}
++		repository.deleteByProduct(id);
++		repository.flush();
++		return ResponseEntity.ok(readable(repository.saveAll(tiers)));
++	}
++
++	private Product product(Long id, MerchantStore store) {
++		// getById(id) returns a lazy reference that fails later for a missing id; this query returns null instead
++		return productService.findOne(id, store);
++	}
++
++	private static Integer wholeNumber(Object o) {
++		if (o == null) {
++			return null;
++		}
++		BigDecimal d = new BigDecimal(String.valueOf(o));
++		if (d.stripTrailingZeros().scale() > 0) {
++			throw new NumberFormatException("not whole");
++		}
++		return d.intValueExact();
++	}
++
++	private static ResponseEntity<?> bad(String message) {
++		return ResponseEntity.badRequest().body(Collections.singletonMap("message", message));
++	}
++
++	private static List<Map<String, Object>> readable(List<ProductPriceTier> tiers) {
++		return tiers.stream().sorted((a, b) -> Integer.compare(a.getMinQuantity(), b.getMinQuantity())).map(t -> {
++			Map<String, Object> m = new LinkedHashMap<>();
++			m.put("minQuantity", t.getMinQuantity());
++			m.put("price", t.getPrice());
++			return m;
++		}).collect(Collectors.toList());
++	}
++}
+diff --git a/sm-shop/src/main/java/com/salesmanager/shop/store/facade/product/ProductCommonFacadeImpl.java b/sm-shop/src/main/java/com/salesmanager/shop/store/facade/product/ProductCommonFacadeImpl.java
+index cd3d30248..51c3eb688 100644
+--- a/sm-shop/src/main/java/com/salesmanager/shop/store/facade/product/ProductCommonFacadeImpl.java
++++ b/sm-shop/src/main/java/com/salesmanager/shop/store/facade/product/ProductCommonFacadeImpl.java
+@@ -58,6 +58,10 @@ import com.salesmanager.shop.utils.ImageFilePath;
+ @Service("productCommonFacade")
+ public class ProductCommonFacadeImpl implements ProductCommonFacade {
+ 
++	@Autowired
++	private com.salesmanager.core.business.repositories.catalog.product.price.ProductPriceTierRepository priceTierRepository;
++
++
+ 
+ 	@Inject
+ 	private LanguageService languageService;
+@@ -402,6 +406,7 @@ public class ProductCommonFacadeImpl implements ProductCommonFacade {
+ 		}
+ 
+ 		try {
++			priceTierRepository.deleteByProduct(p.getId());
+ 			productService.delete(p);
+ 		} catch (ServiceException e) {
+ 			throw new ServiceRuntimeException("Error while deleting ptoduct with id [" + id + "]", e);

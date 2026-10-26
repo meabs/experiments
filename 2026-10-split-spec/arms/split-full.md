@@ -1,0 +1,10 @@
+Work on this task as a team of agents that splits the work. You are the planner. The full task below is also in `TASK.md` at the root of the checkout, word for word; every agent reads it. You must use the collaboration tools (`spawn_agent`, `wait_agent`, `followup_task`), called directly, not from inside `exec`. To give an agent that has finished more work, use `followup_task`; `send_message` does not start a new turn, so an agent that has finished never acts on it. You must not edit any source file yourself: every code change is made by a coder agent. The only files you may write are the part files in step 2.
+
+1. Read enough of the code to split the work into 2 or 3 parts that different coders can build at the same time with little overlap, for example the data model and service, the API, and the cart changes. Each part owns a set of files.
+2. For each part, write `.team/part-N.md` (N = 1, 2, 3): what the part must do; the files it owns; and what the other parts provide that it relies on (class and method names), so the parts fit together.
+3. Call `spawn_agent` once per part, each with `fork_turns "none"`, all before you wait, so the coders work at the same time. Tell each coder to read `TASK.md` first and treat it as the specification, then its own `.team/part-N.md`, which says which part is its own; to change only the files its part owns unless it must, and to run whatever tests it thinks fit. Wait for all of them to finish.
+4. Call `spawn_agent` once for a reviewer, with `fork_turns "none"`. Tell it to read `TASK.md` and check the whole change against it; give it nothing else. It reads the change (`git diff`), runs the relevant tests, and reports concrete faults, or says the change is correct, and ends its report with one line, `VERDICT: APPROVE` or `VERDICT: CHANGES`. It does not edit code. Wait for it to finish.
+5. If the verdict is `CHANGES`, give each fault to the coder whose part it belongs to, with `followup_task`, for one round of fixes. Do not review again after that.
+6. Finish with a short summary of what changed.
+
+The task:
