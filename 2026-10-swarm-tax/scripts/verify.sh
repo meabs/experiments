@@ -1,12 +1,13 @@
 #!/usr/bin/env bash
-# Independent check after the agent finishes (test-skill's grader, with this experiment's hidden tests):
+# Independent check after the agent finishes (test-skill's Linux grader, copied here with relevance.sh, relevance.py and
+# summarize.py, with this experiment's hidden tests):
 # 1. visible check, for best-of-k selection (README, "Matching the spend"): does the change compile, before any hidden
 #    test is present? -> visible.json {"compiles": bool}. Whether the agent's own tests pass comes from relevance.json.
 # 2. the agent's diff, and test-skill's relevance check on the agent's own tests;
 # 3. the hidden tests added, and the whole reactor's tests run offline -> verify-summary.json (hidden test cases by name).
 # Exit 0 only if everything (existing tests + hidden tests) passes. Never runs `mvn install`.
 set -uo pipefail
-E="$(cd "$(dirname "$0")/.." && pwd)"; T="$E/../2026-10-test-skill"
+E="$(cd "$(dirname "$0")/.." && pwd)"
 export JAVA_HOME=/usr/lib/jvm/java-21-openjdk-amd64 PATH=/usr/lib/jvm/java-21-openjdk-amd64/bin:$PATH
 R="$TRIAL_OUT/runs/$TRIAL_QUESTION/$TRIAL_ARM/$TRIAL_AGENT/$TRIAL_REP"
 mkdir -p "$R"
@@ -16,10 +17,10 @@ python3 -I -c "import json,sys; json.dump({'compiles': sys.argv[1] == '0'}, open
 git add -A -N . 2>/dev/null
 git diff -- . ':(exclude)*.dat' ':(exclude)**/target/**' > "$R/agent.diff"
 git diff --numstat -- . ':(exclude)*.dat' ':(exclude)**/target/**' > "$R/agent.numstat"
-bash "$T/scripts/relevance.local.sh" "$R/relevance.json" "$R/relevance-logs" > /dev/null 2>&1
+bash "$E/scripts/relevance.sh" "$R/relevance.json" "$R/relevance-logs" > /dev/null 2>&1
 D=sm-shop/src/test/java/com/salesmanager/test/shop/hidden
 mkdir -p "$D" && cp "$E/hidden/$TRIAL_QUESTION/"*.java "$D/"
 "${MVN[@]}" -Dmaven.test.failure.ignore=true clean test > "$R/verify-mvn.log" 2>&1
 mrc=$?
 n=$(cat "$E/hidden/$TRIAL_QUESTION/"*.java | grep -cE "@Test([^A-Za-z]|$)")
-python3 -I "$T/scripts/summarize.py" "$R" "$mrc" "$n"
+python3 -I "$E/scripts/summarize.py" "$R" "$mrc" "$n"

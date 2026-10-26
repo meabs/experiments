@@ -47,7 +47,7 @@ def trial(name, arm, tasks, reps):
     for t in tasks:
         p = HEAD + instr + open(os.path.join(E, "tasks", t, "prompt.md")).read().strip() + TAIL
         assert '"""' not in p
-        s += f'[[questions]]\nid = "{t}"\nrepo = "shopizer"\nverify = "bash {X}/scripts/verify.local.sh"\nprompt = """{p}"""\n\n'
+        s += f'[[questions]]\nid = "{t}"\nrepo = "shopizer"\nverify = "bash {X}/scripts/verify.sh"\nprompt = """{p}"""\n\n'
     return s
 
 
