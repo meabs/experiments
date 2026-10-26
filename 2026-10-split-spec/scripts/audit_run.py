@@ -13,7 +13,8 @@ import glob, gzip, json, os, re, sys
 EDIT = re.compile(r"\*\*\* Begin Patch|apply_patch|(^|[;&|]\s*)(sed -i|perl -pi|tee |cat >)|>\s*[\w./-]+\.(java|xml|properties)")
 VERDICT = re.compile(r"VERDICT:\s*(APPROVE|CHANGES)")
 PATCH = re.compile(r"\*\*\* (?:Add|Update|Delete) File: ([^\s\\\"']+)")
-PART = re.compile(r"\.team/part-(\d)")
+PART = re.compile(r"(?<!!)\.team/part-(\d)")
+TASK = re.compile(r"(?<![!\w])TASK\.md")  # a mention excluded from a search (--glob '!TASK.md') is not a read
 PATH = re.compile(r"(/home/[^\s'\"`;)]+|/tmp/[^\s'\"`;)]+)")
 
 
@@ -78,12 +79,12 @@ def main(home, clone):
         "paths_outside_clone": outside,
         "planner_code_edits": sum(1 for t in main_t for c in t["commands"] if EDIT.search(c) and ".team/" not in c),
         "coders": [{"agent_path": t["agent_path"], "started": t.get("started"), "ended": t["last"],
-                    "read_task_md": any("TASK.md" in c for c in t["commands"]),
+                    "read_task_md": any(TASK.search(c) for c in t["commands"]),
                     "parts_read": sorted({m for c in t["commands"] for m in PART.findall(c)}),
                     "files_patched": sorted({os.path.relpath(m, clone) if m.startswith("/") else m
                                              for c in t["commands"] for m in PATCH.findall(c)})}
                    for t in subs if t["agent_path"] and "review" not in t["agent_path"]],
-        "read_task_md": {r: any("TASK.md" in c for t in subs if t["agent_path"] and (("review" in t["agent_path"]) == (r == "reviewer"))
+        "read_task_md": {r: any(TASK.search(c) for t in subs if t["agent_path"] and (("review" in t["agent_path"]) == (r == "reviewer"))
                                 for c in t["commands"]) for r in ("coder", "reviewer")},
         "tokens": tot, "cost": round(cost(tot), 5),
         "per_thread": [{"role": t["role"], "agent_path": t["agent_path"], "tokens": (t["tokens"] or {}).get("total_tokens", 0),

@@ -54,7 +54,7 @@ swarm-tax's six features, unchanged ([`tasks/`](tasks/)), with the same hidden t
 ## Size and cost
 
 - 4 arms × 6 tasks × 6 runs = **144 runs**, the four trial files side by side, each 2 runs at a time.
-- **API cost: about $15 to $30.** From swarm-tax: solo $0.073 and team-spec $0.116 per run; the split arms' cost comes from the smoke test (below).
+- **API cost: about $20.** From swarm-tax: solo $0.073 and team-spec $0.116 per run; from the smoke test (below), split-part $0.163 and split-full $0.186.
 - **Time:** about 4 to 6 hours. Time limits: 45 minutes for solo, 60 for the team arms. A run that times out is graded as it stands.
 
 ## Measures
@@ -89,8 +89,21 @@ Arms are compared by the mean, over the 6 tasks, of each task's mean score, so e
 
 ## Before the runs
 
-1. **Smoke test** (not counted): one split-part and one split-full run on CARTLIMIT and PRODUCTQA, to check that the planner splits, writes part files, spawns coders at once, and that the audit reads it all. Results here before the design is final.
-2. **Analysis script run on the smoke runs**, every section.
+1. **Smoke test. Done** (not counted): one split-part and one split-full run on CARTLIMIT and PRODUCTQA.
+
+   | Run | Hidden tests passed (higher is better) | Coders (all three working at the same time) | Part files | Coders that opened `TASK.md` | First review | Cost (lower is better) | Time |
+   | --- | --- | --- | --- | --- | --- | --- | --- |
+   | split-part CARTLIMIT | 13/14 | 3 | 3 | 0 of 3 | CHANGES | $0.137 | 3.9 min |
+   | split-part PRODUCTQA | 14/14 | 3 | 3 | 0 of 3 | CHANGES | $0.190 | 5.3 min |
+   | split-full CARTLIMIT | 12/14 | 3 | 3 | 3 of 3 | CHANGES | $0.201 | 4.1 min |
+   | split-full PRODUCTQA | 14/14 | 3 | 3 | 3 of 3 | CHANGES | $0.172 | 4.7 min |
+
+   - Mean cost per run: split-part $0.163, split-full $0.186; median 4.6 and 4.4 minutes. With solo and team-spec at swarm-tax's costs, the 144 runs come to about $20.
+   - Every split-part part file copied the task's requirements word for word (all of the stated fields and statuses appear in them); a sample, CARTLIMIT part 1, lists its files, quotes three requirements and names what the other parts call.
+   - No coder patched a file another coder patched, no planner edited source, every spawn used `fork_turns "none"`.
+   - **Audit fix found here:** a split-part coder ran `rg … --glob '!TASK.md'`, a search that excludes the file, and the first audit counted it as opening `TASK.md`. The check now ignores a mention preceded by `!`, and still counts reads by absolute path (tested).
+   - **Ceiling risk, noted and not acted on:** these two tasks scored high in the smoke runs, and one agent already passed 91.7% of PRODUCTQA in swarm-tax, so PRODUCTQA leaves little room above solo. The tasks are not changed after seeing this.
+2. **Analysis script run on the smoke runs. Done.** Every section ran on the four smoke runs together with swarm-tax's solo and team-spec runs (used only to exercise the script).
 3. **Design committed as final and pushed, then run,** after the user's OK.
 
 ## Known limits
@@ -111,3 +124,4 @@ python3 -I scripts/analyse.py <out dir>/solo <out dir>/team-spec <out dir>/split
 ## Amendment log
 
 - 2026-10-26: draft design written at the user's request ("Merge and start the next experiment"), after swarm-tax's write-up was merged. Tasks, hidden tests, references, grader, sandbox and analysis code reused from swarm-tax; `verify.sh` also keeps the planner's part files and leaves them out of the graded diff; `audit_run.py` also records, per coder, what it read, the files it patched and when it worked.
+- 2026-10-26: smoke test run and recorded ("Before the runs"); the audit's `TASK.md` check corrected so a search that excludes the file doesn't count as reading it.
