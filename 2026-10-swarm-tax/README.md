@@ -1,6 +1,6 @@
 # The swarm tax: does a team of agents beat one agent with the same budget? (Codex)
 
-**Draft design, rewritten 2026-10-26 after the smoke tests, before any measured run. Not yet final: it becomes final when committed and pushed with the user's go-ahead, and later changes go in the amendment log at the bottom.**
+**Final design, committed and pushed 2026-10-26 before any measured run.** Later changes go in the amendment log at the bottom.
 
 ## Why
 
@@ -127,7 +127,7 @@ The first two smoke tests (8 team runs on SUPERDEL and TAXRATE, low effort) show
 2. **Tasks built and validated. Done** (table above).
    - **Grader check:** one solo run per new task through the final grader (not counted): every change compiled, no existing test broke, and the shared Maven repository was unchanged. Hidden tests passed: PRODUCTQA 14/14, TIERPRICE 13/14, WISHLIST 12/15, BACKINSTOCK 6/13, CARTLIMIT 2/14, in 98 to 158 seconds each. One run is not an estimate, but PRODUCTQA and TIERPRICE may leave little room above solo; this is reported with the results, and the tasks were not changed after seeing it.
 3. **Analysis script written and checked. Done.** [`scripts/analyse.py`](scripts/analyse.py) ran on the three DISCOUNT smoke runs and every section ran. Its best-of-k closed form matched a brute-force average over every ordering in 300 random cases (largest difference 1.4e-14).
-4. **Commit the design as final and push it, with the user's go-ahead, then run.**
+4. **Design committed as final and pushed, then run. Done** (the user: "Go for it").
 
 ## Known limits
 
@@ -154,3 +154,4 @@ uv run trialrig run ~/code/experiments/2026-10-swarm-tax/trial-team-full.local.t
 - 2026-10-26, before any measured run: hosted only, at the user's direction ("Use codex and Luna model , progress").
 - 2026-10-26, before any measured run: effort raised to medium and the tasks replaced by six features, at the user's request ("Up the reasoning if needed and endure change is complex enough"). The small fixes were dropped after the smoke tests showed a single agent finishing them in under a minute. Primary measure changed from verified pass to the share of hidden tests passed, and the tests from per-task sign-flips to within-task permutation and bootstrap, because six tasks are too few for a sign-flip test across tasks.
 - 2026-10-26, before any measured run: the rig's dropped arm prompts found and worked around; the rig fix opened as PR #3 at the user's request ("Fix the rig and push a pr as well"). The team prompts were made explicit about the collaboration tools before the cause was found; they are kept, since they only state how Codex's tools are called.
+- 2026-10-26: design committed as final and pushed at the user's go-ahead ("Go for it"), before any measured run. The three trial files run side by side, each 3 runs at a time.
