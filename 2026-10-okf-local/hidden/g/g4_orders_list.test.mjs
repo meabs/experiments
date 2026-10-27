@@ -1,0 +1,12 @@
+import assert from "node:assert/strict";
+import { pathToFileURL } from "node:url";
+const { load } = await import(pathToFileURL(process.env.OKF_EXP + "/hidden/g/_prelude.mjs"));
+const m = await load("src/util/ordersApi.mjs");
+const backend = { orders: [{ id: 1 }, { id: 2 }], pageCount: 4, itemsOnPage: 2, totalRecords: 37, recordsFiltered: 0 };
+const n = m.normalizeOrderList(backend);
+assert.deepEqual(n.orders, [{ id: 1 }, { id: 2 }]);
+assert.equal(n.pages, 4, "pages come from the backend's page-count field");
+assert.equal(n.total, 37, "total comes from the backend's total-records field");
+assert.equal(n.onThisPage, 2, "onThisPage comes from the backend's items-on-page field");
+assert.deepEqual(m.normalizeOrderList({ orders: [] }), { orders: [], pages: 0, total: 0, onThisPage: 0 });
+console.log("ok");

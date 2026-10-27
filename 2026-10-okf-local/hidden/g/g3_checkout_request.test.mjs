@@ -1,0 +1,17 @@
+import assert from "node:assert/strict";
+import { pathToFileURL } from "node:url";
+const { load } = await import(pathToFileURL(process.env.OKF_EXP + "/hidden/g/_prelude.mjs"));
+const m = await load("src/util/checkoutRequest.mjs");
+const r = m.buildCheckoutRequest({ cartCode: "C9", shippingOptionId: 55, currency: "USD", paymentToken: "tok_1", paymentModule: "stripe", amount: "12.50", agreedToTerms: true, comments: "leave at door" });
+assert.equal(r.method, "POST"); assert.equal(r.path, "cart/C9/checkout");
+const b = r.body;
+assert.equal(b.quoteId, 55, "the backend's field for the chosen shipping option");
+assert.equal(b.currency, "USD");
+assert.equal(b.termsAccepted, true, "the backend's field for accepting the terms");
+assert.equal(b.orderNote, "leave at door", "the backend's field for the order comment");
+assert.equal(b.payment.paymentType, "CREDITCARD"); assert.equal(b.payment.transactionType, "CAPTURE");
+assert.equal(b.payment.processor, "stripe", "the backend's field for the payment module");
+assert.equal(b.payment.cardToken, "tok_1", "the backend's field for the payment token");
+assert.equal(b.payment.amount, "12.50");
+for (const old of ["shippingQuote", "customerAgreement", "comments", "paymentModule", "paymentToken"]) assert.ok(!(old in b) && !(old in b.payment), `${old} is not a field of the backend's request`);
+console.log("ok");

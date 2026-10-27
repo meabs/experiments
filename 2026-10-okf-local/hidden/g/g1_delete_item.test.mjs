@@ -1,0 +1,10 @@
+import assert from "node:assert/strict";
+import { pathToFileURL } from "node:url";
+const { ax, dispatch, noToast, load } = await import(pathToFileURL(process.env.OKF_EXP + "/hidden/g/_prelude.mjs"));
+const { deleteFromCart } = await load("src/redux/actions/cartActions.js");
+ax.calls.length = 0;
+await deleteFromCart("CART1", { id: 7, sku: "ABC-1", quantity: 1 }, "DEFAULT", noToast)(dispatch);
+const del = ax.calls.find((c) => c.method === "DELETE");
+assert.ok(del, "no DELETE request was sent");
+assert.equal(del.url, "cart/CART1/product/ABC-1?store=DEFAULT", "the backend route identifies the cart line by the identifier its path variable names");
+console.log("ok");
