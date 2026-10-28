@@ -28,7 +28,7 @@ The hosted results are not rerun. They come from OKFExperiment's [`results/G-har
 
 ## Agent and repositories
 
-- **Agent:** Codex CLI 0.157.0 with `qwen3.8:27b` (Q4_K_M, Ollama 0.40.5 on ROCm, context 65,536), reasoning effort `medium` as in test G. The set-up, and how its tools differ from the hosted Codex, is in [test-skill-local](../2026-10-test-skill-local/README.md#agent-and-repository) and `~/code/benchmark/local-setup/README.md`.
+- **Agent:** Codex CLI 0.157.0 with `qwen3.8:27b` (Q4_K_M, Ollama 0.40.5 on ROCm, context 65,536), reasoning effort `medium` as in test G, and web search off in every arm (amendment, 2026-10-28). The set-up, and how its tools differ from the hosted Codex, is in [test-skill-local](../2026-10-test-skill-local/README.md#agent-and-repository) and `~/code/benchmark/local-setup/README.md`.
 - **Isolation:** bubblewrap ([`setup/codex-bwrap.sh`](setup/codex-bwrap.sh)): `/home` is empty apart from this run's workspace, so the hidden tests, the guides of other arms and every other run are invisible. The `source` arm alone gets the backend bound in read-only at its own path (`CODEX_RO_BIND`, the only change to the wrapper).
 - **Workspace (all arms):** the Shopizer React storefront at `455b4bc`.
 - **Backend:** Shopizer at `6a4a0a6`, with OKF's renames applied (`scripts/privatize.py`, then `--extra`, from OKFExperiment), so no field can be answered from memory. This is test G's backend.
@@ -129,3 +129,4 @@ python3 -I scripts/analyse.py <out dir> > results/analysis.md
 ## Amendment log
 
 - 2026-10-27, 22:30: design committed as final and pushed; the measured runs start straight after (the user: "Just start when yiu are ready").
+- 2026-10-28, 00:10: **web search turned off in every arm, and the run restarted from the beginning.** In repetition 1, the `no_okf` agent tried Codex's web search to look up Shopizer's field names (7 and 6 searches in tasks 1 and 3); through Ollama the search needs an Ollama account, so both runs crashed ("This model requires an Ollama account") and would have counted as failures, which favours `okf` in H1. No `okf` or `source` run searched. The design had not said whether search was on; hosted test G had it on and working. Offered three options, the user chose to restart with search off: "1". The 10 runs finished before the stop (set aside as `main-discarded-websearch`) are not analysed. Checked before the restart: with `-c web_search="disabled"`, the agent asked to search reports it has no search tool. Repetition 1 took about 2 hours, so the 60 runs take about 10 hours, not the 6 to 7 estimated above.

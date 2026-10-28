@@ -1,6 +1,7 @@
 """Writes the overlays and one trial file per arm for okf-local: OKF test G's four cross-repo change tasks, run by Codex
 with the local qwen3.8:27b. Arms, AGENTS.md texts and task prompts are copied from OKFExperiment's scripts/make_g.py
-(commit 5a09027); the okf_confidence arm is left out. One trial file per arm because the "source" arm needs the
+(commit 5a09027); the okf_confidence arm is left out. Web search is off in every arm (amendment, 2026-10-28):
+through Ollama it needs an Ollama account, and its failures crashed runs. One trial file per arm because the "source" arm needs the
 backend bound into the sandbox (CODEX_RO_BIND), and the rig sets environment per agent, not per arm.
 
     python scripts/make_trial.py            # writes overlays under $OKF_WORK and trial-<arm>.local.toml here
@@ -65,7 +66,7 @@ overlay = "{ov / arm}"
 [[agents]]
 name = "codex"
 model = "qwen3.8:27b"
-command = ["bash", "{SETUP}/codex-bwrap.sh", "exec", "-s", "danger-full-access", "--skip-git-repo-check", "--json", "--model", "qwen3.8:27b", "-c", "model_reasoning_effort=\\"medium\\"", "{{prompt}}"]
+command = ["bash", "{SETUP}/codex-bwrap.sh", "exec", "-s", "danger-full-access", "--skip-git-repo-check", "--json", "--model", "qwen3.8:27b", "-c", "model_reasoning_effort=\\"medium\\"", "-c", "web_search=\\"disabled\\"", "{{prompt}}"]
 args = []
 edits = true
 sandbox = "danger-full-access"
