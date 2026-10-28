@@ -125,8 +125,8 @@ This section is interpretation, not measurement.
 
 ## 9. What I'd test next
 
-- **A stale guide:** generate the guide, change a few backend fields, and see whether the agent with the guide still checks the source ("read the source to confirm") or trusts the guide.
-- **A contract instead of a guide:** give the no-guide arm only the backend's API schema (OpenAPI). If it does as well as the guide, a schema is cheaper to keep up to date.
+- **A stale guide, on the local model:** OKF test D2 tested stale knowledge with the hosted model; rerunning it locally would show whether a small model checks the source ("read the source to confirm") or trusts an out-of-date guide.
+- **A contract instead of a guide, on the local model:** OKF test H1 found an API contract nearly as good as the guide for the hosted model (13 against 14 of 16). A contract is cheaper to keep up to date, so it is worth checking on the small model too.
 - **A smaller context or a smaller model,** to find where reading the source stops being affordable and the guide starts to pay.
 - **Requiring a warning:** tell the no-guide agent to say which names it could not confirm, and count how often it does.
 
@@ -139,6 +139,7 @@ scripts/run_all.sh <out dir> 5                        # one repetition at a time
 python3 -I scripts/extra_checks.py <out dir> > results/extra-checks.md   # needs the session files, so before export
 scripts/export.sh <out dir> main                      # personal paths removed; Codex homes and workspaces left out
 python3 -I scripts/analyse.py results/main > results/analysis.md
+uv run --with matplotlib python3 -I scripts/charts.py results <Inter font dir>   # the website chart
 ```
 
 The analysis gives the same output from the exported results as from the original run folder (checked).
@@ -159,4 +160,5 @@ All recorded in the [README's amendment log](README.md#amendment-log), with the 
 - **Added after the runs:**
   - [`scripts/extra_checks.py`](scripts/extra_checks.py): model and effort, token breakdown, energy, and the hosted-price equivalent;
   - [`scripts/export.sh`](scripts/export.sh), from split-spec;
+  - [`scripts/charts.py`](scripts/charts.py), the website chart;
   - one change to [`scripts/analyse.py`](scripts/analyse.py) so it reads the gzipped event streams of the exported results. Its tests and output are unchanged.
