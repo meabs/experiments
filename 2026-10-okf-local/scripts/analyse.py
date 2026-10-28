@@ -11,7 +11,7 @@ four tasks of each task's pass rate (or mean wall time), so every task counts eq
 
 Usage: python3 -I analyse.py <out dir> > results/analysis.md   (out dir holds <arm>/runs/... and power.csv)
 """
-import glob, json, os, random, statistics as st, sys
+import glob, gzip, json, os, random, statistics as st, sys
 from datetime import datetime
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -58,7 +58,8 @@ def load(out):
             start = datetime.fromisoformat(r["started"]).timestamp()
         except (TypeError, ValueError):
             start = None
-        raw = open(os.path.join(os.path.dirname(f), "raw.out"), errors="replace").read()
+        rp = os.path.join(os.path.dirname(f), "raw.out")  # gzipped in the exported results
+        raw = open(rp, errors="replace").read() if os.path.exists(rp) else gzip.open(rp + ".gz", "rt", errors="replace").read()
         runs.append({
             "task": r["question"], "arm": r["arm"], "rep": r["rep"], "status": r["status"],
             "pass": 1 if r["status"] == "ok" and r.get("verified") else 0,
