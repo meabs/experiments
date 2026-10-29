@@ -14,7 +14,7 @@ falsified cases (signflip_dp, as evidence-manipulation), bootstrap 95% CI over c
 seed 1), Holm over H1-H5. Prices: list, $ per million tokens (README, "Cost").
 Usage: python3 -I src/analyse.py <out dir>
 """
-import ast, collections, hashlib, json, os, statistics as st, sys
+import ast, collections, gzip, hashlib, json, os, statistics as st, sys
 
 HERE = os.path.dirname(os.path.abspath(__file__)); ROOT = os.path.dirname(HERE); X = os.path.dirname(ROOT)
 sys.path.insert(0, HERE); sys.path.insert(0, os.path.join(X, "2026-10-skills-impact", "scripts"))
@@ -37,7 +37,8 @@ for f, h in CASES["source"].items():
     assert hashlib.sha256(open(os.path.join(EM, f), "rb").read()).hexdigest() == h, f"{f} changed since cases.json"
 H = json.load(open(os.path.join(EM, "scenarios", "ground_truth.json")))
 D = sys.argv[1]
-CALLS = [json.loads(l) for l in open(os.path.join(D, "calls.jsonl"))]
+CF = os.path.join(D, "calls.jsonl")  # a run folder, or an exported results folder (calls.jsonl.gz)
+CALLS = [json.loads(l) for l in (open(CF) if os.path.exists(CF) else gzip.open(CF + ".gz", "rt"))]
 BY = {(c["case"], c["rep"], c["stage"], c["member"]): c for c in CALLS}
 ARMS = {"A": "One Luna agent", "B": "Three Luna agents, independent vote", "C": "Three Luna agents after peer review",
         "E": "One Luna agent, token-matched (4 passes)", "F": "Sol reviews the team (C)", "G": "Sol alone"}

@@ -1,4 +1,4 @@
-# Analysis of herd-main
+# Analysis of main
 
 720 agent calls; 60 complete case-repeats. Calls without a valid assessment: 0. Non-zero exit codes: 0.
 

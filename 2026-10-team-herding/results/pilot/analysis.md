@@ -1,4 +1,4 @@
-# Analysis of herd-pilot
+# Analysis of pilot
 
 48 agent calls; 4 complete case-repeats. Calls without a valid assessment: 0. Non-zero exit codes: 0.
 

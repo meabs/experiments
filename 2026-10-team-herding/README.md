@@ -1,6 +1,6 @@
 # Can a team of AI agents make a bad decision worse?
 
-**Status:** design. Written before any measured run; changes after it is pushed go in the [amendment log](#amendment-log). A 4-case pilot (44 agent calls) was run to check the harness and the ceiling; it is reported under [Pilot](#pilot) and is not part of the results.
+**Status:** run on 2026-10-29; results in [REPORT.md](REPORT.md). The design below was written before any measured run and pushed (587f7baa); changes after that are in the [amendment log](#amendment-log). A 4-case pilot (48 agent calls) checked the harness and the ceiling; it is reported under [Pilot](#pilot) and is not part of the results.
 
 A follow-up to [evidence-manipulation](../2026-10-evidence-manipulation/REPORT.md) and [swarm-tax](../2026-10-swarm-tax/REPORT.md):
 
@@ -136,7 +136,7 @@ While the main run was finishing, the user asked: "Is this what you would have e
 - **The "independent errors" baseline was wrong.** README, "Measures", compares how often all three of B's agents are wrong against "what independent errors at the same rate would give". `src/analyse.py` used one pooled error rate for all cases. Cases differ greatly in difficulty (some are wrong in every run of every arm), so the pooled baseline overstates the excess. The baseline is now each case's own single-agent error rate (from its 6 solo runs), cubed and summed over triples. Both are reported.
 - **Smaller points:** arm E used about 1.3 times C's tokens in the main run (1.07 in the pilot); "confident wrong" for B and C requires all three members, so it can't be compared with the single-agent arms, and it is now also reported per agent.
 
-**Exploratory analyses added to `src/analyse.py`** (main run):
+**Exploratory analyses, in a new `src/explore.py`** (main run; `src/analyse.py` stays as pre-registered):
 
 - every measure split into genuine threats (10 falsified scenarios) and harmless activity (11);
 - **noticed the conflict:** `suspected_manipulation` true;
