@@ -55,6 +55,42 @@ ordinary check misses, and does it stay quiet when the code is right?
 | The bug needs another customer acting on the server, outside the page | last-seat: a page-only lock |
 | A case my scenarios didn't cover | last-seat with two free seats; lost-update when the customer retypes their email unchanged (a wrong fix and Luna's fix) |
 
+## Rounds 2 and 3: after fixing the tool (29 October 2026)
+
+After the first round, the four worst problems were fixed in WebMCP Resilience:
+- [#17](https://github.com/meabs/WebMCPResilience/pull/17): wait for tools that register late, survive page reloads, run headless by default, and a new `http_latency` fault that slows real network replies;
+- [#18](https://github.com/meabs/WebMCPResilience/pull/18): per-request delays (`delays_ms`), so a later reply can overtake an earlier one;
+- [#19](https://github.com/meabs/WebMCPResilience/pull/19): a regression in #17. Setup got slower and was counted in the schedule, so actions fired up to about 165 ms late. That briefly lost a catch.
+
+The same 31 versions were then checked twice more, each tool check 3 times:
+- **Round 2 (`results-round2.json`):** the fixed tool (main with #17 and #19; #18 doesn't affect this round), with no workarounds: no readiness `setup_script` and no `--ci`. The reload scenario (`scenarios-unsupported/`) is added.
+- **Round 3 (`results-round3.json`):** the same, run on `../apps-network/`. These are the apps with one change to the shared `latency.js`: each simulated server call also makes a real request to the page's own web server, so network faults can hold it.
+  - Ten new scenarios use the slow and out-of-order server faults (`scenarios-network/`). Each passed the reference fix in all 3 runs before it was used.
+  - An eleventh failed the reference fix and is excluded (`scenarios-network-excluded/`). It assumed the + button counts a second click while a save is running; the reference fix doesn't.
+  - The hidden tests give the same results on these apps as on the originals: every original and wrong fix fails, and every reference passes 3 times out of 3.
+
+| Round | Buggy versions caught, of 19 (higher is better) | False alarms, of 12 correct versions (lower is better) |
+| --- | --- | --- |
+| 1. Original tool, with my workarounds | 11 | 0 |
+| 2. Fixed tool, no workarounds, plus the reload scenario | 12 | 0 |
+| 3. Plus slow and out-of-order server replies | 15 | 0 |
+
+Every verdict in every round was the same in all 3 runs. There were no tool errors.
+
+| Newly caught | In round | Caught by | Thanks to |
+| --- | --- | --- | --- |
+| double-add, wrong fix `page-dedupe` | 2 | `retry-after-reload` | tools surviving a reload (#17) |
+| double-add, wrong fix `requestid-only` | 3 | `slow-server-click` | `http_latency` (#17) |
+| stale-quantity, the original | 3 | `out-of-order-two-assistant-changes` | `delays_ms` (#18) |
+| stale-quantity, wrong fix `one-token` | 3 | `out-of-order-two-assistant-changes` | `delays_ms` (#18) |
+
+Still missed:
+- last-seat `conflict-as-full` (no scenario has two free seats);
+- last-seat `page-lock` (needs another customer booking outside the page);
+- lost-update `dirty-fields-only` and the agent's lost-update fix (no scenario retypes the email unchanged).
+
+![Buggy versions caught in each round](chart-webmcp-rounds.png)
+
 ## Every version
 
 | App | Version | Really buggy? (hidden tests) | Ordinary check caught it? | WebMCP Resilience caught it? (of 3 runs) | Why it was missed |
@@ -112,6 +148,9 @@ ordinary check misses, and does it stay quiet when the code is right?
 
 ```bash
 # needs the parked experiment's two Python environments (Playwright; WebMCP Resilience 0.1.0)
-~/code/benchmark/webmcp-exp/env-plain/bin/python -I demo/run_matrix.py      # writes demo/results.json
+~/code/benchmark/webmcp-exp/env-plain/bin/python -I demo/run_matrix.py      # round 1: writes demo/results.json
+# round 3 (round 2: drop WEBMCP_APPS and WEBMCP_SCENARIO_DIRS; WEBMCP_BIN is a WebMCP Resilience at fb1b106 or later)
+WEBMCP_BIN=<webmcp> WEBMCP_NO_WORKAROUNDS=1 WEBMCP_EXTRA_SCENARIOS=scenarios-unsupported WEBMCP_APPS=apps-network \
+  WEBMCP_SCENARIO_DIRS=scenarios-network WEBMCP_RESULTS=results-round3.json ~/code/benchmark/webmcp-exp/env-plain/bin/python -I demo/run_matrix.py
 python3 -I demo/check_tool.py last-seat                                      # one app, the buggy original
 ```

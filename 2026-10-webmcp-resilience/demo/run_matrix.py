@@ -25,7 +25,7 @@ APPS = ["double-add", "last-seat", "lost-update", "half-saved", "charge-no-order
 def app_copy(app, overlay=None, diff=None):
     tmp = tempfile.mkdtemp()
     ws = os.path.join(tmp, "app")
-    shutil.copytree(os.path.join(E, "apps", app), ws)
+    shutil.copytree(os.path.join(E, os.environ.get("WEBMCP_APPS", "apps"), app), ws)
     if overlay:
         shutil.copytree(overlay, ws, dirs_exist_ok=True)
     if diff:
@@ -55,7 +55,7 @@ def versions(app):
 
 
 def main(apps):
-    out_path = os.path.join(D, "results.json")
+    out_path = os.path.join(D, os.environ.get("WEBMCP_RESULTS", "results.json"))
     results = json.load(open(out_path)) if os.path.exists(out_path) else {}
     for app in apps:
         for vid, kind, src in versions(app):

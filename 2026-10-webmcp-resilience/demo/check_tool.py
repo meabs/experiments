@@ -36,8 +36,8 @@ def serve(folder):
 def check(app, overlay=None, keep=None):
     tmp = tempfile.mkdtemp()
     ws = os.path.join(tmp, "app")
-    shutil.copytree(os.path.join(E, "apps", app), ws, symlinks=False)
-    shared = os.path.join(E, "apps", "_shared")
+    shutil.copytree(os.path.join(E, os.environ.get("WEBMCP_APPS", "apps"), app), ws, symlinks=False)
+    shared = os.path.join(E, os.environ.get("WEBMCP_APPS", "apps"), "_shared")
     for f in os.listdir(shared):  # the apps link their shared files; serve real copies
         p = os.path.join(ws, f)
         if os.path.islink(p) or not os.path.exists(p):
@@ -53,11 +53,19 @@ def check(app, overlay=None, keep=None):
         with open(os.path.join(ws, ".webmcp", "config.yaml"), "w") as f:
             # `webmcp run` discovers tools straight after loading, with no registration grace (preflight has one); these
             # apps register theirs after their first server calls, so wait for them in the documented setup_script.
-            f.write(f"base_url: http://127.0.0.1:{port}\nbrowser: chromium\nstate_script: {json.dumps(script)}\n"
-                    f"setup_script: {json.dumps(READY)}\n")
-        for sc in sorted(glob.glob(os.path.join(D, "scenarios", app, "*.yaml"))):
-            name = os.path.basename(sc)[:-5]
-            p = subprocess.run([WEBMCP, "run", sc, "--ci", "--json", "--allow-mutations", "--run-id", name],
+            f.write(f"base_url: http://127.0.0.1:{port}\nbrowser: chromium\nstate_script: {json.dumps(script)}\n")
+            if not os.environ.get("WEBMCP_NO_WORKAROUNDS"):  # not needed from the fixed tool (registration wait)
+                f.write(f"setup_script: {json.dumps(READY)}\n")
+        extra = os.environ.get("WEBMCP_EXTRA_SCENARIOS")  # e.g. scenarios-unsupported, for the fixed tool
+        found = [] if os.environ.get("WEBMCP_SKIP_BASE") else glob.glob(os.path.join(D, "scenarios", app, "*.yaml"))
+        for more in filter(None, os.environ.get("WEBMCP_SCENARIO_DIRS", "").split(",")):  # e.g. scenarios-network
+            found += glob.glob(os.path.join(D, more, app, "*.yaml"))
+        if extra:
+            found += glob.glob(os.path.join(D, extra, f"{app}-*.yaml"))
+        for sc in sorted(found):
+            name = os.path.basename(sc)[:-5].removeprefix(f"{app}-")
+            ci = [] if os.environ.get("WEBMCP_NO_WORKAROUNDS") else ["--ci"]  # the fixed tool is headless by default
+            p = subprocess.run([WEBMCP, "run", sc, *ci, "--json", "--allow-mutations", "--run-id", name],
                                cwd=ws, capture_output=True, text=True, timeout=300)
             try:
                 r = json.loads(p.stdout)
