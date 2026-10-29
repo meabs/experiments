@@ -1,0 +1,127 @@
+diff --git a/src/main/java/com/example/accounts/account/AccountService.java b/src/main/java/com/example/accounts/account/AccountService.java
+index c1dfaa8..2a11c5d 100644
+--- a/src/main/java/com/example/accounts/account/AccountService.java
++++ b/src/main/java/com/example/accounts/account/AccountService.java
+@@ -66,4 +66,13 @@ public class AccountService {
+     public List<Transaction> transactions(Long accountId) {
+         return transactions.findByAccountIdOrderByBookedOnDescIdDesc(getVisible(accountId).getId());
+     }
++
++    /** Closes an account for an already-authorised closure request in the same tenant. */
++    @Transactional
++    public void closeForClosure(Long accountId, String tenantId) {
++        accounts.findById(accountId)
++            .filter(a -> tenantId.equals(a.getTenantId()))
++            .orElseThrow(() -> new NotFoundException("Account not found"))
++            .setStatus(Account.Status.CLOSED);
++    }
+ }
+diff --git a/src/main/java/com/example/accounts/closure/ClosureController.java b/src/main/java/com/example/accounts/closure/ClosureController.java
+index 839def2..962f926 100644
+--- a/src/main/java/com/example/accounts/closure/ClosureController.java
++++ b/src/main/java/com/example/accounts/closure/ClosureController.java
+@@ -19,15 +19,16 @@ import com.example.accounts.security.CurrentUser;
+ import com.example.accounts.security.CurrentUserProvider;
+ import com.example.accounts.web.ConflictException;
+ import com.example.accounts.web.ForbiddenException;
++import com.example.accounts.web.NotFoundException;
+ 
+ @RestController
+ public class ClosureController {
+ 
+     public record ClosureView(Long id, Long accountId, String requestedBy, String status, String decidedBy,
+-                              Instant requestedAt) {
++                              Instant decidedAt, Instant requestedAt) {
+         static ClosureView of(ClosureRequest r) {
+             return new ClosureView(r.getId(), r.getAccountId(), r.getRequestedBy(), r.getStatus().name(), r.getDecidedBy(),
+-                r.getRequestedAt());
++                r.getDecidedAt(), r.getRequestedAt());
+         }
+     }
+ 
+@@ -70,4 +71,36 @@ public class ClosureController {
+         return requests.findByTenantIdAndStatusOrderByRequestedAt(user.tenantId(), ClosureRequest.Status.PENDING.name())
+             .stream().map(ClosureView::of).toList();
+     }
++
++    @PostMapping("/api/closure-requests/{requestId}/approve")
++    @PreAuthorize("hasRole('APPROVER') and hasAuthority('SCOPE_accounts:write')")
++    @Transactional
++    public ClosureView approve(@PathVariable Long requestId) {
++        return decide(requestId, ClosureRequest.Status.APPROVED);
++    }
++
++    @PostMapping("/api/closure-requests/{requestId}/reject")
++    @PreAuthorize("hasRole('APPROVER') and hasAuthority('SCOPE_accounts:write')")
++    @Transactional
++    public ClosureView reject(@PathVariable Long requestId) {
++        return decide(requestId, ClosureRequest.Status.REJECTED);
++    }
++
++    private ClosureView decide(Long requestId, ClosureRequest.Status decision) {
++        CurrentUser user = users.current();
++        ClosureRequest request = requests.findById(requestId)
++            .filter(r -> user.inTenant(r.getTenantId()))
++            .orElseThrow(() -> new NotFoundException("Closure request not found"));
++        if (request.getStatus() != ClosureRequest.Status.PENDING) {
++            throw new ConflictException("Closure request has already been decided");
++        }
++
++        request.setStatus(decision);
++        request.setDecidedBy(user.id());
++        request.setDecidedAt(Instant.now());
++        if (decision == ClosureRequest.Status.APPROVED) {
++            accounts.closeForClosure(request.getAccountId(), request.getTenantId());
++        }
++        return ClosureView.of(request);
++    }
+ }
+diff --git a/src/test/java/com/example/accounts/ClosureApiTest.java b/src/test/java/com/example/accounts/ClosureApiTest.java
+index 44707e5..6bc757e 100644
+--- a/src/test/java/com/example/accounts/ClosureApiTest.java
++++ b/src/test/java/com/example/accounts/ClosureApiTest.java
+@@ -8,6 +8,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
+ import org.junit.jupiter.api.Test;
+ 
+ import com.example.accounts.support.ApiTest;
++import com.example.accounts.support.TestTokens;
+ 
+ class ClosureApiTest extends ApiTest {
+ 
+@@ -38,4 +39,36 @@ class ClosureApiTest extends ApiTest {
+         getAs(ADA, "/api/closure-requests").andExpect(status().isForbidden());
+         getAs(ALICE, "/api/closure-requests").andExpect(status().isForbidden());
+     }
++
++    @Test
++    void approverApprovesAndClosesAccount() throws Exception {
++        postAs(ANA, "/api/closure-requests/1/approve", null).andExpect(status().isOk())
++            .andExpect(jsonPath("$.status").value("APPROVED"))
++            .andExpect(jsonPath("$.decidedBy").value("u-ana"))
++            .andExpect(jsonPath("$.decidedAt").isNotEmpty());
++        getAs(ALICE, "/api/accounts/2").andExpect(status().isOk())
++            .andExpect(jsonPath("$.status").value("CLOSED"));
++    }
++
++    @Test
++    void approverRejectsWithoutClosingAndCannotDecideAgain() throws Exception {
++        postAs(ANA, "/api/closure-requests/2/reject", null).andExpect(status().isOk())
++            .andExpect(jsonPath("$.status").value("REJECTED"))
++            .andExpect(jsonPath("$.decidedBy").value("u-ana"))
++            .andExpect(jsonPath("$.decidedAt").isNotEmpty());
++        getAs(BOB, "/api/accounts/3").andExpect(status().isOk())
++            .andExpect(jsonPath("$.status").value("OPEN"));
++        postAs(ANA, "/api/closure-requests/2/approve", null).andExpect(status().isConflict());
++    }
++
++    @Test
++    void approverCannotDecideAnotherTenantRequest() throws Exception {
++        postAs(ANA, "/api/closure-requests/4/approve", null).andExpect(status().isNotFound());
++    }
++
++    @Test
++    void decidingNeedsAccountsWriteScope() throws Exception {
++        postWith(TestTokens.of(ANA).scopes("accounts:read"), "/api/closure-requests/1/approve", null)
++            .andExpect(status().isForbidden());
++    }
+ }

@@ -1,0 +1,88 @@
+diff --git a/src/main/java/com/example/accounts/account/AccountService.java b/src/main/java/com/example/accounts/account/AccountService.java
+index c1dfaa8..39ff730 100644
+--- a/src/main/java/com/example/accounts/account/AccountService.java
++++ b/src/main/java/com/example/accounts/account/AccountService.java
+@@ -10,6 +10,7 @@ import com.example.accounts.security.AccessPolicy;
+ import com.example.accounts.security.CurrentUser;
+ import com.example.accounts.security.CurrentUserProvider;
+ import com.example.accounts.web.NotFoundException;
++import com.example.accounts.web.ConflictException;
+ 
+ @Service
+ @Transactional(readOnly = true)
+@@ -66,4 +67,15 @@ public class AccountService {
+     public List<Transaction> transactions(Long accountId) {
+         return transactions.findByAccountIdOrderByBookedOnDescIdDesc(getVisible(accountId).getId());
+     }
++
++    @Transactional
++    public void closeForClosure(Long accountId, String tenantId) {
++        Account account = accounts.findById(accountId)
++            .filter(a -> tenantId.equals(a.getTenantId()))
++            .orElseThrow(() -> new NotFoundException("Account not found"));
++        if (account.getStatus() == Account.Status.CLOSED) {
++            throw new ConflictException("Account is already closed");
++        }
++        account.setStatus(Account.Status.CLOSED);
++    }
+ }
+diff --git a/src/main/java/com/example/accounts/closure/ClosureController.java b/src/main/java/com/example/accounts/closure/ClosureController.java
+index 839def2..962f926 100644
+--- a/src/main/java/com/example/accounts/closure/ClosureController.java
++++ b/src/main/java/com/example/accounts/closure/ClosureController.java
+@@ -19,15 +19,16 @@ import com.example.accounts.security.CurrentUser;
+ import com.example.accounts.security.CurrentUserProvider;
+ import com.example.accounts.web.ConflictException;
+ import com.example.accounts.web.ForbiddenException;
++import com.example.accounts.web.NotFoundException;
+ 
+ @RestController
+ public class ClosureController {
+ 
+     public record ClosureView(Long id, Long accountId, String requestedBy, String status, String decidedBy,
+-                              Instant requestedAt) {
++                              Instant decidedAt, Instant requestedAt) {
+         static ClosureView of(ClosureRequest r) {
+             return new ClosureView(r.getId(), r.getAccountId(), r.getRequestedBy(), r.getStatus().name(), r.getDecidedBy(),
+-                r.getRequestedAt());
++                r.getDecidedAt(), r.getRequestedAt());
+         }
+     }
+ 
+@@ -70,4 +71,36 @@ public class ClosureController {
+         return requests.findByTenantIdAndStatusOrderByRequestedAt(user.tenantId(), ClosureRequest.Status.PENDING.name())
+             .stream().map(ClosureView::of).toList();
+     }
++
++    @PostMapping("/api/closure-requests/{requestId}/approve")
++    @PreAuthorize("hasRole('APPROVER') and hasAuthority('SCOPE_accounts:write')")
++    @Transactional
++    public ClosureView approve(@PathVariable Long requestId) {
++        return decide(requestId, ClosureRequest.Status.APPROVED);
++    }
++
++    @PostMapping("/api/closure-requests/{requestId}/reject")
++    @PreAuthorize("hasRole('APPROVER') and hasAuthority('SCOPE_accounts:write')")
++    @Transactional
++    public ClosureView reject(@PathVariable Long requestId) {
++        return decide(requestId, ClosureRequest.Status.REJECTED);
++    }
++
++    private ClosureView decide(Long requestId, ClosureRequest.Status decision) {
++        CurrentUser user = users.current();
++        ClosureRequest request = requests.findById(requestId)
++            .filter(r -> user.inTenant(r.getTenantId()))
++            .orElseThrow(() -> new NotFoundException("Closure request not found"));
++        if (request.getStatus() != ClosureRequest.Status.PENDING) {
++            throw new ConflictException("Closure request has already been decided");
++        }
++
++        request.setStatus(decision);
++        request.setDecidedBy(user.id());
++        request.setDecidedAt(Instant.now());
++        if (decision == ClosureRequest.Status.APPROVED) {
++            accounts.closeForClosure(request.getAccountId(), request.getTenantId());
++        }
++        return ClosureView.of(request);
++    }
+ }

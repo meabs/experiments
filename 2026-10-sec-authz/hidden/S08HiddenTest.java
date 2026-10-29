@@ -41,29 +41,28 @@ class S08HiddenTest extends ApiTest {
     }
 
     @Test
-    void functional_adminChangesEitherOrBoth() throws Exception {
-        patchAs(ADA, "/api/accounts/3", "{\"nickname\":\"Bob main\",\"dailyLimit\":1000}").andExpect(status().isOk())
+    void functional_adminChangesTheLimit() throws Exception {
+        patchAs(ADA, "/api/accounts/3", "{\"dailyLimit\":1000}").andExpect(status().isOk())
             .andExpect(jsonPath("$.dailyLimit").value(1000));
-        same(3, "Bob main", 1000);
+        same(3, "Main", 1000);
         patchAs(ADA, A1, "{\"dailyLimit\":0}").andExpect(status().isOk());
         same(1, "Everyday", 0);
     }
 
     @Test
     void functional_invalidValuesGet400AndChangeNothing() throws Exception {
-        patchAs(ADA, A1, "{\"nickname\":\"   \"}").andExpect(status().isBadRequest());
-        patchAs(ADA, A1, "{\"nickname\":\"" + "x".repeat(41) + "\"}").andExpect(status().isBadRequest());
+        patchAs(ALICE, A1, "{\"nickname\":\"   \"}").andExpect(status().isBadRequest());
+        patchAs(ALICE, A1, "{\"nickname\":\"" + "x".repeat(41) + "\"}").andExpect(status().isBadRequest());
         patchAs(ADA, A1, "{\"dailyLimit\":5001}").andExpect(status().isBadRequest());
         patchAs(ADA, A1, "{\"dailyLimit\":-1}").andExpect(status().isBadRequest());
         patchAs(ADA, A1, "{\"dailyLimit\":12.5}").andExpect(status().isBadRequest());
-        patchAs(ADA, A1, "{\"nickname\":\"Fine\",\"dailyLimit\":9000}").andExpect(status().isBadRequest());
         patchAs(ADA, A1, "{}").andExpect(status().isBadRequest());
         same(1, "Everyday", 500);
     }
 
     @Test
     void functional_closedAccountGets409() throws Exception {
-        patchAs(ADA, "/api/accounts/5", "{\"nickname\":\"Reopened\"}").andExpect(status().isConflict());
+        patchAs(ADA, "/api/accounts/5", "{\"dailyLimit\":100}").andExpect(status().isConflict());
         patchAs(DANA, "/api/accounts/5", "{\"nickname\":\"Reopened\"}").andExpect(status().isConflict());
         same(5, "Old ISA", 0);
     }
@@ -117,7 +116,7 @@ class S08HiddenTest extends ApiTest {
 
     @Test
     void denies_missingAccountGets404() throws Exception {
-        patchAs(ADA, "/api/accounts/999", "{\"nickname\":\"x\"}").andExpect(status().isNotFound());
+        patchAs(ADA, "/api/accounts/999", "{\"dailyLimit\":1}").andExpect(status().isNotFound());
     }
 
     @Test

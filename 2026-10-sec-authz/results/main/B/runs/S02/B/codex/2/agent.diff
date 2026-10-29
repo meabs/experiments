@@ -1,0 +1,134 @@
+diff --git a/src/main/java/com/example/accounts/customer/CustomerController.java b/src/main/java/com/example/accounts/customer/CustomerController.java
+new file mode 100644
+index 0000000..e46d936
+--- /dev/null
++++ b/src/main/java/com/example/accounts/customer/CustomerController.java
+@@ -0,0 +1,60 @@
++package com.example.accounts.customer;
++
++import jakarta.validation.Valid;
++import jakarta.validation.constraints.Email;
++import jakarta.validation.constraints.NotBlank;
++import jakarta.validation.constraints.Pattern;
++
++import org.springframework.security.access.prepost.PreAuthorize;
++import org.springframework.transaction.annotation.Transactional;
++import org.springframework.web.bind.annotation.PathVariable;
++import org.springframework.web.bind.annotation.PutMapping;
++import org.springframework.web.bind.annotation.RequestBody;
++import org.springframework.web.bind.annotation.RequestMapping;
++import org.springframework.web.bind.annotation.RestController;
++
++import com.example.accounts.security.AccessPolicy;
++import com.example.accounts.security.CurrentUser;
++import com.example.accounts.security.CurrentUserProvider;
++import com.example.accounts.web.NotFoundException;
++
++@RestController
++@RequestMapping("/api/customers")
++public class CustomerController {
++
++    public record ContactUpdate(
++        @NotBlank @Email String email,
++        @NotBlank @Pattern(regexp = "(?=.*\\d)(?=.{7,20}$)\\+?[0-9 ]+") String phone) {
++    }
++
++    public record ContactView(String id, String email, String phone) {
++        static ContactView of(Customer customer) {
++            return new ContactView(customer.getId(), customer.getEmail(), customer.getPhone());
++        }
++    }
++
++    private final CustomerRepository customers;
++    private final AccessPolicy access;
++    private final CurrentUserProvider users;
++
++    public CustomerController(CustomerRepository customers, AccessPolicy access, CurrentUserProvider users) {
++        this.customers = customers;
++        this.access = access;
++        this.users = users;
++    }
++
++    @PutMapping("/{customerId}/contact")
++    @PreAuthorize("hasAuthority('SCOPE_accounts:write') and (hasRole('CUSTOMER') or hasRole('ADMIN'))")
++    @Transactional
++    public ContactView updateContact(@PathVariable String customerId, @Valid @RequestBody ContactUpdate body) {
++        CurrentUser user = users.current();
++        Customer customer = customers.findByIdAndTenantId(customerId, user.tenantId())
++            .orElseThrow(() -> new NotFoundException("Customer not found"));
++        if (!access.canUpdateContact(user, customer)) {
++            throw new NotFoundException("Customer not found");
++        }
++        customer.setEmail(body.email());
++        customer.setPhone(body.phone());
++        return ContactView.of(customer);
++    }
++}
+diff --git a/src/main/java/com/example/accounts/security/AccessPolicy.java b/src/main/java/com/example/accounts/security/AccessPolicy.java
+index 6388a47..25b4c40 100644
+--- a/src/main/java/com/example/accounts/security/AccessPolicy.java
++++ b/src/main/java/com/example/accounts/security/AccessPolicy.java
+@@ -27,6 +27,11 @@ public class AccessPolicy {
+         return user.isCustomer() && user.inTenant(customer.getTenantId()) && user.id().equals(customer.getUserId());
+     }
+ 
++    /** Customers may update themselves; tenant admins may update any customer in their tenant. */
++    public boolean canUpdateContact(CurrentUser user, Customer customer) {
++        return user.inTenant(customer.getTenantId()) && (user.isAdmin() || isSelf(user, customer));
++    }
++
+     /** The caller is the customer who owns the account. */
+     public boolean ownsAccount(CurrentUser user, Account account) {
+         if (!user.isCustomer() || !user.inTenant(account.getTenantId())) {
+diff --git a/src/test/java/com/example/accounts/CustomerContactApiTest.java b/src/test/java/com/example/accounts/CustomerContactApiTest.java
+new file mode 100644
+index 0000000..b9f82b9
+--- /dev/null
++++ b/src/test/java/com/example/accounts/CustomerContactApiTest.java
+@@ -0,0 +1,46 @@
++package com.example.accounts;
++
++import static com.example.accounts.support.TestUsers.*;
++import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
++import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
++
++import org.junit.jupiter.api.Test;
++
++import com.example.accounts.support.ApiTest;
++
++class CustomerContactApiTest extends ApiTest {
++
++    @Test
++    void customerUpdatesTheirContactDetails() throws Exception {
++        putAs(ALICE, "/api/customers/c-1/contact", "{\"email\":\"new@acme.test\",\"phone\":\"+44 20 1234\"}")
++            .andExpect(status().isOk())
++            .andExpect(jsonPath("$.id").value("c-1"))
++            .andExpect(jsonPath("$.email").value("new@acme.test"))
++            .andExpect(jsonPath("$.phone").value("+44 20 1234"));
++    }
++
++    @Test
++    void adminUpdatesCustomerInTheirTenant() throws Exception {
++        putAs(ADA, "/api/customers/c-2/contact", "{\"email\":\"corrected@acme.test\",\"phone\":\"01632 960999\"}")
++            .andExpect(status().isOk())
++            .andExpect(jsonPath("$.email").value("corrected@acme.test"));
++    }
++
++    @Test
++    void invalidContactIsRejected() throws Exception {
++        putAs(ALICE, "/api/customers/c-1/contact", "{\"email\":\"not-an-email\",\"phone\":\"123\"}")
++            .andExpect(status().isBadRequest());
++    }
++
++    @Test
++    void customerCannotUpdateAnotherCustomer() throws Exception {
++        putAs(ALICE, "/api/customers/c-2/contact", "{\"email\":\"new@acme.test\",\"phone\":\"01632 960111\"}")
++            .andExpect(status().isNotFound());
++    }
++
++    @Test
++    void supportCannotUpdateContact() throws Exception {
++        putAs(SAM, "/api/customers/c-1/contact", "{\"email\":\"new@acme.test\",\"phone\":\"01632 960111\"}")
++            .andExpect(status().isForbidden());
++    }
++}

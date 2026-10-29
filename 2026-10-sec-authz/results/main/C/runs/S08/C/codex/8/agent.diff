@@ -1,0 +1,158 @@
+diff --git a/src/main/java/com/example/accounts/account/AccountController.java b/src/main/java/com/example/accounts/account/AccountController.java
+index bc6eb2e..34e6c1d 100644
+--- a/src/main/java/com/example/accounts/account/AccountController.java
++++ b/src/main/java/com/example/accounts/account/AccountController.java
+@@ -4,16 +4,52 @@ import java.math.BigDecimal;
+ import java.time.LocalDate;
+ import java.util.List;
+ 
+-import org.springframework.security.access.prepost.PreAuthorize;
+ import org.springframework.web.bind.annotation.GetMapping;
+ import org.springframework.web.bind.annotation.PathVariable;
++import org.springframework.web.bind.annotation.PatchMapping;
++import org.springframework.web.bind.annotation.RequestBody;
+ import org.springframework.web.bind.annotation.RequestMapping;
+ import org.springframework.web.bind.annotation.RestController;
++import org.springframework.security.access.prepost.PreAuthorize;
+ 
+ @RestController
+ @RequestMapping("/api/accounts")
+ public class AccountController {
+ 
++    /** Fields are tracked separately so an omitted field can be distinguished from a null value. */
++    public static final class AccountPatch {
++        private String nickname;
++        private Integer dailyLimit;
++        private boolean nicknamePresent;
++        private boolean dailyLimitPresent;
++        private boolean unknownFieldPresent;
++
++        public String getNickname() { return nickname; }
++
++        @com.fasterxml.jackson.annotation.JsonProperty("nickname")
++        public void setNickname(String nickname) {
++            this.nickname = nickname;
++            this.nicknamePresent = true;
++        }
++
++        public Integer getDailyLimit() { return dailyLimit; }
++
++        @com.fasterxml.jackson.annotation.JsonProperty("dailyLimit")
++        public void setDailyLimit(Integer dailyLimit) {
++            this.dailyLimit = dailyLimit;
++            this.dailyLimitPresent = true;
++        }
++
++        public boolean nicknamePresent() { return nicknamePresent; }
++        public boolean dailyLimitPresent() { return dailyLimitPresent; }
++        public boolean unknownFieldPresent() { return unknownFieldPresent; }
++
++        @com.fasterxml.jackson.annotation.JsonAnySetter
++        public void setUnknownField(String name, Object value) {
++            this.unknownFieldPresent = true;
++        }
++    }
++
+     public record AccountView(Long id, String customerId, String nickname, String type, BigDecimal balance, int dailyLimit,
+                               String status) {
+         static AccountView of(Account a) {
+@@ -44,6 +80,34 @@ public class AccountController {
+         return AccountView.of(service.getVisible(accountId));
+     }
+ 
++    @PatchMapping("/{accountId}")
++    @PreAuthorize("hasAuthority('SCOPE_accounts:write')")
++    public AccountView patch(@PathVariable Long accountId, @RequestBody AccountPatch patch) {
++        validate(patch);
++        return AccountView.of(service.update(accountId, patch));
++    }
++
++    private static void validate(AccountPatch patch) {
++        if (patch == null || patch.unknownFieldPresent()
++            || (!patch.nicknamePresent() && !patch.dailyLimitPresent())) {
++            throw new IllegalArgumentException("Patch must contain at least one field");
++        }
++        if (patch.nicknamePresent()) {
++            if (patch.getNickname() == null) {
++                throw new IllegalArgumentException("Nickname is invalid");
++            }
++            String nickname = patch.getNickname().trim();
++            if (nickname.isEmpty() || nickname.length() > 40) {
++                throw new IllegalArgumentException("Nickname is invalid");
++            }
++            patch.setNickname(nickname);
++        }
++        if (patch.dailyLimitPresent() && (patch.getDailyLimit() == null || patch.getDailyLimit() < 0
++            || patch.getDailyLimit() > 5000)) {
++            throw new IllegalArgumentException("Daily limit is invalid");
++        }
++    }
++
+     /** Needs the transactions:read scope as well as access to the account. */
+     @GetMapping("/{accountId}/transactions")
+     @PreAuthorize("hasAuthority('SCOPE_transactions:read')")
+diff --git a/src/main/java/com/example/accounts/account/AccountService.java b/src/main/java/com/example/accounts/account/AccountService.java
+index c1dfaa8..50f659f 100644
+--- a/src/main/java/com/example/accounts/account/AccountService.java
++++ b/src/main/java/com/example/accounts/account/AccountService.java
+@@ -9,6 +9,8 @@ import com.example.accounts.customer.CustomerRepository;
+ import com.example.accounts.security.AccessPolicy;
+ import com.example.accounts.security.CurrentUser;
+ import com.example.accounts.security.CurrentUserProvider;
++import com.example.accounts.web.ConflictException;
++import com.example.accounts.web.ForbiddenException;
+ import com.example.accounts.web.NotFoundException;
+ 
+ @Service
+@@ -66,4 +68,29 @@ public class AccountService {
+     public List<Transaction> transactions(Long accountId) {
+         return transactions.findByAccountIdOrderByBookedOnDescIdDesc(getVisible(accountId).getId());
+     }
++
++    @Transactional
++    public Account update(Long accountId, AccountController.AccountPatch patch) {
++        CurrentUser user = users.current();
++        Account account = getVisible(accountId);
++
++        if (account.getStatus() == Account.Status.CLOSED) {
++            throw new ConflictException("Closed accounts cannot be changed");
++        }
++
++        boolean changesNickname = patch.nicknamePresent();
++        boolean changesDailyLimit = patch.dailyLimitPresent();
++        if ((changesNickname && !access.ownsAccount(user, account))
++            || (changesDailyLimit && !access.isTenantAdmin(user, account.getTenantId()))) {
++            throw new ForbiddenException("You may not change one or more requested fields");
++        }
++
++        if (changesNickname) {
++            account.setNickname(patch.getNickname());
++        }
++        if (changesDailyLimit) {
++            account.setDailyLimit(patch.getDailyLimit());
++        }
++        return account;
++    }
+ }
+diff --git a/src/main/java/com/example/accounts/web/ApiExceptionHandler.java b/src/main/java/com/example/accounts/web/ApiExceptionHandler.java
+index 068656e..8b0c326 100644
+--- a/src/main/java/com/example/accounts/web/ApiExceptionHandler.java
++++ b/src/main/java/com/example/accounts/web/ApiExceptionHandler.java
+@@ -4,6 +4,7 @@ import java.util.Map;
+ 
+ import org.springframework.http.HttpStatus;
+ import org.springframework.http.ResponseEntity;
++import org.springframework.http.converter.HttpMessageNotReadableException;
+ import org.springframework.web.bind.MethodArgumentNotValidException;
+ import org.springframework.web.bind.annotation.ExceptionHandler;
+ import org.springframework.web.bind.annotation.RestControllerAdvice;
+@@ -27,7 +28,8 @@ public class ApiExceptionHandler {
+         return body(HttpStatus.CONFLICT, e.getMessage());
+     }
+ 
+-    @ExceptionHandler({MethodArgumentNotValidException.class, IllegalArgumentException.class})
++    @ExceptionHandler({MethodArgumentNotValidException.class, HttpMessageNotReadableException.class,
++        IllegalArgumentException.class})
+     ResponseEntity<Map<String, String>> badRequest(Exception e) {
+         return body(HttpStatus.BAD_REQUEST, "Invalid request");
+     }

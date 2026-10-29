@@ -1,0 +1,118 @@
+diff --git a/src/main/java/com/example/accounts/cases/CaseController.java b/src/main/java/com/example/accounts/cases/CaseController.java
+index 32d2a33..316147e 100644
+--- a/src/main/java/com/example/accounts/cases/CaseController.java
++++ b/src/main/java/com/example/accounts/cases/CaseController.java
+@@ -37,6 +37,22 @@ public class CaseController {
+         }
+     }
+ 
++    public record CaseCommentView(String author, String body, boolean internal, Instant createdAt) {
++        static CaseCommentView of(CaseComment comment) {
++            return new CaseCommentView(comment.getAuthor(), comment.getBody(), comment.isInternal(),
++                comment.getCreatedAt());
++        }
++    }
++
++    public record CaseView(String id, Long accountId, String customerId, String subject, String status,
++                           String assigneeUserId, List<CaseCommentView> comments) {
++        static CaseView of(SupportCase supportCase, List<CaseComment> comments) {
++            return new CaseView(supportCase.getId(), supportCase.getAccountId(), supportCase.getCustomerId(),
++                supportCase.getSubject(), supportCase.getStatus(), supportCase.getAssigneeUserId(),
++                comments.stream().map(CaseCommentView::of).toList());
++        }
++    }
++
+     public record NewCase(@NotNull Long accountId, @NotBlank @Size(max = 200) String subject) {
+     }
+ 
+@@ -46,8 +62,8 @@ public class CaseController {
+     private final AccessPolicy access;
+     private final CurrentUserProvider users;
+ 
+-    public CaseController(SupportCaseRepository cases, CustomerRepository customers, AccountService accounts,
+-                          AccessPolicy access, CurrentUserProvider users) {
++    public CaseController(SupportCaseRepository cases, CustomerRepository customers,
++                          AccountService accounts, AccessPolicy access, CurrentUserProvider users) {
+         this.cases = cases;
+         this.customers = customers;
+         this.accounts = accounts;
+diff --git a/src/main/java/com/example/accounts/cases/StaffCaseController.java b/src/main/java/com/example/accounts/cases/StaffCaseController.java
+new file mode 100644
+index 0000000..454d355
+--- /dev/null
++++ b/src/main/java/com/example/accounts/cases/StaffCaseController.java
+@@ -0,0 +1,43 @@
++package com.example.accounts.cases;
++
++import org.springframework.security.access.prepost.PreAuthorize;
++import org.springframework.transaction.annotation.Transactional;
++import org.springframework.web.bind.annotation.GetMapping;
++import org.springframework.web.bind.annotation.PathVariable;
++import org.springframework.web.bind.annotation.RequestMapping;
++import org.springframework.web.bind.annotation.RestController;
++
++import com.example.accounts.security.AccessPolicy;
++import com.example.accounts.security.CurrentUser;
++import com.example.accounts.security.CurrentUserProvider;
++import com.example.accounts.web.NotFoundException;
++
++/** Back-office case pages for support staff and tenant admins. */
++@RestController
++@RequestMapping("/api/support/cases")
++public class StaffCaseController {
++
++    private final SupportCaseRepository cases;
++    private final CaseCommentRepository comments;
++    private final AccessPolicy access;
++    private final CurrentUserProvider users;
++
++    public StaffCaseController(SupportCaseRepository cases, CaseCommentRepository comments, AccessPolicy access,
++                               CurrentUserProvider users) {
++        this.cases = cases;
++        this.comments = comments;
++        this.access = access;
++        this.users = users;
++    }
++
++    @GetMapping("/{caseId}")
++    @PreAuthorize("hasAnyRole('SUPPORT', 'ADMIN')")
++    @Transactional(readOnly = true)
++    public CaseController.CaseView get(@PathVariable String caseId) {
++        CurrentUser user = users.current();
++        SupportCase supportCase = cases.findById(caseId)
++            .filter(c -> access.canViewCase(user, c))
++            .orElseThrow(() -> new NotFoundException("Case not found"));
++        return CaseController.CaseView.of(supportCase, comments.findByCaseIdOrderByCreatedAtAsc(caseId));
++    }
++}
+diff --git a/src/main/java/com/example/accounts/security/AccessPolicy.java b/src/main/java/com/example/accounts/security/AccessPolicy.java
+index 6388a47..c9be8ca 100644
+--- a/src/main/java/com/example/accounts/security/AccessPolicy.java
++++ b/src/main/java/com/example/accounts/security/AccessPolicy.java
+@@ -4,6 +4,7 @@ import org.springframework.stereotype.Component;
+ 
+ import com.example.accounts.account.Account;
+ import com.example.accounts.account.SupportAssignmentRepository;
++import com.example.accounts.cases.SupportCase;
+ import com.example.accounts.customer.Customer;
+ import com.example.accounts.customer.CustomerRepository;
+ 
+@@ -53,4 +54,18 @@ public class AccessPolicy {
+     public boolean isTenantAdmin(CurrentUser user, String tenantId) {
+         return user.isAdmin() && user.inTenant(tenantId);
+     }
++
++    /** Staff may see a case when they are its assignee or are assigned to its account. */
++    public boolean canViewCase(CurrentUser user, SupportCase supportCase) {
++        if (!user.inTenant(supportCase.getTenantId())) {
++            return false;
++        }
++        if (user.isAdmin()) {
++            return true;
++        }
++        return user.isSupport()
++            && (user.id().equals(supportCase.getAssigneeUserId())
++                || assignments.existsByTenantIdAndSupportUserIdAndAccountId(
++                    supportCase.getTenantId(), user.id(), supportCase.getAccountId()));
++    }
+ }

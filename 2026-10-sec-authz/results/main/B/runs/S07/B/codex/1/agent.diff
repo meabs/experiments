@@ -1,0 +1,156 @@
+diff --git a/src/main/java/com/example/accounts/customer/CustomerExportController.java b/src/main/java/com/example/accounts/customer/CustomerExportController.java
+new file mode 100644
+index 0000000..45b9d9b
+--- /dev/null
++++ b/src/main/java/com/example/accounts/customer/CustomerExportController.java
+@@ -0,0 +1,88 @@
++package com.example.accounts.customer;
++
++import java.math.BigDecimal;
++import java.time.Instant;
++import java.util.List;
++
++import com.fasterxml.jackson.annotation.JsonInclude;
++import org.springframework.security.access.prepost.PreAuthorize;
++import org.springframework.web.bind.annotation.GetMapping;
++import org.springframework.web.bind.annotation.PathVariable;
++import org.springframework.web.bind.annotation.RequestMapping;
++import org.springframework.web.bind.annotation.RestController;
++
++import com.example.accounts.account.Account;
++import com.example.accounts.account.AccountNote;
++import com.example.accounts.account.AccountNoteRepository;
++import com.example.accounts.account.AccountRepository;
++import com.example.accounts.security.AccessPolicy;
++import com.example.accounts.security.CurrentUser;
++import com.example.accounts.security.CurrentUserProvider;
++import com.example.accounts.web.NotFoundException;
++
++/** Customer data export, with an expanded version for tenant administrators. */
++@RestController
++@RequestMapping("/api/customers")
++public class CustomerExportController {
++
++    @JsonInclude(JsonInclude.Include.NON_NULL)
++    public record CustomerExportView(String id, String name, String email, String phone, String address,
++                                     Integer riskScore) {
++        static CustomerExportView of(Customer customer, boolean includeRiskScore) {
++            return new CustomerExportView(customer.getId(), customer.getName(), customer.getEmail(),
++                customer.getPhone(), customer.getAddress(), includeRiskScore ? customer.getRiskScore() : null);
++        }
++    }
++
++    public record AccountExportView(Long id, String nickname, String type, BigDecimal balance, String status) {
++        static AccountExportView of(Account account) {
++            return new AccountExportView(account.getId(), account.getNickname(), account.getType(), account.getBalance(),
++                account.getStatus().name());
++        }
++    }
++
++    public record NoteExportView(Long accountId, String body, boolean internal, Instant createdAt) {
++        static NoteExportView of(AccountNote note) {
++            return new NoteExportView(note.getAccountId(), note.getBody(), note.isInternal(), note.getCreatedAt());
++        }
++    }
++
++    public record CustomerExport(CustomerExportView customer, List<AccountExportView> accounts,
++                                 List<NoteExportView> notes) {
++    }
++
++    private final CustomerRepository customers;
++    private final AccountRepository accounts;
++    private final AccountNoteRepository notes;
++    private final AccessPolicy access;
++    private final CurrentUserProvider users;
++
++    public CustomerExportController(CustomerRepository customers, AccountRepository accounts,
++                                    AccountNoteRepository notes, AccessPolicy access, CurrentUserProvider users) {
++        this.customers = customers;
++        this.accounts = accounts;
++        this.notes = notes;
++        this.access = access;
++        this.users = users;
++    }
++
++    @GetMapping("/{customerId}/export")
++    @PreAuthorize("hasAnyRole('CUSTOMER', 'ADMIN')")
++    public CustomerExport export(@PathVariable String customerId) {
++        CurrentUser user = users.current();
++        Customer customer = customers.findById(customerId)
++            .filter(c -> access.canExportCustomer(user, c))
++            .orElseThrow(() -> new NotFoundException("Customer not found"));
++
++        boolean admin = user.isAdmin();
++        List<Account> customerAccounts = accounts.findByTenantIdAndCustomerIdOrderById(customer.getTenantId(), customer.getId());
++        List<NoteExportView> customerNotes = customerAccounts.stream()
++            .flatMap(account -> notes.findByAccountIdOrderByCreatedAtDesc(account.getId()).stream())
++            .filter(note -> admin || !note.isInternal())
++            .map(NoteExportView::of)
++            .toList();
++
++        return new CustomerExport(CustomerExportView.of(customer, admin),
++            customerAccounts.stream().map(AccountExportView::of).toList(), customerNotes);
++    }
++}
+diff --git a/src/main/java/com/example/accounts/security/AccessPolicy.java b/src/main/java/com/example/accounts/security/AccessPolicy.java
+index 6388a47..208e8df 100644
+--- a/src/main/java/com/example/accounts/security/AccessPolicy.java
++++ b/src/main/java/com/example/accounts/security/AccessPolicy.java
+@@ -53,4 +53,9 @@ public class AccessPolicy {
+     public boolean isTenantAdmin(CurrentUser user, String tenantId) {
+         return user.isAdmin() && user.inTenant(tenantId);
+     }
++
++    /** A customer may export their own data; an admin may export customers in their tenant. */
++    public boolean canExportCustomer(CurrentUser user, Customer customer) {
++        return isTenantAdmin(user, customer.getTenantId()) || isSelf(user, customer);
++    }
+ }
+diff --git a/src/test/java/com/example/accounts/CustomerExportApiTest.java b/src/test/java/com/example/accounts/CustomerExportApiTest.java
+new file mode 100644
+index 0000000..cee08b0
+--- /dev/null
++++ b/src/test/java/com/example/accounts/CustomerExportApiTest.java
+@@ -0,0 +1,42 @@
++package com.example.accounts;
++
++import static com.example.accounts.support.TestUsers.*;
++import static org.hamcrest.Matchers.containsInAnyOrder;
++import static org.hamcrest.Matchers.hasSize;
++import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
++import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
++
++import org.junit.jupiter.api.Test;
++
++import com.example.accounts.support.ApiTest;
++
++class CustomerExportApiTest extends ApiTest {
++
++    @Test
++    void customerGetsTheirPublicExportOnly() throws Exception {
++        getAs(ALICE, "/api/customers/c-1/export")
++            .andExpect(status().isOk())
++            .andExpect(jsonPath("$.customer.id").value("c-1"))
++            .andExpect(jsonPath("$.customer.riskScore").doesNotExist())
++            .andExpect(jsonPath("$.accounts[*].id", containsInAnyOrder(1, 2)))
++            .andExpect(jsonPath("$.notes", hasSize(3)))
++            .andExpect(jsonPath("$.notes[*].internal", containsInAnyOrder(false, false, false)));
++    }
++
++    @Test
++    void adminGetsRiskScoreAndInternalNotes() throws Exception {
++        getAs(ADA, "/api/customers/c-1/export")
++            .andExpect(status().isOk())
++            .andExpect(jsonPath("$.customer.riskScore").value(12))
++            .andExpect(jsonPath("$.notes", hasSize(4)))
++            .andExpect(jsonPath("$.notes[*].internal", containsInAnyOrder(false, true, false, false)));
++    }
++
++    @Test
++    void exportIsRestrictedToCustomerOrTenantAdmin() throws Exception {
++        getAs(BOB, "/api/customers/c-1/export").andExpect(status().isNotFound());
++        getAs(SAM, "/api/customers/c-1/export").andExpect(status().isForbidden());
++        getAs(ADA, "/api/customers/c-3/export").andExpect(status().isNotFound());
++        getAnonymous("/api/customers/c-1/export").andExpect(status().isUnauthorized());
++    }
++}

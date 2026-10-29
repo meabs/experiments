@@ -1,0 +1,139 @@
+diff --git a/src/main/java/com/example/accounts/account/AccountController.java b/src/main/java/com/example/accounts/account/AccountController.java
+index bc6eb2e..3672d6c 100644
+--- a/src/main/java/com/example/accounts/account/AccountController.java
++++ b/src/main/java/com/example/accounts/account/AccountController.java
+@@ -4,9 +4,12 @@ import java.math.BigDecimal;
+ import java.time.LocalDate;
+ import java.util.List;
+ 
++import com.fasterxml.jackson.databind.JsonNode;
+ import org.springframework.security.access.prepost.PreAuthorize;
+ import org.springframework.web.bind.annotation.GetMapping;
++import org.springframework.web.bind.annotation.PatchMapping;
+ import org.springframework.web.bind.annotation.PathVariable;
++import org.springframework.web.bind.annotation.RequestBody;
+ import org.springframework.web.bind.annotation.RequestMapping;
+ import org.springframework.web.bind.annotation.RestController;
+ 
+@@ -28,6 +31,46 @@ public class AccountController {
+         }
+     }
+ 
++    public record AccountPatch(boolean nicknamePresent, String nickname, boolean dailyLimitPresent, int dailyLimit) {
++        static AccountPatch from(JsonNode body) {
++            if (body == null || !body.isObject() || body.size() == 0) {
++                throw new IllegalArgumentException("Invalid request");
++            }
++            var fields = body.fieldNames();
++            while (fields.hasNext()) {
++                String field = fields.next();
++                if (!field.equals("nickname") && !field.equals("dailyLimit")) {
++                    throw new IllegalArgumentException("Invalid request");
++                }
++            }
++
++            boolean nicknamePresent = body.has("nickname");
++            String nickname = null;
++            if (nicknamePresent) {
++                JsonNode value = body.get("nickname");
++                if (!value.isTextual()) {
++                    throw new IllegalArgumentException("Invalid request");
++                }
++                nickname = value.textValue().trim();
++                if (nickname.length() < 1 || nickname.length() > 40) {
++                    throw new IllegalArgumentException("Invalid request");
++                }
++            }
++
++            boolean dailyLimitPresent = body.has("dailyLimit");
++            int dailyLimit = 0;
++            if (dailyLimitPresent) {
++                JsonNode value = body.get("dailyLimit");
++                if (!value.isIntegralNumber() || !value.canConvertToInt()
++                    || value.intValue() < 0 || value.intValue() > 5000) {
++                    throw new IllegalArgumentException("Invalid request");
++                }
++                dailyLimit = value.intValue();
++            }
++            return new AccountPatch(nicknamePresent, nickname, dailyLimitPresent, dailyLimit);
++        }
++    }
++
+     private final AccountService service;
+ 
+     public AccountController(AccountService service) {
+@@ -44,6 +87,12 @@ public class AccountController {
+         return AccountView.of(service.getVisible(accountId));
+     }
+ 
++    @PatchMapping("/{accountId}")
++    @PreAuthorize("hasAuthority('SCOPE_accounts:write')")
++    public AccountView update(@PathVariable Long accountId, @RequestBody JsonNode body) {
++        return AccountView.of(service.update(accountId, AccountPatch.from(body)));
++    }
++
+     /** Needs the transactions:read scope as well as access to the account. */
+     @GetMapping("/{accountId}/transactions")
+     @PreAuthorize("hasAuthority('SCOPE_transactions:read')")
+diff --git a/src/main/java/com/example/accounts/account/AccountService.java b/src/main/java/com/example/accounts/account/AccountService.java
+index c1dfaa8..324c21e 100644
+--- a/src/main/java/com/example/accounts/account/AccountService.java
++++ b/src/main/java/com/example/accounts/account/AccountService.java
+@@ -9,6 +9,8 @@ import com.example.accounts.customer.CustomerRepository;
+ import com.example.accounts.security.AccessPolicy;
+ import com.example.accounts.security.CurrentUser;
+ import com.example.accounts.security.CurrentUserProvider;
++import com.example.accounts.web.ConflictException;
++import com.example.accounts.web.ForbiddenException;
+ import com.example.accounts.web.NotFoundException;
+ 
+ @Service
+@@ -66,4 +68,26 @@ public class AccountService {
+     public List<Transaction> transactions(Long accountId) {
+         return transactions.findByAccountIdOrderByBookedOnDescIdDesc(getVisible(accountId).getId());
+     }
++
++    @Transactional
++    public Account update(Long accountId, AccountController.AccountPatch patch) {
++        CurrentUser user = users.current();
++        Account account = getVisible(accountId);
++
++        if ((patch.nicknamePresent() && !access.ownsAccount(user, account))
++            || (patch.dailyLimitPresent() && !access.isTenantAdmin(user, account.getTenantId()))) {
++            throw new ForbiddenException("You may not change this account");
++        }
++        if (account.getStatus() == Account.Status.CLOSED) {
++            throw new ConflictException("Closed accounts cannot be changed");
++        }
++
++        if (patch.nicknamePresent()) {
++            account.setNickname(patch.nickname());
++        }
++        if (patch.dailyLimitPresent()) {
++            account.setDailyLimit(patch.dailyLimit());
++        }
++        return account;
++    }
+ }
+diff --git a/src/main/java/com/example/accounts/web/ApiExceptionHandler.java b/src/main/java/com/example/accounts/web/ApiExceptionHandler.java
+index 068656e..8b0c326 100644
+--- a/src/main/java/com/example/accounts/web/ApiExceptionHandler.java
++++ b/src/main/java/com/example/accounts/web/ApiExceptionHandler.java
+@@ -4,6 +4,7 @@ import java.util.Map;
+ 
+ import org.springframework.http.HttpStatus;
+ import org.springframework.http.ResponseEntity;
++import org.springframework.http.converter.HttpMessageNotReadableException;
+ import org.springframework.web.bind.MethodArgumentNotValidException;
+ import org.springframework.web.bind.annotation.ExceptionHandler;
+ import org.springframework.web.bind.annotation.RestControllerAdvice;
+@@ -27,7 +28,8 @@ public class ApiExceptionHandler {
+         return body(HttpStatus.CONFLICT, e.getMessage());
+     }
+ 
+-    @ExceptionHandler({MethodArgumentNotValidException.class, IllegalArgumentException.class})
++    @ExceptionHandler({MethodArgumentNotValidException.class, HttpMessageNotReadableException.class,
++        IllegalArgumentException.class})
+     ResponseEntity<Map<String, String>> badRequest(Exception e) {
+         return body(HttpStatus.BAD_REQUEST, "Invalid request");
+     }

@@ -1,0 +1,125 @@
+diff --git a/src/main/java/com/example/accounts/closure/ClosureController.java b/src/main/java/com/example/accounts/closure/ClosureController.java
+index 839def2..104e6a4 100644
+--- a/src/main/java/com/example/accounts/closure/ClosureController.java
++++ b/src/main/java/com/example/accounts/closure/ClosureController.java
+@@ -13,32 +13,37 @@ import org.springframework.web.bind.annotation.RestController;
+ import org.springframework.web.bind.annotation.ResponseStatus;
+ 
+ import com.example.accounts.account.Account;
++import com.example.accounts.account.AccountRepository;
+ import com.example.accounts.account.AccountService;
+ import com.example.accounts.security.AccessPolicy;
+ import com.example.accounts.security.CurrentUser;
+ import com.example.accounts.security.CurrentUserProvider;
+ import com.example.accounts.web.ConflictException;
+ import com.example.accounts.web.ForbiddenException;
++import com.example.accounts.web.NotFoundException;
+ 
+ @RestController
+ public class ClosureController {
+ 
+     public record ClosureView(Long id, Long accountId, String requestedBy, String status, String decidedBy,
+-                              Instant requestedAt) {
++                              Instant decidedAt, Instant requestedAt) {
+         static ClosureView of(ClosureRequest r) {
+             return new ClosureView(r.getId(), r.getAccountId(), r.getRequestedBy(), r.getStatus().name(), r.getDecidedBy(),
+-                r.getRequestedAt());
++                r.getDecidedAt(), r.getRequestedAt());
+         }
+     }
+ 
+     private final ClosureRequestRepository requests;
++    private final AccountRepository accountRepository;
+     private final AccountService accounts;
+     private final AccessPolicy access;
+     private final CurrentUserProvider users;
+ 
+-    public ClosureController(ClosureRequestRepository requests, AccountService accounts, AccessPolicy access,
++    public ClosureController(ClosureRequestRepository requests, AccountRepository accountRepository, AccountService accounts,
++                             AccessPolicy access,
+                              CurrentUserProvider users) {
+         this.requests = requests;
++        this.accountRepository = accountRepository;
+         this.accounts = accounts;
+         this.access = access;
+         this.users = users;
+@@ -70,4 +75,39 @@ public class ClosureController {
+         return requests.findByTenantIdAndStatusOrderByRequestedAt(user.tenantId(), ClosureRequest.Status.PENDING.name())
+             .stream().map(ClosureView::of).toList();
+     }
++
++    @PostMapping("/api/closure-requests/{requestId}/approve")
++    @PreAuthorize("hasRole('APPROVER') and hasAuthority('SCOPE_accounts:write')")
++    @Transactional
++    public ClosureView approve(@PathVariable Long requestId) {
++        return decide(requestId, ClosureRequest.Status.APPROVED);
++    }
++
++    @PostMapping("/api/closure-requests/{requestId}/reject")
++    @PreAuthorize("hasRole('APPROVER') and hasAuthority('SCOPE_accounts:write')")
++    @Transactional
++    public ClosureView reject(@PathVariable Long requestId) {
++        return decide(requestId, ClosureRequest.Status.REJECTED);
++    }
++
++    private ClosureView decide(Long requestId, ClosureRequest.Status decision) {
++        CurrentUser user = users.current();
++        ClosureRequest request = requests.findById(requestId)
++            .filter(r -> user.inTenant(r.getTenantId()))
++            .orElseThrow(() -> new NotFoundException("Closure request not found"));
++        if (request.getStatus() != ClosureRequest.Status.PENDING) {
++            throw new ConflictException("Closure request has already been decided");
++        }
++
++        Account account = accountRepository.findById(request.getAccountId())
++            .filter(a -> user.inTenant(a.getTenantId()))
++            .orElseThrow(() -> new NotFoundException("Closure request not found"));
++        request.setStatus(decision);
++        request.setDecidedBy(user.id());
++        request.setDecidedAt(Instant.now());
++        if (decision == ClosureRequest.Status.APPROVED) {
++            account.setStatus(Account.Status.CLOSED);
++        }
++        return ClosureView.of(requests.save(request));
++    }
+ }
+diff --git a/src/test/java/com/example/accounts/ClosureApiTest.java b/src/test/java/com/example/accounts/ClosureApiTest.java
+index 44707e5..e03d1c8 100644
+--- a/src/test/java/com/example/accounts/ClosureApiTest.java
++++ b/src/test/java/com/example/accounts/ClosureApiTest.java
+@@ -38,4 +38,35 @@ class ClosureApiTest extends ApiTest {
+         getAs(ADA, "/api/closure-requests").andExpect(status().isForbidden());
+         getAs(ALICE, "/api/closure-requests").andExpect(status().isForbidden());
+     }
++
++    @Test
++    void approverCanApproveAndCloseAccount() throws Exception {
++        postAs(ANA, "/api/closure-requests/1/approve", null).andExpect(status().isOk())
++            .andExpect(jsonPath("$.status").value("APPROVED"))
++            .andExpect(jsonPath("$.decidedBy").value("u-ana"))
++            .andExpect(jsonPath("$.decidedAt").isNotEmpty());
++        getAs(ADA, "/api/accounts/2").andExpect(status().isOk())
++            .andExpect(jsonPath("$.status").value("CLOSED"));
++    }
++
++    @Test
++    void approverCanRejectWithoutClosingAccount() throws Exception {
++        postAs(ANA, "/api/closure-requests/2/reject", null).andExpect(status().isOk())
++            .andExpect(jsonPath("$.status").value("REJECTED"))
++            .andExpect(jsonPath("$.decidedBy").value("u-ana"))
++            .andExpect(jsonPath("$.decidedAt").isNotEmpty());
++        getAs(ADA, "/api/accounts/3").andExpect(status().isOk())
++            .andExpect(jsonPath("$.status").value("OPEN"));
++    }
++
++    @Test
++    void decidedRequestCannotBeDecidedAgain() throws Exception {
++        postAs(ANA, "/api/closure-requests/3/reject", null).andExpect(status().isConflict());
++    }
++
++    @Test
++    void onlyApproverInRequestTenantCanDecide() throws Exception {
++        postAs(ALICE, "/api/closure-requests/1/approve", null).andExpect(status().isForbidden());
++        postAs(GWEN, "/api/closure-requests/1/approve", null).andExpect(status().isNotFound());
++    }
+ }

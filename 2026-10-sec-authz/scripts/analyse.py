@@ -12,7 +12,7 @@ over the eight tasks of each task's pass rate, so every task counts equally.
 - Secondary: functional pass, security pass, insecure functional completion (split into access breaches and wrong
   denial code only), legitimate access blocked, regressions, breach categories, skill read / gate run, false success claims, tokens, cost, wall time.
 
-Usage: python3 -I analyse.py <out dir> > results/analysis.md   (out dir holds <arm>/runs/<task>/<arm>/codex/<rep>/)
+Usage: python3 -I analyse.py <out dir> [S05 rerun dir] > results/analysis.md   (out dir holds <arm>/runs/<task>/<arm>/codex/<rep>/)
 """
 import glob, gzip, json, os, random, statistics as st, sys
 
@@ -55,14 +55,15 @@ def read(path):
     return ""
 
 
-def load(out):
+def load(out, grade_file="grade.json"):
     runs = []
     for f in glob.glob(os.path.join(out, "*", "runs", "*", "*", "codex", "*", "run.json")):
         r = json.load(open(f))
         if r["arm"] not in ARMS or r["question"] not in TASKS:
             continue
         d = os.path.dirname(f)
-        g = json.loads(read(os.path.join(d, "grade.json")) or "{}")
+        gf = os.path.join(d, grade_file)
+        g = json.loads(read(gf if os.path.exists(gf) else os.path.join(d, "grade.json")) or "{}")
         if "denies_breach" not in g:  # graded before the severity split: derive it from the failure messages
             swap = ("expected:<404> but was:<403>", "expected:<403> but was:<404>")
             failed = [f for f in g.get("failed", []) if ".denies_" in f]
@@ -88,7 +89,10 @@ def load(out):
             "read_skill": "spring-api-authorisation/SKILL.md" in calls,
             "ran_gate": "verify-authz" in calls,
             "protected": [p for p in read(os.path.join(d, "protected.txt")).split() if p],
-            "claim": r.get("claim_match"),
+            # The rig's claim_match compares with verify.sh's exit code at run time; S08 was regraded since
+            # (amendment 2026-10-29), so compare the agent's own closing claim with the current grade instead.
+            "claim": (None if (r.get("claim") or {}).get("result") != "passed"
+                      else "agree" if ok and g.get("pass") else "false_pass"),
             "seconds": r["seconds"], "tokens": tok.get("total"),
             "cost": ((tok.get("input", 0) - cached) * PRICE["input"] + cached * PRICE["cached"]
                      + tok.get("output", 0) * PRICE["output"]) / 1e6,
@@ -138,7 +142,7 @@ def pct(n, d):
     return f"{n}/{d} ({100 * n / d:.0f}%)" if d else "0/0"
 
 
-def main(out):
+def main(out, fix=None):
     runs = load(out)
     rng = random.Random(SEED)
     arms = [a for a in ARMS if any(r["arm"] == a for r in runs)]
@@ -241,6 +245,78 @@ def main(out):
     else:
         print("None.")
 
+    # Amendment 2026-10-29: S05 rerun for C and D with the renamed gate test, in place of the original 20 runs.
+    if fix:
+        new = [r for r in load(fix) if r["task"] == "S05" and r["arm"] in ("C", "D")]
+        cor = [r for r in runs if not (r["task"] == "S05" and r["arm"] in ("C", "D"))] + new
+        rng = random.Random(SEED)
+        print("\n## Corrected: S05 rerun for C and D with the renamed gate test (amendment 2026-10-29)\n")
+        print(f"The original 20 S05 runs of arms C and D are replaced by {len(new)} reruns from `{fix}`; everything else "
+              "is unchanged. Same tests and settings as the pre-registered analysis.\n")
+        print("| Arm | S05 runs passed (higher is better) | Secure functional completion, all tasks (higher is better) |")
+        print("| --- | --- | --- |")
+        for a in arms:
+            s5 = [r["pass"] for r in cor if r["arm"] == a and r["task"] == "S05"]
+            rs = [r for r in cor if r["arm"] == a]
+            print(f"| {a} | {sum(s5)}/{len(s5)} | {pct(sum(r['pass'] for r in rs), len(rs))} |")
+        res = []
+        for hid, text, x, y in tests:
+            a, b = by_task(cor, x), by_task(cor, y)
+            res.append((hid, text, stat(a, b), *boot(a, b, rng), perm_greater(a, b, rng)))
+        print("\n| # | Hypothesis | Effect (95% interval) | p | Holm p | Verdict |")
+        print("| --- | --- | --- | --- | --- | --- |")
+        for (hid, text, eff, lo, hi, p), q in zip(res, holm([r[-1] for r in res])):
+            print(f"| {hid} | {text} | {pts(eff)} ({pts(lo)} to {pts(hi)}) | {p:.4f} | {q:.4f} | "
+                  f"{'confirmed' if q < 0.05 else 'no measurable difference'} |")
+        for hid, x, y in [("H4", "D", "C"), ("D vs B", "D", "B")]:
+            a, b = by_task(cor, x), by_task(cor, y)
+            lo, hi = boot(a, b, rng)
+            print(f"\n- **{hid}** (estimate): {x} minus {y}, {pts(stat(a, b))} (95% interval {pts(lo)} to {pts(hi)}).")
+        k = {a: sum(r["ran_gate"] for r in new if r["arm"] == a) for a in ("C", "D")}
+        b5 = {a: sum(r["breach"] for r in new if r["arm"] == a) for a in ("C", "D")}
+        print(f"\n- Reruns that ran the gate: C {k['C']}, D {k['D']}; with an access breach: C {b5['C']}, D {b5['D']}.")
+
+    # Post hoc (not pre-registered): S05's public gate test was named supportUserNotOnTheCaseOrItsAccountGets404,
+    # which agents in C and D read as permission for support users assigned to the case's account (the hidden test's
+    # trap). The same tests, leaving S05 out.
+    rng = random.Random(SEED)
+    sub = [r for r in runs if r["task"] != "S05"]
+    print("\n## Post hoc, not pre-registered: leaving out S05 (misleading gate test name)\n")
+    print("Effect: mean over the seven other tasks of the difference in pass rate; one-sided permutation p, Holm over "
+          "the three. Shown to size the effect of the misleading gate test, not as a result.\n")
+    print("| # | Effect without S05 (95% interval) | p | Holm p |")
+    print("| --- | --- | --- | --- |")
+    res = []
+    for hid, text, x, y in tests:
+        a, b = (by_task(sub, z) for z in (x, y))
+        res.append((hid, stat(a, b), *boot(a, b, rng), perm_greater(a, b, rng)))
+    for (hid, eff, lo, hi, p), q in zip(res, holm([r[-1] for r in res])):
+        print(f"| {hid} | {pts(eff)} ({pts(lo)} to {pts(hi)}) | {p:.4f} | {q:.4f} |")
+    a, b = (by_task(sub, z) for z in ("D", "C"))
+    lo, hi = boot(a, b, rng)
+    print(f"\n- H4 without S05: D minus C, {pts(stat(a, b))} (95% interval {pts(lo)} to {pts(hi)}).")
+
+    # Amendment 2026-10-29: S08's hidden test was fixed and its runs regraded; each run kept its original grade.
+    old = load(out, "grade.v1.json")
+    if any(os.path.exists(f) for f in glob.glob(os.path.join(out, "*", "runs", "*", "*", "codex", "*", "grade.v1.json"))):
+        rng = random.Random(SEED)
+        print("\n## Sensitivity: the original S08 test (before the 2026-10-29 amendment)\n")
+        print("Same runs, graded with the S08 hidden test as first written (it also required admins to rename accounts).\n")
+        print("| Arm | Secure functional completion, original S08 test (higher is better) | With the fixed test (higher is better) |")
+        print("| --- | --- | --- |")
+        for a in arms:
+            N = sum(r["arm"] == a for r in runs)
+            print(f"| {a} | {pct(sum(r['pass'] for r in old if r['arm'] == a), N)} | "
+                  f"{pct(sum(r['pass'] for r in runs if r['arm'] == a), N)} |")
+        res = []
+        for hid, text, x, y in tests:
+            a, b = by_task(old, x), by_task(old, y)
+            res.append((hid, stat(a, b), *boot(a, b, rng), perm_greater(a, b, rng)))
+        print("\n| # | Effect, original S08 test (95% interval) | p | Holm p |")
+        print("| --- | --- | --- | --- |")
+        for (hid, eff, lo, hi, p), q in zip(res, holm([r[-1] for r in res])):
+            print(f"| {hid} | {pts(eff)} ({pts(lo)} to {pts(hi)}) | {p:.4f} | {q:.4f} |")
+
 
 if __name__ == "__main__":
-    main(sys.argv[1])
+    main(sys.argv[1], sys.argv[2] if len(sys.argv) > 2 else None)

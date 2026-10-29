@@ -1,0 +1,158 @@
+diff --git a/src/main/java/com/example/accounts/account/AccountRepository.java b/src/main/java/com/example/accounts/account/AccountRepository.java
+index cdcfe11..2012d9e 100644
+--- a/src/main/java/com/example/accounts/account/AccountRepository.java
++++ b/src/main/java/com/example/accounts/account/AccountRepository.java
+@@ -1,6 +1,7 @@
+ package com.example.accounts.account;
+ 
+ import java.util.List;
++import java.util.Optional;
+ 
+ import org.springframework.data.jpa.repository.JpaRepository;
+ 
+@@ -9,4 +10,6 @@ public interface AccountRepository extends JpaRepository<Account, Long> {
+     List<Account> findByTenantIdOrderById(String tenantId);
+ 
+     List<Account> findByTenantIdAndCustomerIdOrderById(String tenantId, String customerId);
++
++    Optional<Account> findByIdAndTenantId(Long id, String tenantId);
+ }
+diff --git a/src/main/java/com/example/accounts/closure/ClosureController.java b/src/main/java/com/example/accounts/closure/ClosureController.java
+index 839def2..c881774 100644
+--- a/src/main/java/com/example/accounts/closure/ClosureController.java
++++ b/src/main/java/com/example/accounts/closure/ClosureController.java
+@@ -13,32 +13,37 @@ import org.springframework.web.bind.annotation.RestController;
+ import org.springframework.web.bind.annotation.ResponseStatus;
+ 
+ import com.example.accounts.account.Account;
++import com.example.accounts.account.AccountRepository;
+ import com.example.accounts.account.AccountService;
+ import com.example.accounts.security.AccessPolicy;
+ import com.example.accounts.security.CurrentUser;
+ import com.example.accounts.security.CurrentUserProvider;
+ import com.example.accounts.web.ConflictException;
+ import com.example.accounts.web.ForbiddenException;
++import com.example.accounts.web.NotFoundException;
+ 
+ @RestController
+ public class ClosureController {
+ 
+     public record ClosureView(Long id, Long accountId, String requestedBy, String status, String decidedBy,
+-                              Instant requestedAt) {
++                              Instant decidedAt, Instant requestedAt) {
+         static ClosureView of(ClosureRequest r) {
+             return new ClosureView(r.getId(), r.getAccountId(), r.getRequestedBy(), r.getStatus().name(), r.getDecidedBy(),
+-                r.getRequestedAt());
++                r.getDecidedAt(), r.getRequestedAt());
+         }
+     }
+ 
+     private final ClosureRequestRepository requests;
++    private final AccountRepository accountRepository;
+     private final AccountService accounts;
+     private final AccessPolicy access;
+     private final CurrentUserProvider users;
+ 
+-    public ClosureController(ClosureRequestRepository requests, AccountService accounts, AccessPolicy access,
++    public ClosureController(ClosureRequestRepository requests, AccountRepository accountRepository, AccountService accounts,
++                             AccessPolicy access,
+                              CurrentUserProvider users) {
+         this.requests = requests;
++        this.accountRepository = accountRepository;
+         this.accounts = accounts;
+         this.access = access;
+         this.users = users;
+@@ -70,4 +75,40 @@ public class ClosureController {
+         return requests.findByTenantIdAndStatusOrderByRequestedAt(user.tenantId(), ClosureRequest.Status.PENDING.name())
+             .stream().map(ClosureView::of).toList();
+     }
++
++    @PostMapping("/api/closure-requests/{requestId}/approve")
++    @PreAuthorize("hasRole('APPROVER') && hasAuthority('SCOPE_accounts:write')")
++    @Transactional
++    public ClosureView approve(@PathVariable Long requestId) {
++        return decide(requestId, ClosureRequest.Status.APPROVED);
++    }
++
++    @PostMapping("/api/closure-requests/{requestId}/reject")
++    @PreAuthorize("hasRole('APPROVER') && hasAuthority('SCOPE_accounts:write')")
++    @Transactional
++    public ClosureView reject(@PathVariable Long requestId) {
++        return decide(requestId, ClosureRequest.Status.REJECTED);
++    }
++
++    private ClosureView decide(Long requestId, ClosureRequest.Status decision) {
++        CurrentUser user = users.current();
++        ClosureRequest request = requests.findByIdAndTenantId(requestId, user.tenantId())
++            .orElseThrow(() -> new NotFoundException("Closure request not found"));
++        if (request.getStatus() != ClosureRequest.Status.PENDING) {
++            throw new ConflictException("Closure request has already been decided");
++        }
++        if (request.getRequestedBy().equals(user.id())) {
++            throw new ForbiddenException("The requester cannot decide their own closure request");
++        }
++
++        if (decision == ClosureRequest.Status.APPROVED) {
++            Account account = accountRepository.findByIdAndTenantId(request.getAccountId(), user.tenantId())
++                .orElseThrow(() -> new NotFoundException("Account not found"));
++            account.setStatus(Account.Status.CLOSED);
++        }
++        request.setStatus(decision);
++        request.setDecidedBy(user.id());
++        request.setDecidedAt(Instant.now());
++        return ClosureView.of(request);
++    }
+ }
+diff --git a/src/main/java/com/example/accounts/closure/ClosureRequestRepository.java b/src/main/java/com/example/accounts/closure/ClosureRequestRepository.java
+index e74ada2..8765c66 100644
+--- a/src/main/java/com/example/accounts/closure/ClosureRequestRepository.java
++++ b/src/main/java/com/example/accounts/closure/ClosureRequestRepository.java
+@@ -1,6 +1,7 @@
+ package com.example.accounts.closure;
+ 
+ import java.util.List;
++import java.util.Optional;
+ 
+ import org.springframework.data.jpa.repository.JpaRepository;
+ 
+@@ -9,4 +10,6 @@ public interface ClosureRequestRepository extends JpaRepository<ClosureRequest,
+     List<ClosureRequest> findByTenantIdAndStatusOrderByRequestedAt(String tenantId, String status);
+ 
+     boolean existsByAccountIdAndStatus(Long accountId, String status);
++
++    Optional<ClosureRequest> findByIdAndTenantId(Long id, String tenantId);
+ }
+diff --git a/src/test/java/com/example/accounts/ClosureApiTest.java b/src/test/java/com/example/accounts/ClosureApiTest.java
+index 44707e5..c355dbb 100644
+--- a/src/test/java/com/example/accounts/ClosureApiTest.java
++++ b/src/test/java/com/example/accounts/ClosureApiTest.java
+@@ -38,4 +38,29 @@ class ClosureApiTest extends ApiTest {
+         getAs(ADA, "/api/closure-requests").andExpect(status().isForbidden());
+         getAs(ALICE, "/api/closure-requests").andExpect(status().isForbidden());
+     }
++
++    @Test
++    void approverCanApproveAndCloseAccount() throws Exception {
++        postAs(ANA, "/api/closure-requests/1/approve", null).andExpect(status().isOk())
++            .andExpect(jsonPath("$.status").value("APPROVED"))
++            .andExpect(jsonPath("$.decidedBy").value("u-ana"))
++            .andExpect(jsonPath("$.decidedAt").isNotEmpty());
++        getAs(ADA, "/api/accounts/2").andExpect(status().isOk())
++            .andExpect(jsonPath("$.status").value("CLOSED"));
++    }
++
++    @Test
++    void approverCanRejectAndLeaveAccountOpen() throws Exception {
++        postAs(GWEN, "/api/closure-requests/4/reject", null).andExpect(status().isOk())
++            .andExpect(jsonPath("$.status").value("REJECTED"))
++            .andExpect(jsonPath("$.decidedBy").value("u-gwen"))
++            .andExpect(jsonPath("$.decidedAt").isNotEmpty());
++        getAs(GIL, "/api/accounts/4").andExpect(status().isOk())
++            .andExpect(jsonPath("$.status").value("OPEN"));
++    }
++
++    @Test
++    void decidedRequestCannotBeDecidedAgain() throws Exception {
++        postAs(ANA, "/api/closure-requests/3/reject", null).andExpect(status().isConflict());
++    }
+ }

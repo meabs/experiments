@@ -1,0 +1,140 @@
+diff --git a/src/main/java/com/example/accounts/account/AccountController.java b/src/main/java/com/example/accounts/account/AccountController.java
+index bc6eb2e..6435319 100644
+--- a/src/main/java/com/example/accounts/account/AccountController.java
++++ b/src/main/java/com/example/accounts/account/AccountController.java
+@@ -4,12 +4,20 @@ import java.math.BigDecimal;
+ import java.time.LocalDate;
+ import java.util.List;
+ 
++import com.fasterxml.jackson.databind.JsonNode;
+ import org.springframework.security.access.prepost.PreAuthorize;
++import org.springframework.web.bind.annotation.PatchMapping;
++import org.springframework.web.bind.annotation.RequestBody;
+ import org.springframework.web.bind.annotation.GetMapping;
+ import org.springframework.web.bind.annotation.PathVariable;
+ import org.springframework.web.bind.annotation.RequestMapping;
+ import org.springframework.web.bind.annotation.RestController;
+ 
++import com.example.accounts.security.AccessPolicy;
++import com.example.accounts.security.CurrentUser;
++import com.example.accounts.security.CurrentUserProvider;
++import com.example.accounts.web.ForbiddenException;
++
+ @RestController
+ @RequestMapping("/api/accounts")
+ public class AccountController {
+@@ -29,9 +37,13 @@ public class AccountController {
+     }
+ 
+     private final AccountService service;
++    private final AccessPolicy access;
++    private final CurrentUserProvider users;
+ 
+-    public AccountController(AccountService service) {
++    public AccountController(AccountService service, AccessPolicy access, CurrentUserProvider users) {
+         this.service = service;
++        this.access = access;
++        this.users = users;
+     }
+ 
+     @GetMapping
+@@ -44,6 +56,67 @@ public class AccountController {
+         return AccountView.of(service.getVisible(accountId));
+     }
+ 
++    @PatchMapping("/{accountId}")
++    @PreAuthorize("hasAuthority('SCOPE_accounts:write')")
++    public AccountView patch(@PathVariable Long accountId, @RequestBody JsonNode body) {
++        Account account = service.getVisible(accountId);
++        AccountPatch patch = AccountPatch.from(body);
++        CurrentUser user = users.current();
++
++        if (patch.dailyLimit() != null && !access.isTenantAdmin(user, account.getTenantId())) {
++            throw new ForbiddenException("Only an admin can change the daily limit");
++        }
++        if (patch.nickname() != null && !access.ownsAccount(user, account)
++            && !access.isTenantAdmin(user, account.getTenantId())) {
++            throw new ForbiddenException("Only the account holder or an admin can change the nickname");
++        }
++        return AccountView.of(service.update(accountId, patch.nickname(), patch.dailyLimit()));
++    }
++
++    private record AccountPatch(String nickname, Integer dailyLimit) {
++        static AccountPatch from(JsonNode body) {
++            if (body == null || !body.isObject() || body.size() == 0) {
++                throw new IllegalArgumentException("Invalid request");
++            }
++            var fields = body.fieldNames();
++            while (fields.hasNext()) {
++                String field = fields.next();
++                if (!field.equals("nickname") && !field.equals("dailyLimit")) {
++                    throw new IllegalArgumentException("Invalid request");
++                }
++            }
++
++            JsonNode nicknameNode = body.get("nickname");
++            JsonNode dailyLimitNode = body.get("dailyLimit");
++            if (nicknameNode == null && dailyLimitNode == null) {
++                throw new IllegalArgumentException("Invalid request");
++            }
++
++            String nickname = null;
++            if (nicknameNode != null) {
++                if (!nicknameNode.isTextual()) {
++                    throw new IllegalArgumentException("Invalid request");
++                }
++                nickname = nicknameNode.textValue().trim();
++                if (nickname.isEmpty() || nickname.length() > 40) {
++                    throw new IllegalArgumentException("Invalid request");
++                }
++            }
++
++            Integer dailyLimit = null;
++            if (dailyLimitNode != null) {
++                if (!dailyLimitNode.isIntegralNumber() || !dailyLimitNode.canConvertToInt()) {
++                    throw new IllegalArgumentException("Invalid request");
++                }
++                dailyLimit = dailyLimitNode.intValue();
++                if (dailyLimit < 0 || dailyLimit > 5000) {
++                    throw new IllegalArgumentException("Invalid request");
++                }
++            }
++            return new AccountPatch(nickname, dailyLimit);
++        }
++    }
++
+     /** Needs the transactions:read scope as well as access to the account. */
+     @GetMapping("/{accountId}/transactions")
+     @PreAuthorize("hasAuthority('SCOPE_transactions:read')")
+diff --git a/src/main/java/com/example/accounts/account/AccountService.java b/src/main/java/com/example/accounts/account/AccountService.java
+index c1dfaa8..c4d54d2 100644
+--- a/src/main/java/com/example/accounts/account/AccountService.java
++++ b/src/main/java/com/example/accounts/account/AccountService.java
+@@ -9,6 +9,7 @@ import com.example.accounts.customer.CustomerRepository;
+ import com.example.accounts.security.AccessPolicy;
+ import com.example.accounts.security.CurrentUser;
+ import com.example.accounts.security.CurrentUserProvider;
++import com.example.accounts.web.ConflictException;
+ import com.example.accounts.web.NotFoundException;
+ 
+ @Service
+@@ -66,4 +67,19 @@ public class AccountService {
+     public List<Transaction> transactions(Long accountId) {
+         return transactions.findByAccountIdOrderByBookedOnDescIdDesc(getVisible(accountId).getId());
+     }
++
++    @Transactional
++    public Account update(Long accountId, String nickname, Integer dailyLimit) {
++        Account account = getVisible(accountId);
++        if (account.getStatus() == Account.Status.CLOSED) {
++            throw new ConflictException("Account is closed");
++        }
++        if (nickname != null) {
++            account.setNickname(nickname);
++        }
++        if (dailyLimit != null) {
++            account.setDailyLimit(dailyLimit);
++        }
++        return account;
++    }
+ }

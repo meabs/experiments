@@ -1,0 +1,114 @@
+diff --git a/src/main/java/com/example/accounts/account/AccountRepository.java b/src/main/java/com/example/accounts/account/AccountRepository.java
+index cdcfe11..2012d9e 100644
+--- a/src/main/java/com/example/accounts/account/AccountRepository.java
++++ b/src/main/java/com/example/accounts/account/AccountRepository.java
+@@ -1,6 +1,7 @@
+ package com.example.accounts.account;
+ 
+ import java.util.List;
++import java.util.Optional;
+ 
+ import org.springframework.data.jpa.repository.JpaRepository;
+ 
+@@ -9,4 +10,6 @@ public interface AccountRepository extends JpaRepository<Account, Long> {
+     List<Account> findByTenantIdOrderById(String tenantId);
+ 
+     List<Account> findByTenantIdAndCustomerIdOrderById(String tenantId, String customerId);
++
++    Optional<Account> findByIdAndTenantId(Long id, String tenantId);
+ }
+diff --git a/src/main/java/com/example/accounts/account/AccountService.java b/src/main/java/com/example/accounts/account/AccountService.java
+index c1dfaa8..b0cb76c 100644
+--- a/src/main/java/com/example/accounts/account/AccountService.java
++++ b/src/main/java/com/example/accounts/account/AccountService.java
+@@ -66,4 +66,12 @@ public class AccountService {
+     public List<Transaction> transactions(Long accountId) {
+         return transactions.findByAccountIdOrderByBookedOnDescIdDesc(getVisible(accountId).getId());
+     }
++
++    /** Closes an account after a tenant-scoped closure request has been approved. */
++    @Transactional
++    public void closeForTenant(Long accountId, String tenantId) {
++        Account account = accounts.findByIdAndTenantId(accountId, tenantId)
++            .orElseThrow(() -> new NotFoundException("Account not found"));
++        account.setStatus(Account.Status.CLOSED);
++    }
+ }
+diff --git a/src/main/java/com/example/accounts/closure/ClosureController.java b/src/main/java/com/example/accounts/closure/ClosureController.java
+index 839def2..4e038ef 100644
+--- a/src/main/java/com/example/accounts/closure/ClosureController.java
++++ b/src/main/java/com/example/accounts/closure/ClosureController.java
+@@ -19,15 +19,16 @@ import com.example.accounts.security.CurrentUser;
+ import com.example.accounts.security.CurrentUserProvider;
+ import com.example.accounts.web.ConflictException;
+ import com.example.accounts.web.ForbiddenException;
++import com.example.accounts.web.NotFoundException;
+ 
+ @RestController
+ public class ClosureController {
+ 
+     public record ClosureView(Long id, Long accountId, String requestedBy, String status, String decidedBy,
+-                              Instant requestedAt) {
++                              Instant decidedAt, Instant requestedAt) {
+         static ClosureView of(ClosureRequest r) {
+             return new ClosureView(r.getId(), r.getAccountId(), r.getRequestedBy(), r.getStatus().name(), r.getDecidedBy(),
+-                r.getRequestedAt());
++                r.getDecidedAt(), r.getRequestedAt());
+         }
+     }
+ 
+@@ -70,4 +71,34 @@ public class ClosureController {
+         return requests.findByTenantIdAndStatusOrderByRequestedAt(user.tenantId(), ClosureRequest.Status.PENDING.name())
+             .stream().map(ClosureView::of).toList();
+     }
++
++    @PostMapping("/api/closure-requests/{requestId}/approve")
++    @PreAuthorize("hasRole('APPROVER') and hasAuthority('SCOPE_accounts:write')")
++    @Transactional
++    public ClosureView approve(@PathVariable Long requestId) {
++        return decide(requestId, ClosureRequest.Status.APPROVED);
++    }
++
++    @PostMapping("/api/closure-requests/{requestId}/reject")
++    @PreAuthorize("hasRole('APPROVER') and hasAuthority('SCOPE_accounts:write')")
++    @Transactional
++    public ClosureView reject(@PathVariable Long requestId) {
++        return decide(requestId, ClosureRequest.Status.REJECTED);
++    }
++
++    private ClosureView decide(Long requestId, ClosureRequest.Status decision) {
++        CurrentUser user = users.current();
++        ClosureRequest request = requests.findByIdAndTenantId(requestId, user.tenantId())
++            .orElseThrow(() -> new NotFoundException("Closure request not found"));
++        if (request.getStatus() != ClosureRequest.Status.PENDING) {
++            throw new ConflictException("Closure request has already been decided");
++        }
++        request.setStatus(decision);
++        request.setDecidedBy(user.id());
++        request.setDecidedAt(Instant.now());
++        if (decision == ClosureRequest.Status.APPROVED) {
++            accounts.closeForTenant(request.getAccountId(), request.getTenantId());
++        }
++        return ClosureView.of(requests.save(request));
++    }
+ }
+diff --git a/src/main/java/com/example/accounts/closure/ClosureRequestRepository.java b/src/main/java/com/example/accounts/closure/ClosureRequestRepository.java
+index e74ada2..fe4dc3a 100644
+--- a/src/main/java/com/example/accounts/closure/ClosureRequestRepository.java
++++ b/src/main/java/com/example/accounts/closure/ClosureRequestRepository.java
+@@ -1,6 +1,7 @@
+ package com.example.accounts.closure;
+ 
+ import java.util.List;
++import java.util.Optional;
+ 
+ import org.springframework.data.jpa.repository.JpaRepository;
+ 
+@@ -8,5 +9,7 @@ public interface ClosureRequestRepository extends JpaRepository<ClosureRequest,
+ 
+     List<ClosureRequest> findByTenantIdAndStatusOrderByRequestedAt(String tenantId, String status);
+ 
++    Optional<ClosureRequest> findByIdAndTenantId(Long id, String tenantId);
++
+     boolean existsByAccountIdAndStatus(Long accountId, String status);
+ }

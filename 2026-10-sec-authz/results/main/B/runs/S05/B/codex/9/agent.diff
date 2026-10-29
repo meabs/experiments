@@ -1,0 +1,134 @@
+diff --git a/src/main/java/com/example/accounts/cases/SupportCaseController.java b/src/main/java/com/example/accounts/cases/SupportCaseController.java
+new file mode 100644
+index 0000000..36f786b
+--- /dev/null
++++ b/src/main/java/com/example/accounts/cases/SupportCaseController.java
+@@ -0,0 +1,59 @@
++package com.example.accounts.cases;
++
++import java.time.Instant;
++import java.util.List;
++
++import org.springframework.security.access.prepost.PreAuthorize;
++import org.springframework.transaction.annotation.Transactional;
++import org.springframework.web.bind.annotation.GetMapping;
++import org.springframework.web.bind.annotation.PathVariable;
++import org.springframework.web.bind.annotation.RequestMapping;
++import org.springframework.web.bind.annotation.RestController;
++
++import com.example.accounts.security.AccessPolicy;
++import com.example.accounts.security.CurrentUserProvider;
++import com.example.accounts.web.NotFoundException;
++
++/** Back-office case view for the assigned support user and tenant admins. */
++@RestController
++@RequestMapping("/api/support/cases")
++public class SupportCaseController {
++
++    public record CommentView(String author, String body, boolean internal, Instant createdAt) {
++        static CommentView of(CaseComment comment) {
++            return new CommentView(comment.getAuthor(), comment.getBody(), comment.isInternal(), comment.getCreatedAt());
++        }
++    }
++
++    public record CaseView(String id, Long accountId, String customerId, String subject, String status,
++                           String assigneeUserId, List<CommentView> comments) {
++        static CaseView of(SupportCase supportCase, List<CaseComment> comments) {
++            return new CaseView(supportCase.getId(), supportCase.getAccountId(), supportCase.getCustomerId(),
++                supportCase.getSubject(), supportCase.getStatus(), supportCase.getAssigneeUserId(),
++                comments.stream().map(CommentView::of).toList());
++        }
++    }
++
++    private final SupportCaseRepository cases;
++    private final CaseCommentRepository comments;
++    private final AccessPolicy access;
++    private final CurrentUserProvider users;
++
++    public SupportCaseController(SupportCaseRepository cases, CaseCommentRepository comments, AccessPolicy access,
++                                 CurrentUserProvider users) {
++        this.cases = cases;
++        this.comments = comments;
++        this.access = access;
++        this.users = users;
++    }
++
++    @GetMapping("/{caseId}")
++    @PreAuthorize("hasAnyRole('SUPPORT', 'ADMIN')")
++    @Transactional(readOnly = true)
++    public CaseView get(@PathVariable String caseId) {
++        SupportCase supportCase = cases.findById(caseId)
++            .filter(c -> access.canViewCase(users.current(), c))
++            .orElseThrow(() -> new NotFoundException("Case not found"));
++        return CaseView.of(supportCase, comments.findByCaseIdOrderByCreatedAtAsc(caseId));
++    }
++}
+diff --git a/src/main/java/com/example/accounts/security/AccessPolicy.java b/src/main/java/com/example/accounts/security/AccessPolicy.java
+index 6388a47..fb31f4f 100644
+--- a/src/main/java/com/example/accounts/security/AccessPolicy.java
++++ b/src/main/java/com/example/accounts/security/AccessPolicy.java
+@@ -4,6 +4,7 @@ import org.springframework.stereotype.Component;
+ 
+ import com.example.accounts.account.Account;
+ import com.example.accounts.account.SupportAssignmentRepository;
++import com.example.accounts.cases.SupportCase;
+ import com.example.accounts.customer.Customer;
+ import com.example.accounts.customer.CustomerRepository;
+ 
+@@ -53,4 +54,13 @@ public class AccessPolicy {
+     public boolean isTenantAdmin(CurrentUser user, String tenantId) {
+         return user.isAdmin() && user.inTenant(tenantId);
+     }
++
++    /** Staff may view a case when it is assigned to them, or when they administer its tenant. */
++    public boolean canViewCase(CurrentUser user, SupportCase supportCase) {
++        if (!user.inTenant(supportCase.getTenantId())) {
++            return false;
++        }
++        return isTenantAdmin(user, supportCase.getTenantId())
++            || (user.isSupport() && user.id().equals(supportCase.getAssigneeUserId()));
++    }
+ }
+diff --git a/src/test/java/com/example/accounts/CaseApiTest.java b/src/test/java/com/example/accounts/CaseApiTest.java
+index 8a799bf..73e3f21 100644
+--- a/src/test/java/com/example/accounts/CaseApiTest.java
++++ b/src/test/java/com/example/accounts/CaseApiTest.java
+@@ -2,6 +2,8 @@ package com.example.accounts;
+ 
+ import static com.example.accounts.support.TestUsers.*;
+ import static org.hamcrest.Matchers.containsInAnyOrder;
++import static org.hamcrest.Matchers.hasSize;
++import static org.hamcrest.Matchers.is;
+ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
+ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
+ 
+@@ -40,4 +42,29 @@ class CaseApiTest extends ApiTest {
+     void supportCannotRaiseCases() throws Exception {
+         postAs(SAM, "/api/cases", "{\"accountId\":1,\"subject\":\"Lost card\"}").andExpect(status().isForbidden());
+     }
++
++    @Test
++    void assignedSupportSeesTheWholeCaseIncludingInternalComments() throws Exception {
++        getAs(SUE, "/api/support/cases/k-2")
++            .andExpect(status().isOk())
++            .andExpect(jsonPath("$.id", is("k-2")))
++            .andExpect(jsonPath("$.accountId", is(1)))
++            .andExpect(jsonPath("$.customerId", is("c-1")))
++            .andExpect(jsonPath("$.assigneeUserId", is("u-sue")))
++            .andExpect(jsonPath("$.comments", hasSize(1)))
++            .andExpect(jsonPath("$.comments[0].author", is("u-sue")))
++            .andExpect(jsonPath("$.comments[0].internal", is(true)))
++            .andExpect(jsonPath("$.comments[0].body", is("Merchant has a history of chargebacks; escalate to fraud team.")))
++            .andExpect(jsonPath("$.comments[0].createdAt", is("2026-09-14T10:00:00Z")));
++    }
++
++    @Test
++    void supportCannotSeeAnUnassignedCase() throws Exception {
++        getAs(SUE, "/api/support/cases/k-1").andExpect(status().isNotFound());
++    }
++
++    @Test
++    void customersCannotSeeTheStaffCasePage() throws Exception {
++        getAs(ALICE, "/api/support/cases/k-2").andExpect(status().isForbidden());
++    }
+ }

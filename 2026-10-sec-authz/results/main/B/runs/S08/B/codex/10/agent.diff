@@ -1,0 +1,166 @@
+diff --git a/src/main/java/com/example/accounts/account/AccountController.java b/src/main/java/com/example/accounts/account/AccountController.java
+index bc6eb2e..eaf5297 100644
+--- a/src/main/java/com/example/accounts/account/AccountController.java
++++ b/src/main/java/com/example/accounts/account/AccountController.java
+@@ -5,11 +5,15 @@ import java.time.LocalDate;
+ import java.util.List;
+ 
+ import org.springframework.security.access.prepost.PreAuthorize;
++import org.springframework.web.bind.annotation.PatchMapping;
+ import org.springframework.web.bind.annotation.GetMapping;
+ import org.springframework.web.bind.annotation.PathVariable;
++import org.springframework.web.bind.annotation.RequestBody;
+ import org.springframework.web.bind.annotation.RequestMapping;
+ import org.springframework.web.bind.annotation.RestController;
+ 
++import com.fasterxml.jackson.annotation.JsonSetter;
++
+ @RestController
+ @RequestMapping("/api/accounts")
+ public class AccountController {
+@@ -28,6 +32,30 @@ public class AccountController {
+         }
+     }
+ 
++    public static class AccountPatch {
++        private String nickname;
++        private Integer dailyLimit;
++        private boolean nicknameProvided;
++        private boolean dailyLimitProvided;
++
++        @JsonSetter("nickname")
++        public void setNickname(String nickname) {
++            this.nicknameProvided = true;
++            this.nickname = nickname;
++        }
++
++        @JsonSetter("dailyLimit")
++        public void setDailyLimit(Integer dailyLimit) {
++            this.dailyLimitProvided = true;
++            this.dailyLimit = dailyLimit;
++        }
++
++        public String getNickname() { return nickname; }
++        public Integer getDailyLimit() { return dailyLimit; }
++        public boolean isNicknameProvided() { return nicknameProvided; }
++        public boolean isDailyLimitProvided() { return dailyLimitProvided; }
++    }
++
+     private final AccountService service;
+ 
+     public AccountController(AccountService service) {
+@@ -44,6 +72,12 @@ public class AccountController {
+         return AccountView.of(service.getVisible(accountId));
+     }
+ 
++    @PatchMapping("/{accountId}")
++    @PreAuthorize("hasAuthority('SCOPE_accounts:write')")
++    public AccountView update(@PathVariable Long accountId, @RequestBody AccountPatch patch) {
++        return AccountView.of(service.update(accountId, patch));
++    }
++
+     /** Needs the transactions:read scope as well as access to the account. */
+     @GetMapping("/{accountId}/transactions")
+     @PreAuthorize("hasAuthority('SCOPE_transactions:read')")
+diff --git a/src/main/java/com/example/accounts/account/AccountService.java b/src/main/java/com/example/accounts/account/AccountService.java
+index c1dfaa8..2605b5d 100644
+--- a/src/main/java/com/example/accounts/account/AccountService.java
++++ b/src/main/java/com/example/accounts/account/AccountService.java
+@@ -10,6 +10,8 @@ import com.example.accounts.security.AccessPolicy;
+ import com.example.accounts.security.CurrentUser;
+ import com.example.accounts.security.CurrentUserProvider;
+ import com.example.accounts.web.NotFoundException;
++import com.example.accounts.web.ConflictException;
++import com.example.accounts.web.ForbiddenException;
+ 
+ @Service
+ @Transactional(readOnly = true)
+@@ -66,4 +68,35 @@ public class AccountService {
+     public List<Transaction> transactions(Long accountId) {
+         return transactions.findByAccountIdOrderByBookedOnDescIdDesc(getVisible(accountId).getId());
+     }
++
++    @Transactional
++    public Account update(Long accountId, AccountController.AccountPatch patch) {
++        if (patch == null || (!patch.isNicknameProvided() && !patch.isDailyLimitProvided())
++            || (patch.isNicknameProvided() && (patch.getNickname() == null
++                || patch.getNickname().trim().isEmpty() || patch.getNickname().trim().length() > 40))
++            || (patch.isDailyLimitProvided() && (patch.getDailyLimit() == null
++                || patch.getDailyLimit() < 0 || patch.getDailyLimit() > 5000))) {
++            throw new IllegalArgumentException("Invalid request");
++        }
++
++        CurrentUser user = users.current();
++        Account account = getVisible(accountId);
++        boolean changesNickname = patch.isNicknameProvided();
++        boolean changesDailyLimit = patch.isDailyLimitProvided();
++        if ((changesNickname && !access.ownsAccount(user, account))
++            || (changesDailyLimit && !access.isTenantAdmin(user, account.getTenantId()))) {
++            throw new ForbiddenException("You may not change these account fields");
++        }
++        if (account.getStatus() == Account.Status.CLOSED) {
++            throw new ConflictException("Closed accounts cannot be changed");
++        }
++
++        if (changesNickname) {
++            account.setNickname(patch.getNickname().trim());
++        }
++        if (changesDailyLimit) {
++            account.setDailyLimit(patch.getDailyLimit());
++        }
++        return account;
++    }
+ }
+diff --git a/src/test/java/com/example/accounts/AccountApiTest.java b/src/test/java/com/example/accounts/AccountApiTest.java
+index 7f7cf0b..56232f4 100644
+--- a/src/test/java/com/example/accounts/AccountApiTest.java
++++ b/src/test/java/com/example/accounts/AccountApiTest.java
+@@ -71,4 +71,48 @@ class AccountApiTest extends ApiTest {
+         getWith(TestTokens.of(BOB).scopes("transactions:read"), "/api/accounts/1/transactions")
+             .andExpect(status().isNotFound());
+     }
++
++    @Test
++    void ownerCanRenameTheirOpenAccount() throws Exception {
++        patchAs(ALICE, "/api/accounts/1", "{\"nickname\":\"  Spending  \"}")
++            .andExpect(status().isOk())
++            .andExpect(jsonPath("$.nickname").value("Spending"))
++            .andExpect(jsonPath("$.dailyLimit").value(500));
++    }
++
++    @Test
++    void adminCanChangeDailyLimit() throws Exception {
++        patchAs(ADA, "/api/accounts/1", "{\"dailyLimit\":5000}")
++            .andExpect(status().isOk())
++            .andExpect(jsonPath("$.dailyLimit").value(5000));
++    }
++
++    @Test
++    void callersCannotChangeFieldsOutsideTheirRole() throws Exception {
++        patchAs(ALICE, "/api/accounts/1", "{\"dailyLimit\":1000}")
++            .andExpect(status().isForbidden());
++        patchAs(ADA, "/api/accounts/1", "{\"nickname\":\"Nope\"}")
++            .andExpect(status().isForbidden());
++    }
++
++    @Test
++    void invalidPatchIsRejected() throws Exception {
++        patchAs(ALICE, "/api/accounts/1", "{}").andExpect(status().isBadRequest());
++        patchAs(ALICE, "/api/accounts/1", "{\"nickname\":\"   \"}")
++            .andExpect(status().isBadRequest());
++        patchAs(ADA, "/api/accounts/1", "{\"dailyLimit\":5001}")
++            .andExpect(status().isBadRequest());
++    }
++
++    @Test
++    void closedAccountCannotBeChanged() throws Exception {
++        patchAs(DANA, "/api/accounts/5", "{\"nickname\":\"New name\"}")
++            .andExpect(status().isConflict());
++    }
++
++    @Test
++    void updatesNeedTheAccountsWriteScope() throws Exception {
++        patchWith(TestTokens.of(ALICE).scopes("accounts:read"), "/api/accounts/1", "{\"nickname\":\"New name\"}")
++            .andExpect(status().isForbidden());
++    }
+ }

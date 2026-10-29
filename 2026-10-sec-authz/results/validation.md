@@ -35,7 +35,7 @@ F: functional tests, A: permitted-access tests, D: denied-access tests (passed/t
 | S07 | risk-score-for-everyone | fail (F 2/2, A 1/1, D 7/8, regression 25/25) | yes | denies_customerExportHasNoRiskScore |
 | S07 | support-allowed | fail (F 2/2, A 1/1, D 7/8, regression 25/25) | yes | denies_supportGets403 |
 | S08 | holder-sets-limit | fail (F 4/4, A 1/1, D 5/7, regression 25/25) | yes | denies_holderRequestWithLimitIsRefusedAsAWhole, denies_holderCannotChangeTheLimit |
-| S08 | partial-update-before-refusal | fail (F 4/4, A 1/1, D 6/7, regression 25/25) | yes | denies_holderRequestWithLimitIsRefusedAsAWhole |
+| S08 | partial-update-before-refusal | fail (F 3/4, A 1/1, D 6/7, regression 25/25) | no | functional_invalidValuesGet400AndChangeNothing, denies_holderRequestWithLimitIsRefusedAsAWhole |
 | S08 | support-can-rename | fail (F 4/4, A 1/1, D 6/7, regression 25/25) | yes | denies_assignedSupportChangesNothing |
 
 Overall: every check as expected.

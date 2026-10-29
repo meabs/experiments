@@ -26,7 +26,7 @@ class S05AuthzTest extends ApiTest {
     }
 
     @Test
-    void supportUserNotOnTheCaseOrItsAccountGets404() throws Exception {
+    void supportUserNotAssignedToTheCaseGets404() throws Exception {
         getAs(SAM, "/api/support/cases/k-3").andExpect(status().isNotFound());
     }
 

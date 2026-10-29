@@ -1,0 +1,118 @@
+diff --git a/src/main/java/com/example/accounts/cases/CaseController.java b/src/main/java/com/example/accounts/cases/CaseController.java
+index 32d2a33..25107fe 100644
+--- a/src/main/java/com/example/accounts/cases/CaseController.java
++++ b/src/main/java/com/example/accounts/cases/CaseController.java
+@@ -12,6 +12,7 @@ import jakarta.validation.constraints.Size;
+ import org.springframework.http.HttpStatus;
+ import org.springframework.transaction.annotation.Transactional;
+ import org.springframework.web.bind.annotation.GetMapping;
++import org.springframework.web.bind.annotation.PathVariable;
+ import org.springframework.web.bind.annotation.PostMapping;
+ import org.springframework.web.bind.annotation.RequestBody;
+ import org.springframework.web.bind.annotation.RequestMapping;
+@@ -25,10 +26,11 @@ import com.example.accounts.security.AccessPolicy;
+ import com.example.accounts.security.CurrentUser;
+ import com.example.accounts.security.CurrentUserProvider;
+ import com.example.accounts.web.ForbiddenException;
++import com.example.accounts.web.NotFoundException;
+ 
+ /** Support cases as their customers see them, and the support inbox. */
+ @RestController
+-@RequestMapping("/api/cases")
++@RequestMapping("/api")
+ public class CaseController {
+ 
+     public record CaseSummary(String id, Long accountId, String subject, String status, Instant openedAt) {
+@@ -37,6 +39,20 @@ public class CaseController {
+         }
+     }
+ 
++    public record CaseCommentView(String author, String body, boolean internal, Instant createdAt) {
++        static CaseCommentView of(CaseComment comment) {
++            return new CaseCommentView(comment.getAuthor(), comment.getBody(), comment.isInternal(), comment.getCreatedAt());
++        }
++    }
++
++    public record CaseDetail(String id, Long accountId, String customerId, String subject, String status,
++                             String assigneeUserId, List<CaseCommentView> comments) {
++        static CaseDetail of(SupportCase c, List<CaseComment> comments) {
++            return new CaseDetail(c.getId(), c.getAccountId(), c.getCustomerId(), c.getSubject(), c.getStatus(),
++                c.getAssigneeUserId(), comments.stream().map(CaseCommentView::of).toList());
++        }
++    }
++
+     public record NewCase(@NotNull Long accountId, @NotBlank @Size(max = 200) String subject) {
+     }
+ 
+@@ -45,18 +61,20 @@ public class CaseController {
+     private final AccountService accounts;
+     private final AccessPolicy access;
+     private final CurrentUserProvider users;
++    private final CaseCommentRepository comments;
+ 
+     public CaseController(SupportCaseRepository cases, CustomerRepository customers, AccountService accounts,
+-                          AccessPolicy access, CurrentUserProvider users) {
++                          AccessPolicy access, CurrentUserProvider users, CaseCommentRepository comments) {
+         this.cases = cases;
+         this.customers = customers;
+         this.accounts = accounts;
+         this.access = access;
+         this.users = users;
++        this.comments = comments;
+     }
+ 
+     /** Customers: the cases they raised. Support: cases assigned to them. Admins: every case in their tenant. */
+-    @GetMapping
++    @GetMapping("/cases")
+     @Transactional(readOnly = true)
+     public List<CaseSummary> list() {
+         CurrentUser user = users.current();
+@@ -76,8 +94,22 @@ public class CaseController {
+         return found.stream().map(CaseSummary::of).toList();
+     }
+ 
++    /** Support: their assigned cases. Admins: every case in their tenant, including internal comments. */
++    @GetMapping("/support/cases/{caseId}")
++    @Transactional(readOnly = true)
++    public CaseDetail supportDetail(@PathVariable String caseId) {
++        CurrentUser user = users.current();
++        if (!user.isSupport() && !user.isAdmin()) {
++            throw new ForbiddenException("Only support staff can view support cases");
++        }
++        SupportCase supportCase = cases.findById(caseId)
++            .filter(c -> access.canViewCase(user, c))
++            .orElseThrow(() -> new NotFoundException("Case not found"));
++        return CaseDetail.of(supportCase, comments.findByCaseIdOrderByCreatedAtAsc(caseId));
++    }
++
+     /** A customer raises a case about one of their own accounts. */
+-    @PostMapping
++    @PostMapping("/cases")
+     @ResponseStatus(HttpStatus.CREATED)
+     @Transactional
+     public CaseSummary open(@Valid @RequestBody NewCase body) {
+diff --git a/src/main/java/com/example/accounts/security/AccessPolicy.java b/src/main/java/com/example/accounts/security/AccessPolicy.java
+index 6388a47..f09f15f 100644
+--- a/src/main/java/com/example/accounts/security/AccessPolicy.java
++++ b/src/main/java/com/example/accounts/security/AccessPolicy.java
+@@ -4,6 +4,7 @@ import org.springframework.stereotype.Component;
+ 
+ import com.example.accounts.account.Account;
+ import com.example.accounts.account.SupportAssignmentRepository;
++import com.example.accounts.cases.SupportCase;
+ import com.example.accounts.customer.Customer;
+ import com.example.accounts.customer.CustomerRepository;
+ 
+@@ -53,4 +54,12 @@ public class AccessPolicy {
+     public boolean isTenantAdmin(CurrentUser user, String tenantId) {
+         return user.isAdmin() && user.inTenant(tenantId);
+     }
++
++    /** Who may see a support case: its assignee and admins of its tenant. */
++    public boolean canViewCase(CurrentUser user, SupportCase supportCase) {
++        if (!user.inTenant(supportCase.getTenantId())) {
++            return false;
++        }
++        return user.isAdmin() || (user.isSupport() && user.id().equals(supportCase.getAssigneeUserId()));
++    }
+ }

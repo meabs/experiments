@@ -1,0 +1,135 @@
+diff --git a/src/main/java/com/example/accounts/account/AccountController.java b/src/main/java/com/example/accounts/account/AccountController.java
+index bc6eb2e..a367dfc 100644
+--- a/src/main/java/com/example/accounts/account/AccountController.java
++++ b/src/main/java/com/example/accounts/account/AccountController.java
+@@ -8,6 +8,7 @@ import org.springframework.security.access.prepost.PreAuthorize;
+ import org.springframework.web.bind.annotation.GetMapping;
+ import org.springframework.web.bind.annotation.PathVariable;
+ import org.springframework.web.bind.annotation.RequestMapping;
++import org.springframework.web.bind.annotation.RequestParam;
+ import org.springframework.web.bind.annotation.RestController;
+ 
+ @RestController
+@@ -28,6 +29,12 @@ public class AccountController {
+         }
+     }
+ 
++    public record StatementView(String period, BigDecimal openingBalance, BigDecimal closingBalance) {
++        static StatementView of(Statement s) {
++            return new StatementView(s.getPeriod(), s.getOpeningBalance(), s.getClosingBalance());
++        }
++    }
++
+     private final AccountService service;
+ 
+     public AccountController(AccountService service) {
+@@ -50,4 +57,12 @@ public class AccountController {
+     public List<TransactionView> transactions(@PathVariable Long accountId) {
+         return service.transactions(accountId).stream().map(TransactionView::of).toList();
+     }
++
++    /** Needs the statements:read scope as well as access to the account. */
++    @GetMapping("/{accountId}/statements")
++    @PreAuthorize("hasAuthority('SCOPE_statements:read')")
++    public List<StatementView> statements(@PathVariable Long accountId,
++                                          @RequestParam(required = false) String from) {
++        return service.statements(accountId, from).stream().map(StatementView::of).toList();
++    }
+ }
+diff --git a/src/main/java/com/example/accounts/account/AccountService.java b/src/main/java/com/example/accounts/account/AccountService.java
+index c1dfaa8..ad4413c 100644
+--- a/src/main/java/com/example/accounts/account/AccountService.java
++++ b/src/main/java/com/example/accounts/account/AccountService.java
+@@ -1,5 +1,9 @@
+ package com.example.accounts.account;
+ 
++import java.time.YearMonth;
++import java.time.format.DateTimeFormatter;
++import java.time.format.DateTimeParseException;
++import java.time.format.ResolverStyle;
+ import java.util.List;
+ 
+ import org.springframework.stereotype.Service;
+@@ -19,15 +23,18 @@ public class AccountService {
+     private final CustomerRepository customers;
+     private final SupportAssignmentRepository assignments;
+     private final TransactionRepository transactions;
++    private final StatementRepository statements;
+     private final AccessPolicy access;
+     private final CurrentUserProvider users;
+ 
+     public AccountService(AccountRepository accounts, CustomerRepository customers, SupportAssignmentRepository assignments,
+-                          TransactionRepository transactions, AccessPolicy access, CurrentUserProvider users) {
++                          TransactionRepository transactions, StatementRepository statements, AccessPolicy access,
++                          CurrentUserProvider users) {
+         this.accounts = accounts;
+         this.customers = customers;
+         this.assignments = assignments;
+         this.transactions = transactions;
++        this.statements = statements;
+         this.access = access;
+         this.users = users;
+     }
+@@ -66,4 +73,26 @@ public class AccountService {
+     public List<Transaction> transactions(Long accountId) {
+         return transactions.findByAccountIdOrderByBookedOnDescIdDesc(getVisible(accountId).getId());
+     }
++
++    public List<Statement> statements(Long accountId, String from) {
++        Account account = getVisible(accountId);
++        YearMonth fromPeriod = parsePeriod(from);
++        return statements.findByAccountIdOrderByPeriodDesc(account.getId()).stream()
++            .filter(statement -> fromPeriod == null || YearMonth.parse(statement.getPeriod(), PERIOD_FORMAT).compareTo(fromPeriod) >= 0)
++            .toList();
++    }
++
++    private static final DateTimeFormatter PERIOD_FORMAT = DateTimeFormatter.ofPattern("uuuu-MM")
++        .withResolverStyle(ResolverStyle.STRICT);
++
++    private static YearMonth parsePeriod(String value) {
++        if (value == null) {
++            return null;
++        }
++        try {
++            return YearMonth.parse(value, PERIOD_FORMAT);
++        } catch (DateTimeParseException e) {
++            throw new IllegalArgumentException("Invalid period");
++        }
++    }
+ }
+diff --git a/src/test/java/com/example/accounts/AccountApiTest.java b/src/test/java/com/example/accounts/AccountApiTest.java
+index 7f7cf0b..af5ab3b 100644
+--- a/src/test/java/com/example/accounts/AccountApiTest.java
++++ b/src/test/java/com/example/accounts/AccountApiTest.java
+@@ -71,4 +71,31 @@ class AccountApiTest extends ApiTest {
+         getWith(TestTokens.of(BOB).scopes("transactions:read"), "/api/accounts/1/transactions")
+             .andExpect(status().isNotFound());
+     }
++
++    @Test
++    void statementsNeedTheirOwnScope() throws Exception {
++        getAs(ALICE, "/api/accounts/1/statements").andExpect(status().isForbidden());
++    }
++
++    @Test
++    void statementsAreNewestFirstAndCanBeFiltered() throws Exception {
++        getWith(TestTokens.of(ALICE).scopes("statements:read"), "/api/accounts/1/statements?from=2026-08")
++            .andExpect(status().isOk())
++            .andExpect(jsonPath("$[*].period", containsInAnyOrder("2026-08", "2026-09")))
++            .andExpect(jsonPath("$[0].period").value("2026-09"))
++            .andExpect(jsonPath("$[0].openingBalance").value(1100.00))
++            .andExpect(jsonPath("$[0].closingBalance").value(1200.00));
++    }
++
++    @Test
++    void invalidStatementPeriodIsRejected() throws Exception {
++        getWith(TestTokens.of(ALICE).scopes("statements:read"), "/api/accounts/1/statements?from=2026-13")
++            .andExpect(status().isBadRequest());
++    }
++
++    @Test
++    void statementsScopeDoesNotOpenOtherAccounts() throws Exception {
++        getWith(TestTokens.of(BOB).scopes("statements:read"), "/api/accounts/1/statements")
++            .andExpect(status().isNotFound());
++    }
+ }
