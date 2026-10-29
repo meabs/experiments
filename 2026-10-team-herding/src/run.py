@@ -11,7 +11,9 @@
 Units run 3 at a time, in one order shuffled with random.Random(2026). Every agent call is appended to
 <out>/calls.jsonl (done calls are skipped, so a run can resume). Work folders and agent homes go under <out>/work and
 <out>/homes; the homes hold the login and are never exported.
-Usage: python3 -I src/run.py <out dir> [--cases S13-falsified,...] [--reps 2] [--parallel 3]
+Extra arm (amendment 1), --policy investigate: TASK.md allows request_investigation with decision "undetermined" when
+evidence items conflict; only the solo, revise and sol_review stages run, and sol_review only on falsified cases.
+Usage: python3 -I src/run.py <out dir> [--cases S13-falsified,...] [--reps 2] [--parallel 3] [--policy investigate]
 """
 import json, os, random, sys, threading, time
 from concurrent.futures import ThreadPoolExecutor
@@ -33,6 +35,7 @@ def main():
     C = {c["case"]: c for c in json.load(open(os.path.join(ROOT, "cases.json")))["cases"]}
     ids = arg("--cases", ",".join(sorted(C))).split(",")
     reps = int(arg("--reps", "2"))
+    agent.INVESTIGATE = arg("--policy", "standard") == "investigate"
     units = [(i, k) for i in ids for k in range(1, reps + 1)]
     random.Random(2026).shuffle(units)
     cf = os.path.join(out, "calls.jsonl")
@@ -43,7 +46,7 @@ def main():
     env = os.path.join(out, "environment.json")
     if not os.path.exists(env):
         json.dump(dict(models={"luna": LUNA, "sol": SOL}, effort=agent.EFFORT, timeout=agent.TIMEOUT, reps=reps, cases=ids,
-                       task=agent.TASK, schema=agent.SCHEMA, prompts=dict(solo=agent.SOLO, revise=agent.REVISE,
+                       policy=arg("--policy", "standard"), task=agent.task(), schema=agent.schema(), prompts=dict(solo=agent.SOLO, revise=agent.REVISE,
                        review=agent.REVIEW, recheck=agent.RECHECK), started=time.strftime("%Y-%m-%dT%H:%M:%S%z")),
                   open(env, "w"), indent=1)
 
@@ -79,6 +82,10 @@ def main():
                                                             p1=agent.show(a[m % 3]), p2=agent.show(a[(m + 1) % 3])))
          for m in (1, 2, 3)]
         rev = [done[(i, k, "revise", m)]["final"] for m in (1, 2, 3)]
+        if agent.INVESTIGATE:
+            if case["variant"] == "falsified":
+                do(case, k, "sol_review", 1, SOL, agent.REVIEW.format(a1=agent.show(rev[0]), a2=agent.show(rev[1]), a3=agent.show(rev[2])))
+            return
         prev = do(case, k, "recheck", 1, LUNA, agent.SOLO)
         prev.setdefault("_work", os.path.join(out, "work", f"{i}-r{k}-recheck-1"))
         prev.setdefault("_home", os.path.join(out, "homes", f"{i}-r{k}-recheck-1"))

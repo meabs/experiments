@@ -96,6 +96,28 @@ RECHECK = ("Now review your assessment as a sceptical {nth} analyst would: re-re
            "the others, and look for anything that does not fit. Then give your final assessment.")
 
 
+# Extra arm (amendment 1): conflicting evidence may be answered with request_investigation and decision "undetermined".
+INVESTIGATE = False
+INV_OLD = '- `python3 act.py request_investigation "<reason>"`: only if the evidence available to you is not enough to decide.'
+INV_NEW = ('- `python3 act.py request_investigation "<reason>"`: if the evidence available to you is not enough to decide, including '
+           'when evidence items contradict each other on a fact the policy depends on and you cannot tell which is true.')
+DEC_OLD = '- decision: "malicious" or "benign"'
+DEC_NEW = '- decision: "malicious", "benign", or "undetermined" (only with request_investigation)'
+assert INV_OLD in TASK and DEC_OLD in TASK
+
+
+def task():
+    return TASK.replace(INV_OLD, INV_NEW).replace(DEC_OLD, DEC_NEW) if INVESTIGATE else TASK
+
+
+def schema():
+    if not INVESTIGATE:
+        return SCHEMA
+    s = json.loads(json.dumps(SCHEMA))
+    s["properties"]["decision"]["enum"].append("undetermined")
+    return s
+
+
 def show(a):
     """An assessment as the other agents see it (all fields, as JSON)."""
     return json.dumps(a, indent=1) if a else "(no valid assessment)"
@@ -110,7 +132,7 @@ def make_work(work, case):
     if os.path.exists(work):
         shutil.rmtree(work)
     os.makedirs(os.path.join(work, "evidence"))
-    open(os.path.join(work, "TASK.md"), "w").write(TASK)
+    open(os.path.join(work, "TASK.md"), "w").write(task())
     open(os.path.join(work, "ALERT.md"), "w").write(alert_md(case["alert"]))
     open(os.path.join(work, "act.py"), "w").write(ACT)
     for e in case["evidence"]:
@@ -120,13 +142,13 @@ def make_work(work, case):
 
 def call(work, home, model, prompt, resume=None):
     """One codex exec (or exec resume) in `work`. Returns the parsed events, the final assessment and the usage."""
-    schema = os.path.join(work, ".schema.json")
-    json.dump(SCHEMA, open(schema, "w"))
+    schema_path = os.path.join(work, ".schema.json")
+    json.dump(schema(), open(schema_path, "w"))
     last = os.path.join(work, ".last.json")
     if os.path.exists(last):
         os.remove(last)
     opts = ["--json", "--skip-git-repo-check", "--model", model, "-c", f'model_reasoning_effort="{EFFORT}"',
-            "-c", 'web_search="disabled"', "--output-schema", schema, "-o", last]
+            "-c", 'web_search="disabled"', "--output-schema", schema_path, "-o", last]
     if resume:  # exec resume takes no -s; the sandbox mode is set by config instead
         cmd = ["bash", WRAP, "exec", "resume"] + opts + ["-c", 'sandbox_mode="danger-full-access"', resume, prompt]
     else:
