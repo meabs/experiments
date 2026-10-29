@@ -1,0 +1,49 @@
+diff --git a/src/checkout.js b/src/checkout.js
+index 5e3a4bf..653631f 100644
+--- a/src/checkout.js
++++ b/src/checkout.js
+@@ -11,13 +11,41 @@ export async function placeOrder({ signal } = {}) {
+   set({ placing: true, message: 'Placing order…' });
+   try {
+     const quote = await abortable(api.getQuote(), signal);
+-    payment = await abortable(api.charge(quote.total), signal);
+-    const order = await abortable(api.createOrder(payment.id), signal);
++
++    // A request keeps running on the server after its client-side wait is aborted. Keep
++    // the request around so a charge which completes after cancellation can be refunded.
++    if (signal?.aborted) throw new DOMException('Cancelled', 'AbortError');
++    const chargeRequest = api.charge(quote.total);
++    try {
++      payment = await abortable(chargeRequest, signal);
++    } catch (e) {
++      if (!isAbort(e)) throw e;
++      payment = await chargeRequest;
++      await api.refund(payment.id);
++      throw e;
++    }
++
++    // Once payment has succeeded, order creation is the commit point. If the wait is
++    // cancelled after this request was sent, let it finish instead of refunding a
++    // payment for an order that the server has already created.
++    const orderRequest = api.createOrder(payment.id);
++    let order;
++    try {
++      order = await abortable(orderRequest, signal);
++    } catch (e) {
++      if (!isAbort(e)) {
++        throw e;
++      }
++      order = await orderRequest;
++    }
+     set({ message: `Order ${order.id} placed`, order: { id: order.id, status: order.status } });
+     followOrder(order.id);
+     return { code: 'OK', orderId: order.id, total: quote.total };
+   } catch (e) {
+-    if (payment) await api.refund(payment.id);
++    // A charge is refunded in the charge-cancellation path above, or when order
++    // creation fails before it can commit. Do not refund after an order request has
++    // been cancelled: that request may have completed successfully on the server.
++    if (payment && !isAbort(e)) await api.refund(payment.id);
+     if (isAbort(e)) {
+       set({ message: 'Order cancelled' });
+       return { code: 'CANCELLED' };
