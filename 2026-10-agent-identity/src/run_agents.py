@@ -95,6 +95,20 @@ def codex(work, home, prompt):
             "final": final, "events": events}
 
 
+def session_facts(home):
+    """Model and effort as Codex recorded them in the session file (checked before the agent home is deleted)."""
+    import glob, re
+    files = glob.glob(os.path.join(home, "sessions", "**", "rollout-*.jsonl"), recursive=True)
+    models, efforts = set(), set()
+    for f in files:
+        for line in open(f):
+            if '"turn_context"' in line:
+                m, e = re.search(r'"model":"([^"]*)"', line), re.search(r'"effort":"([^"]*)"', line)
+                models.add(m.group(1) if m else None)
+                efforts.add(e.group(1) if e else None)
+    return {"files": len(files), "models": sorted(map(str, models)), "efforts": sorted(map(str, efforts))}
+
+
 def main():
     out, repeats = sys.argv[1], int(sys.argv[2])
     opt = lambda name, default: (sys.argv[sys.argv.index(name) + 1].split(",") if name in sys.argv else default)
@@ -134,13 +148,14 @@ def main():
             for ev in res.pop("events"):
                 f.write(json.dumps(ev) + "\n")
         rec = {"unit": unit, "setup": s, "task": t, "repeat": r, "user": user, "model": MODEL, "effort": EFFORT,
+               "session": session_facts(home),
                "prompt": prompt, "connector_start_ms": ready["start_ms"], **res,
                "outcome": outcome(t, calls, state, res["final"]),
                "final_state": {"expenses": {k: v["status"] for k, v in state["expenses"].items()},
                                "comments": {k: v["comments"] for k, v in state["tickets"].items() if v["comments"]}}}
         with open(os.path.join(out, "runs.jsonl"), "a") as f:
             f.write(json.dumps(rec) + "\n")
-        print(unit, rec["returncode"], rec["seconds"], rec["outcome"], flush=True)
+        print(unit, rec["returncode"], rec["seconds"], rec["session"], rec["outcome"], flush=True)
         shutil.rmtree(os.path.join(scratch, unit), ignore_errors=True)
 
 

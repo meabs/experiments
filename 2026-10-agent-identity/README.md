@@ -1,6 +1,6 @@
 # Agent identity: who did this, for whom, and could we stop it?
 
-**Status:** design, written before any measured run. A proof of concept for an architecture article, not a hypothesis test: most results are pass/fail properties of a configuration, so there are no significance tests. Changes after this design is pushed go in the [amendment log](#amendment-log). Two small pilots (24 agent runs) checked the harness; they are described under [Pilot](#pilot) and are not part of the results.
+**Status:** run on 2026-10-30; results in [REPORT.md](REPORT.md). The design below was written before any measured run and pushed (d3e61cb6); it did not change afterwards (one recording-only harness change is listed in the report, section 11). A proof of concept for an architecture article, not a hypothesis test: most results are pass/fail properties of a configuration, so there are no significance tests. Two small pilots (24 agent runs) checked the harness; they are described under [Pilot](#pilot) and are not part of the results.
 
 ## Question
 
