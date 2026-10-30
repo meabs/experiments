@@ -1,6 +1,6 @@
 # Agent identity, hardened: closing the gaps the first test found
 
-**Status:** design, written before any measured run. A follow-up to [2026-10-agent-identity](../2026-10-agent-identity/REPORT.md); like it, a proof of concept for an architecture article, not a hypothesis test, so there are no significance tests. Changes after this design is pushed go in the [amendment log](#amendment-log).
+**Status:** run on 2026-10-30; results in [REPORT.md](REPORT.md). The design below was written before any measured run and pushed (1f92405b); it did not change afterwards. A follow-up to [2026-10-agent-identity](../2026-10-agent-identity/REPORT.md); like it, a proof of concept for an architecture article, not a hypothesis test, so there are no significance tests. Changes after this design is pushed go in the [amendment log](#amendment-log).
 
 ## Why
 
