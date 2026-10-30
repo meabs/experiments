@@ -1,6 +1,6 @@
 # Do you actually need an AI agent?
 
-**Status: design, written 2026-10-30 before the measured run.** A proof of concept for an architecture article on
+**Status: done.** Results in [REPORT.md](REPORT.md). **Design written 2026-10-30 before the measured run.** A proof of concept for an architecture article on
 Programming the Loop (like 2026-10-agent-identity), not a hypothesis test: the results are rates per architecture and
 level, with Wilson 95% intervals, and no significance tests. Three small pilots (864 runs, $0.24) checked the harness;
 they are described under [Pilots](#pilots) and are not part of the results. Later changes go in the amendment log.
@@ -167,3 +167,6 @@ python3 -I src/analyse.py <out> > results/analysis.md
 - 2026-10-30: the user asked for this as an architecture article: "This should be an architecture article Do you
   actually need an agent? (beginner) Agreed. Include tasks with branching or recovery, where the agent should win."
   Models via OpenRouter, "use cost effective models".
+- 2026-10-30 (operational, during the main run): after 192 runs I stopped the run and resumed it with `--workers 16`
+  instead of 8, because Qwen's calls were slower than in the pilots (median 16–25 s). Finished runs were kept; only
+  unfinished ones were redone. Only the timing measures can be affected.

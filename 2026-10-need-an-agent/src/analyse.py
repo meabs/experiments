@@ -3,9 +3,9 @@
 Rates are runs of runs with Wilson 95% intervals. "Architecture" rows are the four architectures, each AI one with
 both models. Per level, per wording (original / paraphrased) and per account size (small / large).
 Consistency: the share of case x wording x account conditions where every repetition got the same outcome.
-Usage: python3 -I analyse.py <out>
+Usage: python3 -I analyse.py <out>   (reads <out>/runs.jsonl, or runs.jsonl.gz as exported to results/main)
 """
-import collections, json, math, os, statistics as st, sys
+import collections, gzip, json, math, os, statistics as st, sys
 
 ARMS = [("rules", "none", "Plain code"), ("single", "openai/gpt-6-luna", "One call, Luna"),
         ("single", "qwen/qwen3.7-flash", "One call, Qwen"), ("workflow", "openai/gpt-6-luna", "Workflow, Luna"),
@@ -35,7 +35,8 @@ def pct(rs, outcome="resolved", ci=False):
 
 
 def main(out):
-    runs = [json.loads(line) for line in open(os.path.join(out, "runs.jsonl"))]
+    path = os.path.join(out, "runs.jsonl")
+    runs = [json.loads(line) for line in (open(path) if os.path.exists(path) else gzip.open(path + ".gz", "rt"))]
     by = collections.defaultdict(list)
     for r in runs:
         by[(r["arm"], r["model"])].append(r)
