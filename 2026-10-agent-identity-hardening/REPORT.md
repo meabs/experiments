@@ -216,6 +216,8 @@ python3 -I src/checks.py results
 
 ## 11. What changed from the design
 
-Nothing.
+Nothing in the design changed.
 
-After the runs I changed `analyse.py` so its phone table covers only the agent runs. The phone also answered the scripted scenarios, which ran afterwards.
+The post-run scripts only read the results. They were written or adapted after the runs:
+- `analyse.py` was written new. Its phone table covers only the agent runs, because the phone also answered the scripted scenarios, which ran afterwards.
+- `checks.py` and `export-check.sh` were adapted to look for the private keys as well as the client secret.
