@@ -1,0 +1,153 @@
+diff --git a/src/main/java/com/example/accounts/account/AccountNoteRepository.java b/src/main/java/com/example/accounts/account/AccountNoteRepository.java
+index e0b89e0..3260907 100644
+--- a/src/main/java/com/example/accounts/account/AccountNoteRepository.java
++++ b/src/main/java/com/example/accounts/account/AccountNoteRepository.java
+@@ -7,4 +7,6 @@ import org.springframework.data.jpa.repository.JpaRepository;
+ public interface AccountNoteRepository extends JpaRepository<AccountNote, Long> {
+ 
+     List<AccountNote> findByAccountIdOrderByCreatedAtDesc(Long accountId);
++
++    List<AccountNote> findByAccountIdInOrderByCreatedAtDesc(List<Long> accountIds);
+ }
+diff --git a/src/main/java/com/example/accounts/customer/CustomerExportController.java b/src/main/java/com/example/accounts/customer/CustomerExportController.java
+new file mode 100644
+index 0000000..ab3afd2
+--- /dev/null
++++ b/src/main/java/com/example/accounts/customer/CustomerExportController.java
+@@ -0,0 +1,91 @@
++package com.example.accounts.customer;
++
++import java.math.BigDecimal;
++import java.time.Instant;
++import java.util.List;
++
++import org.springframework.security.access.prepost.PreAuthorize;
++import org.springframework.web.bind.annotation.GetMapping;
++import org.springframework.web.bind.annotation.PathVariable;
++import org.springframework.web.bind.annotation.RequestMapping;
++import org.springframework.web.bind.annotation.RestController;
++
++import com.example.accounts.account.Account;
++import com.example.accounts.account.AccountNote;
++import com.example.accounts.account.AccountNoteRepository;
++import com.example.accounts.account.AccountRepository;
++import com.example.accounts.security.AccessPolicy;
++import com.example.accounts.security.CurrentUser;
++import com.example.accounts.security.CurrentUserProvider;
++import com.example.accounts.web.NotFoundException;
++
++/** Customer data export. Customers get their own public data; tenant admins get the staff version. */
++@RestController
++@RequestMapping("/api/customers")
++public class CustomerExportController {
++
++    public record CustomerExport(String id, String name, String email, String phone, String address) {
++        static CustomerExport of(Customer customer) {
++            return new CustomerExport(customer.getId(), customer.getName(), customer.getEmail(), customer.getPhone(),
++                customer.getAddress());
++        }
++    }
++
++    public record AdminCustomerExport(String id, String name, String email, String phone, String address, int riskScore) {
++        static AdminCustomerExport of(Customer customer) {
++            return new AdminCustomerExport(customer.getId(), customer.getName(), customer.getEmail(), customer.getPhone(),
++                customer.getAddress(), customer.getRiskScore());
++        }
++    }
++
++    public record AccountExport(Long id, String nickname, String type, BigDecimal balance, String status) {
++        static AccountExport of(Account account) {
++            return new AccountExport(account.getId(), account.getNickname(), account.getType(), account.getBalance(),
++                account.getStatus().name());
++        }
++    }
++
++    public record NoteExport(Long accountId, String body, boolean internal, Instant createdAt) {
++        static NoteExport of(AccountNote note) {
++            return new NoteExport(note.getAccountId(), note.getBody(), note.isInternal(), note.getCreatedAt());
++        }
++    }
++
++    public record Export(Object customer, List<AccountExport> accounts, List<NoteExport> notes) {
++    }
++
++    private final CustomerRepository customers;
++    private final AccountRepository accounts;
++    private final AccountNoteRepository notes;
++    private final AccessPolicy access;
++    private final CurrentUserProvider users;
++
++    public CustomerExportController(CustomerRepository customers, AccountRepository accounts, AccountNoteRepository notes,
++                                    AccessPolicy access, CurrentUserProvider users) {
++        this.customers = customers;
++        this.accounts = accounts;
++        this.notes = notes;
++        this.access = access;
++        this.users = users;
++    }
++
++    @GetMapping("/{customerId}/export")
++    @PreAuthorize("hasAnyRole('CUSTOMER', 'ADMIN')")
++    public Export export(@PathVariable String customerId) {
++        CurrentUser user = users.current();
++        Customer customer = customers.findByIdAndTenantId(customerId, user.tenantId())
++            .filter(c -> user.isAdmin() || access.isSelf(user, c))
++            .orElseThrow(() -> new NotFoundException("Customer not found"));
++
++        boolean adminVersion = user.isAdmin();
++        List<Account> customerAccounts = accounts.findByTenantIdAndCustomerIdOrderById(user.tenantId(), customer.getId());
++        List<Long> accountIds = customerAccounts.stream().map(Account::getId).toList();
++        List<NoteExport> customerNotes = (accountIds.isEmpty() ? List.<AccountNote>of() : notes.findByAccountIdInOrderByCreatedAtDesc(accountIds)).stream()
++            .filter(note -> adminVersion || !note.isInternal())
++            .map(NoteExport::of)
++            .toList();
++
++        return new Export(adminVersion ? AdminCustomerExport.of(customer) : CustomerExport.of(customer),
++            customerAccounts.stream().map(AccountExport::of).toList(), customerNotes);
++    }
++}
+diff --git a/src/test/java/com/example/accounts/AdminCustomerApiTest.java b/src/test/java/com/example/accounts/AdminCustomerApiTest.java
+index 00205a4..3e75fb6 100644
+--- a/src/test/java/com/example/accounts/AdminCustomerApiTest.java
++++ b/src/test/java/com/example/accounts/AdminCustomerApiTest.java
+@@ -1,6 +1,8 @@
+ package com.example.accounts;
+ 
+ import static com.example.accounts.support.TestUsers.*;
++import static org.hamcrest.Matchers.containsInAnyOrder;
++import static org.hamcrest.Matchers.hasSize;
+ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
+ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
+ 
+@@ -30,4 +32,31 @@ class AdminCustomerApiTest extends ApiTest {
+     void meShowsTheCaller() throws Exception {
+         getAs(ANA, "/api/me").andExpect(jsonPath("$.id").value("u-ana")).andExpect(jsonPath("$.tenantId").value("acme"));
+     }
++
++    @Test
++    void customerExportOmitsRiskScoreAndInternalNotes() throws Exception {
++        getAs(ALICE, "/api/customers/c-1/export")
++            .andExpect(status().isOk())
++            .andExpect(jsonPath("$.customer.id").value("c-1"))
++            .andExpect(jsonPath("$.customer.riskScore").doesNotExist())
++            .andExpect(jsonPath("$.accounts[*].id", containsInAnyOrder(1, 2)))
++            .andExpect(jsonPath("$.notes", hasSize(3)))
++            .andExpect(jsonPath("$.notes[*].internal", containsInAnyOrder(false, false, false)));
++    }
++
++    @Test
++    void adminExportIncludesRiskScoreAndInternalNotes() throws Exception {
++        getAs(ADA, "/api/customers/c-1/export")
++            .andExpect(status().isOk())
++            .andExpect(jsonPath("$.customer.riskScore").value(12))
++            .andExpect(jsonPath("$.notes", hasSize(4)))
++            .andExpect(jsonPath("$.notes[*].internal", containsInAnyOrder(true, false, false, false)));
++    }
++
++    @Test
++    void exportUsesTheSameTenantAndRoleBoundaries() throws Exception {
++        getAs(ADA, "/api/customers/c-3/export").andExpect(status().isNotFound());
++        getAs(BOB, "/api/customers/c-1/export").andExpect(status().isNotFound());
++        getAs(SAM, "/api/customers/c-1/export").andExpect(status().isForbidden());
++    }
+ }

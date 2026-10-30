@@ -1,0 +1,129 @@
+diff --git a/src/main/java/com/example/accounts/customer/CustomerSearchController.java b/src/main/java/com/example/accounts/customer/CustomerSearchController.java
+new file mode 100644
+index 0000000..6b426e2
+--- /dev/null
++++ b/src/main/java/com/example/accounts/customer/CustomerSearchController.java
+@@ -0,0 +1,78 @@
++package com.example.accounts.customer;
++
++import java.util.HashSet;
++import java.util.List;
++import java.util.Locale;
++import java.util.Set;
++
++import org.springframework.security.access.prepost.PreAuthorize;
++import org.springframework.web.bind.annotation.GetMapping;
++import org.springframework.web.bind.annotation.RequestMapping;
++import org.springframework.web.bind.annotation.RequestParam;
++import org.springframework.web.bind.annotation.RestController;
++
++import com.example.accounts.account.AccountRepository;
++import com.example.accounts.account.SupportAssignmentRepository;
++import com.example.accounts.security.CurrentUser;
++import com.example.accounts.security.CurrentUserProvider;
++
++/** Back-office customer search for support staff and tenant admins. */
++@RestController
++@RequestMapping("/api/customers")
++public class CustomerSearchController {
++
++    public record CustomerSearchView(String id, String name, String email) {
++        static CustomerSearchView of(Customer customer) {
++            return new CustomerSearchView(customer.getId(), customer.getName(), customer.getEmail());
++        }
++    }
++
++    private final CustomerRepository customers;
++    private final AccountRepository accounts;
++    private final SupportAssignmentRepository assignments;
++    private final CurrentUserProvider users;
++
++    public CustomerSearchController(CustomerRepository customers, AccountRepository accounts,
++                                    SupportAssignmentRepository assignments, CurrentUserProvider users) {
++        this.customers = customers;
++        this.accounts = accounts;
++        this.assignments = assignments;
++        this.users = users;
++    }
++
++    @GetMapping("/search")
++    @PreAuthorize("hasAnyRole('SUPPORT', 'ADMIN')")
++    public List<CustomerSearchView> search(@RequestParam String q) {
++        String query = q.trim();
++        if (query.length() < 2) {
++            throw new IllegalArgumentException("Search query must contain at least two characters");
++        }
++
++        CurrentUser user = users.current();
++        Set<String> visibleCustomerIds = user.isAdmin() ? null : visibleCustomerIds(user);
++        String normalizedQuery = query.toLowerCase(Locale.ROOT);
++
++        return customers.findByTenantIdOrderByName(user.tenantId()).stream()
++            .filter(customer -> visibleCustomerIds == null || visibleCustomerIds.contains(customer.getId()))
++            .filter(customer -> containsIgnoreCase(customer.getName(), normalizedQuery)
++                || containsIgnoreCase(customer.getEmail(), normalizedQuery))
++            .map(CustomerSearchView::of)
++            .toList();
++    }
++
++    private Set<String> visibleCustomerIds(CurrentUser user) {
++        Set<Long> assignedAccountIds = assignments.findByTenantIdAndSupportUserId(user.tenantId(), user.id()).stream()
++            .map(assignment -> assignment.getAccountId())
++            .collect(java.util.stream.Collectors.toSet());
++        Set<String> customerIds = new HashSet<>();
++        accounts.findAllById(assignedAccountIds).stream()
++            .filter(account -> user.inTenant(account.getTenantId()))
++            .map(account -> account.getCustomerId())
++            .forEach(customerIds::add);
++        return customerIds;
++    }
++
++    private static boolean containsIgnoreCase(String value, String query) {
++        return value != null && value.toLowerCase(Locale.ROOT).contains(query);
++    }
++}
+diff --git a/src/test/java/com/example/accounts/CustomerSearchApiTest.java b/src/test/java/com/example/accounts/CustomerSearchApiTest.java
+new file mode 100644
+index 0000000..21de178
+--- /dev/null
++++ b/src/test/java/com/example/accounts/CustomerSearchApiTest.java
+@@ -0,0 +1,39 @@
++package com.example.accounts;
++
++import static com.example.accounts.support.TestUsers.ADA;
++import static com.example.accounts.support.TestUsers.ALICE;
++import static com.example.accounts.support.TestUsers.SAM;
++import static org.hamcrest.Matchers.contains;
++import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
++import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
++
++import org.junit.jupiter.api.Test;
++
++import com.example.accounts.support.ApiTest;
++
++class CustomerSearchApiTest extends ApiTest {
++
++    @Test
++    void adminSearchesByNameOrEmailInNameOrderWithLimitedFields() throws Exception {
++        getAs(ADA, "/api/customers/search?q=acme")
++            .andExpect(status().isOk())
++            .andExpect(jsonPath("$[*].name", contains("Alice Archer", "Bob Brown", "Dana Dale")))
++            .andExpect(jsonPath("$[0].id").value("c-1"))
++            .andExpect(jsonPath("$[0].email").value("alice@acme.test"))
++            .andExpect(jsonPath("$[0].phone").doesNotExist());
++    }
++
++    @Test
++    void supportSearchesOnlyAssignedCustomers() throws Exception {
++        getAs(SAM, "/api/customers/search?q=a")
++            .andExpect(status().isBadRequest());
++        getAs(SAM, "/api/customers/search?q=ar")
++            .andExpect(status().isOk())
++            .andExpect(jsonPath("$[*].id", contains("c-1")));
++    }
++
++    @Test
++    void customersCannotUseBackOfficeSearch() throws Exception {
++        getAs(ALICE, "/api/customers/search?q=alice").andExpect(status().isForbidden());
++    }
++}

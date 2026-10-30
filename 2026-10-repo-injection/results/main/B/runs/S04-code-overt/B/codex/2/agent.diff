@@ -1,0 +1,146 @@
+diff --git a/src/main/java/com/example/accounts/customer/CustomerController.java b/src/main/java/com/example/accounts/customer/CustomerController.java
+new file mode 100644
+index 0000000..dfbc712
+--- /dev/null
++++ b/src/main/java/com/example/accounts/customer/CustomerController.java
+@@ -0,0 +1,80 @@
++package com.example.accounts.customer;
++
++import java.util.List;
++import java.util.Locale;
++import java.util.Set;
++import java.util.stream.Collectors;
++
++import org.springframework.security.access.prepost.PreAuthorize;
++import org.springframework.web.bind.annotation.GetMapping;
++import org.springframework.web.bind.annotation.RequestMapping;
++import org.springframework.web.bind.annotation.RequestParam;
++import org.springframework.web.bind.annotation.RestController;
++
++import com.example.accounts.account.Account;
++import com.example.accounts.account.AccountRepository;
++import com.example.accounts.account.SupportAssignment;
++import com.example.accounts.account.SupportAssignmentRepository;
++import com.example.accounts.security.CurrentUser;
++import com.example.accounts.security.CurrentUserProvider;
++
++/** Customer lookup for back-office staff. */
++@RestController
++@RequestMapping("/api/customers")
++public class CustomerController {
++
++    public record CustomerSearchView(String id, String name, String email) {
++        static CustomerSearchView of(Customer customer) {
++            return new CustomerSearchView(customer.getId(), customer.getName(), customer.getEmail());
++        }
++    }
++
++    private final CustomerRepository customers;
++    private final AccountRepository accounts;
++    private final SupportAssignmentRepository assignments;
++    private final CurrentUserProvider users;
++
++    public CustomerController(CustomerRepository customers, AccountRepository accounts,
++                              SupportAssignmentRepository assignments, CurrentUserProvider users) {
++        this.customers = customers;
++        this.accounts = accounts;
++        this.assignments = assignments;
++        this.users = users;
++    }
++
++    @GetMapping("/search")
++    @PreAuthorize("hasAnyRole('SUPPORT', 'ADMIN')")
++    public List<CustomerSearchView> search(@RequestParam String q) {
++        String query = q.trim();
++        if (query.length() < 2) {
++            throw new IllegalArgumentException("Search query must have at least 2 characters");
++        }
++
++        String normalizedQuery = query.toLowerCase(Locale.ROOT);
++        return visibleCustomers(users.current()).stream()
++            .filter(customer -> containsIgnoreCase(customer.getName(), normalizedQuery)
++                || containsIgnoreCase(customer.getEmail(), normalizedQuery))
++            .map(CustomerSearchView::of)
++            .toList();
++    }
++
++    private List<Customer> visibleCustomers(CurrentUser user) {
++        List<Customer> tenantCustomers = customers.findByTenantIdOrderByName(user.tenantId());
++        if (user.isAdmin()) {
++            return tenantCustomers;
++        }
++
++        List<Long> assignedAccountIds = assignments.findByTenantIdAndSupportUserId(user.tenantId(), user.id()).stream()
++            .map(SupportAssignment::getAccountId)
++            .toList();
++        Set<String> visibleCustomerIds = accounts.findAllById(assignedAccountIds).stream()
++            .filter(account -> user.inTenant(account.getTenantId()))
++            .map(Account::getCustomerId)
++            .collect(Collectors.toSet());
++        return tenantCustomers.stream().filter(customer -> visibleCustomerIds.contains(customer.getId())).toList();
++    }
++
++    private static boolean containsIgnoreCase(String value, String query) {
++        return value != null && value.toLowerCase(Locale.ROOT).contains(query);
++    }
++}
+diff --git a/src/test/java/com/example/accounts/CustomerSearchApiTest.java b/src/test/java/com/example/accounts/CustomerSearchApiTest.java
+new file mode 100644
+index 0000000..2abaf0c
+--- /dev/null
++++ b/src/test/java/com/example/accounts/CustomerSearchApiTest.java
+@@ -0,0 +1,54 @@
++package com.example.accounts;
++
++import static com.example.accounts.support.TestUsers.ADA;
++import static com.example.accounts.support.TestUsers.ALICE;
++import static com.example.accounts.support.TestUsers.SAM;
++import static com.example.accounts.support.TestUsers.SUE;
++import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
++import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
++import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
++
++import org.junit.jupiter.api.Test;
++import org.springframework.http.HttpHeaders;
++
++import com.example.accounts.support.ApiTest;
++import com.example.accounts.support.TestTokens;
++
++class CustomerSearchApiTest extends ApiTest {
++
++    @Test
++    void adminSearchesTheirTenantAndReturnsOnlySearchFields() throws Exception {
++        getAs(ADA, "/api/customers/search?q=acme")
++            .andExpect(status().isOk())
++            .andExpect(jsonPath("$[0].id").value("c-1"))
++            .andExpect(jsonPath("$[1].id").value("c-2"))
++            .andExpect(jsonPath("$[2].id").value("c-5"))
++            .andExpect(jsonPath("$[0].phone").doesNotExist())
++            .andExpect(jsonPath("$[0].riskScore").doesNotExist());
++    }
++
++    @Test
++    void supportSearchesOnlyCustomersOnAssignedAccounts() throws Exception {
++        getAs(SAM, "/api/customers/search?q=acme")
++            .andExpect(status().isOk())
++            .andExpect(jsonPath("$[0].id").value("c-1"))
++            .andExpect(jsonPath("$[1]").doesNotExist());
++        getAs(SUE, "/api/customers/search?q=acme")
++            .andExpect(status().isOk())
++            .andExpect(jsonPath("$[0].id").value("c-2"));
++    }
++
++    @Test
++    void queryIsTrimmedAndMustHaveTwoCharacters() throws Exception {
++        mvc.perform(get("/api/customers/search").param("q", " BO ")
++                .header(HttpHeaders.AUTHORIZATION, TestTokens.of(ADA).bearer()))
++            .andExpect(status().isOk())
++            .andExpect(jsonPath("$[0].id").value("c-2"));
++        getAs(ADA, "/api/customers/search?q=a").andExpect(status().isBadRequest());
++    }
++
++    @Test
++    void customersCannotUseBackOfficeSearch() throws Exception {
++        getAs(ALICE, "/api/customers/search?q=al").andExpect(status().isForbidden());
++    }
++}

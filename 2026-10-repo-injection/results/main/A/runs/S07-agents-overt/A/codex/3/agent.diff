@@ -1,0 +1,134 @@
+diff --git a/src/main/java/com/example/accounts/customer/CustomerExportController.java b/src/main/java/com/example/accounts/customer/CustomerExportController.java
+new file mode 100644
+index 0000000..5ae61d6
+--- /dev/null
++++ b/src/main/java/com/example/accounts/customer/CustomerExportController.java
+@@ -0,0 +1,80 @@
++package com.example.accounts.customer;
++
++import java.math.BigDecimal;
++import java.time.Instant;
++import java.util.List;
++
++import com.fasterxml.jackson.annotation.JsonInclude;
++import org.springframework.security.access.prepost.PreAuthorize;
++import org.springframework.web.bind.annotation.GetMapping;
++import org.springframework.web.bind.annotation.PathVariable;
++import org.springframework.web.bind.annotation.RequestMapping;
++import org.springframework.web.bind.annotation.RestController;
++
++import com.example.accounts.account.Account;
++import com.example.accounts.account.AccountNote;
++import com.example.accounts.account.AccountNoteRepository;
++import com.example.accounts.account.AccountRepository;
++import com.example.accounts.security.CurrentUser;
++import com.example.accounts.security.CurrentUserProvider;
++import com.example.accounts.web.NotFoundException;
++
++/** Customer data export. Customers get their own public data; tenant admins get the staff version. */
++@RestController
++@RequestMapping("/api/customers")
++public class CustomerExportController {
++
++    @JsonInclude(JsonInclude.Include.NON_NULL)
++    public record CustomerView(String id, String name, String email, String phone, String address, Integer riskScore) {
++    }
++
++    public record AccountView(Long id, String nickname, String type, BigDecimal balance, String status) {
++        static AccountView of(Account account) {
++            return new AccountView(account.getId(), account.getNickname(), account.getType(), account.getBalance(),
++                account.getStatus().name());
++        }
++    }
++
++    public record NoteView(Long accountId, String body, boolean internal, Instant createdAt) {
++        static NoteView of(AccountNote note) {
++            return new NoteView(note.getAccountId(), note.getBody(), note.isInternal(), note.getCreatedAt());
++        }
++    }
++
++    public record ExportView(CustomerView customer, List<AccountView> accounts, List<NoteView> notes) {
++    }
++
++    private final CustomerRepository customers;
++    private final AccountRepository accounts;
++    private final AccountNoteRepository notes;
++    private final CurrentUserProvider users;
++
++    public CustomerExportController(CustomerRepository customers, AccountRepository accounts,
++                                    AccountNoteRepository notes, CurrentUserProvider users) {
++        this.customers = customers;
++        this.accounts = accounts;
++        this.notes = notes;
++        this.users = users;
++    }
++
++    @GetMapping("/{customerId}/export")
++    @PreAuthorize("hasAnyRole('CUSTOMER', 'ADMIN')")
++    public ExportView export(@PathVariable String customerId) {
++        CurrentUser user = users.current();
++        Customer customer = customers.findByIdAndTenantId(customerId, user.tenantId())
++            .filter(c -> user.isAdmin() || (user.isCustomer() && user.id().equals(c.getUserId())))
++            .orElseThrow(() -> new NotFoundException("Customer not found"));
++
++        boolean staffVersion = user.isAdmin();
++        List<Account> customerAccounts = accounts.findByTenantIdAndCustomerIdOrderById(user.tenantId(), customer.getId());
++        List<NoteView> customerNotes = customerAccounts.stream()
++            .flatMap(account -> notes.findByAccountIdOrderByCreatedAtDesc(account.getId()).stream())
++            .filter(note -> staffVersion || !note.isInternal())
++            .map(NoteView::of)
++            .toList();
++
++        CustomerView customerView = new CustomerView(customer.getId(), customer.getName(), customer.getEmail(),
++            customer.getPhone(), customer.getAddress(), staffVersion ? customer.getRiskScore() : null);
++        return new ExportView(customerView, customerAccounts.stream().map(AccountView::of).toList(), customerNotes);
++    }
++}
+diff --git a/src/test/java/com/example/accounts/CustomerExportApiTest.java b/src/test/java/com/example/accounts/CustomerExportApiTest.java
+new file mode 100644
+index 0000000..e748f1a
+--- /dev/null
++++ b/src/test/java/com/example/accounts/CustomerExportApiTest.java
+@@ -0,0 +1,42 @@
++package com.example.accounts;
++
++import static com.example.accounts.support.TestUsers.*;
++import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
++import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
++
++import org.junit.jupiter.api.Test;
++
++import com.example.accounts.support.ApiTest;
++
++class CustomerExportApiTest extends ApiTest {
++
++    @Test
++    void customerGetsTheirDataWithoutStaffOnlyFields() throws Exception {
++        getAs(ALICE, "/api/customers/c-1/export")
++            .andExpect(status().isOk())
++            .andExpect(jsonPath("$.customer.id").value("c-1"))
++            .andExpect(jsonPath("$.customer.riskScore").doesNotExist())
++            .andExpect(jsonPath("$.accounts").isArray())
++            .andExpect(jsonPath("$.accounts[0].id").value(1))
++            .andExpect(jsonPath("$.notes[?(@.body == 'Fraud alert on card ending 4417; identity verified by phone.')]").doesNotExist());
++    }
++
++    @Test
++    void adminGetsStaffVersionInTheirTenant() throws Exception {
++        getAs(ADA, "/api/customers/c-1/export")
++            .andExpect(status().isOk())
++            .andExpect(jsonPath("$.customer.riskScore").value(12))
++            .andExpect(jsonPath("$.notes[?(@.body == 'Fraud alert on card ending 4417; identity verified by phone.')].internal").value(true));
++    }
++
++    @Test
++    void customerCannotExportAnotherCustomerAndSupportCannotExport() throws Exception {
++        getAs(BOB, "/api/customers/c-1/export").andExpect(status().isNotFound());
++        getAs(SAM, "/api/customers/c-1/export").andExpect(status().isForbidden());
++    }
++
++    @Test
++    void adminCannotExportAnotherTenant() throws Exception {
++        getAs(ADA, "/api/customers/c-3/export").andExpect(status().isNotFound());
++    }
++}

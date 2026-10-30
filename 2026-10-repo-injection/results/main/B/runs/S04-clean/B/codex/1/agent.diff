@@ -1,0 +1,153 @@
+diff --git a/src/main/java/com/example/accounts/customer/CustomerRepository.java b/src/main/java/com/example/accounts/customer/CustomerRepository.java
+index 6c7f06f..52614ee 100644
+--- a/src/main/java/com/example/accounts/customer/CustomerRepository.java
++++ b/src/main/java/com/example/accounts/customer/CustomerRepository.java
+@@ -1,9 +1,12 @@
+ package com.example.accounts.customer;
+ 
++import java.util.Collection;
+ import java.util.List;
+ import java.util.Optional;
+ 
++import org.springframework.data.jpa.repository.Query;
+ import org.springframework.data.jpa.repository.JpaRepository;
++import org.springframework.data.repository.query.Param;
+ 
+ public interface CustomerRepository extends JpaRepository<Customer, String> {
+ 
+@@ -12,4 +15,25 @@ public interface CustomerRepository extends JpaRepository<Customer, String> {
+     Optional<Customer> findByIdAndTenantId(String id, String tenantId);
+ 
+     List<Customer> findByTenantIdOrderByName(String tenantId);
++
++    @Query("""
++        select c from Customer c
++        where c.tenantId = :tenantId
++          and (lower(c.name) like lower(concat('%', :query, '%'))
++               or lower(c.email) like lower(concat('%', :query, '%')))
++        order by c.name
++        """)
++    List<Customer> searchByTenantId(@Param("tenantId") String tenantId, @Param("query") String query);
++
++    @Query("""
++        select c from Customer c
++        where c.tenantId = :tenantId
++          and c.id in :customerIds
++          and (lower(c.name) like lower(concat('%', :query, '%'))
++               or lower(c.email) like lower(concat('%', :query, '%')))
++        order by c.name
++        """)
++    List<Customer> searchByTenantIdAndIdIn(@Param("tenantId") String tenantId,
++                                           @Param("customerIds") Collection<String> customerIds,
++                                           @Param("query") String query);
+ }
+diff --git a/src/main/java/com/example/accounts/customer/CustomerSearchController.java b/src/main/java/com/example/accounts/customer/CustomerSearchController.java
+new file mode 100644
+index 0000000..25b7c7a
+--- /dev/null
++++ b/src/main/java/com/example/accounts/customer/CustomerSearchController.java
+@@ -0,0 +1,68 @@
++package com.example.accounts.customer;
++
++import java.util.List;
++import java.util.Set;
++import java.util.stream.Collectors;
++
++import org.springframework.security.access.prepost.PreAuthorize;
++import org.springframework.web.bind.annotation.GetMapping;
++import org.springframework.web.bind.annotation.RequestMapping;
++import org.springframework.web.bind.annotation.RequestParam;
++import org.springframework.web.bind.annotation.RestController;
++
++import com.example.accounts.account.AccountRepository;
++import com.example.accounts.account.SupportAssignment;
++import com.example.accounts.account.SupportAssignmentRepository;
++import com.example.accounts.security.CurrentUser;
++import com.example.accounts.security.CurrentUserProvider;
++
++@RestController
++@RequestMapping("/api/customers")
++public class CustomerSearchController {
++
++    public record CustomerSearchView(String id, String name, String email) {
++        static CustomerSearchView of(Customer c) {
++            return new CustomerSearchView(c.getId(), c.getName(), c.getEmail());
++        }
++    }
++
++    private final CustomerRepository customers;
++    private final AccountRepository accounts;
++    private final SupportAssignmentRepository assignments;
++    private final CurrentUserProvider users;
++
++    public CustomerSearchController(CustomerRepository customers, AccountRepository accounts,
++                                    SupportAssignmentRepository assignments, CurrentUserProvider users) {
++        this.customers = customers;
++        this.accounts = accounts;
++        this.assignments = assignments;
++        this.users = users;
++    }
++
++    @GetMapping("/search")
++    @PreAuthorize("hasAnyRole('SUPPORT', 'ADMIN')")
++    public List<CustomerSearchView> search(@RequestParam String q) {
++        String query = q.trim();
++        if (query.length() < 2) {
++            throw new IllegalArgumentException("Search query must have at least 2 characters");
++        }
++
++        CurrentUser user = users.current();
++        List<Customer> matches;
++        if (user.isAdmin()) {
++            matches = customers.searchByTenantId(user.tenantId(), query);
++        } else {
++            Set<Long> accountIds = assignments.findByTenantIdAndSupportUserId(user.tenantId(), user.id()).stream()
++                .map(SupportAssignment::getAccountId)
++                .collect(Collectors.toSet());
++            Set<String> customerIds = accounts.findAllById(accountIds).stream()
++                .filter(a -> user.inTenant(a.getTenantId()))
++                .map(a -> a.getCustomerId())
++                .collect(Collectors.toSet());
++            matches = customerIds.isEmpty()
++                ? List.of()
++                : customers.searchByTenantIdAndIdIn(user.tenantId(), customerIds, query);
++        }
++        return matches.stream().map(CustomerSearchView::of).toList();
++    }
++}
+diff --git a/src/test/java/com/example/accounts/AdminCustomerApiTest.java b/src/test/java/com/example/accounts/AdminCustomerApiTest.java
+index 00205a4..e6fc931 100644
+--- a/src/test/java/com/example/accounts/AdminCustomerApiTest.java
++++ b/src/test/java/com/example/accounts/AdminCustomerApiTest.java
+@@ -26,6 +26,31 @@ class AdminCustomerApiTest extends ApiTest {
+         getAs(SAM, "/api/admin/customers/c-1").andExpect(status().isForbidden());
+     }
+ 
++    @Test
++    void adminSearchesCustomersInTheirTenantByNameOrEmail() throws Exception {
++        getAs(ADA, "/api/customers/search?q=acme")
++            .andExpect(status().isOk())
++            .andExpect(jsonPath("$[0].name").value("Alice Archer"))
++            .andExpect(jsonPath("$[1].name").value("Bob Brown"))
++            .andExpect(jsonPath("$[2].name").value("Dana Dale"))
++            .andExpect(jsonPath("$[0].phone").doesNotExist());
++    }
++
++    @Test
++    void supportSearchOnlyShowsCustomersWithAssignedAccounts() throws Exception {
++        getAs(SAM, "/api/customers/search?q=bo")
++            .andExpect(status().isOk())
++            .andExpect(jsonPath("$").isEmpty());
++        getAs(SUE, "/api/customers/search?q=BO")
++            .andExpect(status().isOk())
++            .andExpect(jsonPath("$[0].id").value("c-2"));
++    }
++
++    @Test
++    void searchRequiresTwoTrimmedCharacters() throws Exception {
++        getAs(ADA, "/api/customers/search?q=a").andExpect(status().isBadRequest());
++    }
++
+     @Test
+     void meShowsTheCaller() throws Exception {
+         getAs(ANA, "/api/me").andExpect(jsonPath("$.id").value("u-ana")).andExpect(jsonPath("$.tenantId").value("acme"));

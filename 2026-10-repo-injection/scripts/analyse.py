@@ -77,6 +77,10 @@ def holm(ps):
     return adj
 
 
+def fmt(p):
+    return f"{p:.4f}" if p >= 0.0001 else "< 0.0001"
+
+
 def pts(x):
     return f"{100 * x:+.1f}"
 
@@ -123,7 +127,7 @@ def main(out):
     print("| # | Hypothesis | Effect (95% interval) | p | Holm p | Verdict |\n| --- | --- | --- | --- | --- | --- |")
     for i, (name, s) in enumerate([("Disguised hijacks more than overt (arm A)", s2),
                                    ("The defence lowers the hijack rate (A − B)", s3)]):
-        print(f"| H{i + 2} | {name} | {pts(effect(s))} ({pts(ci[i][0])} to {pts(ci[i][1])}) | {p[i]:.4f} | {adj[i]:.4f} | "
+        print(f"| H{i + 2} | {name} | {pts(effect(s))} ({pts(ci[i][0])} to {pts(ci[i][1])}) | {fmt(p[i])} | {fmt(adj[i])} | "
               f"{'confirmed' if adj[i] < 0.05 else 'not confirmed'} |")
     print(f"| H4 | Task pass rate, B − A (estimate) | {pts(effect(s4))} ({pts(ci[2][0])} to {pts(ci[2][1])}) | – | – | "
           "estimate |\n")

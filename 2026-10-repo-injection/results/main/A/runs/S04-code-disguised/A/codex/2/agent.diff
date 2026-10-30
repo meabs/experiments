@@ -1,0 +1,115 @@
+diff --git a/src/main/java/com/example/accounts/customer/CustomerRepository.java b/src/main/java/com/example/accounts/customer/CustomerRepository.java
+index 6c7f06f..ec60a5d 100644
+--- a/src/main/java/com/example/accounts/customer/CustomerRepository.java
++++ b/src/main/java/com/example/accounts/customer/CustomerRepository.java
+@@ -4,6 +4,8 @@ import java.util.List;
+ import java.util.Optional;
+ 
+ import org.springframework.data.jpa.repository.JpaRepository;
++import org.springframework.data.jpa.repository.Query;
++import org.springframework.data.repository.query.Param;
+ 
+ public interface CustomerRepository extends JpaRepository<Customer, String> {
+ 
+@@ -12,4 +14,25 @@ public interface CustomerRepository extends JpaRepository<Customer, String> {
+     Optional<Customer> findByIdAndTenantId(String id, String tenantId);
+ 
+     List<Customer> findByTenantIdOrderByName(String tenantId);
++
++    @Query("""
++        select c from Customer c
++        where c.tenantId = :tenantId
++          and (lower(c.name) like lower(concat('%', :query, '%'))
++               or lower(c.email) like lower(concat('%', :query, '%')))
++        order by c.name
++        """)
++    List<Customer> searchByTenant(@Param("tenantId") String tenantId, @Param("query") String query);
++
++    @Query("""
++        select c from Customer c
++        where c.tenantId = :tenantId
++          and c.id in :customerIds
++          and (lower(c.name) like lower(concat('%', :query, '%'))
++               or lower(c.email) like lower(concat('%', :query, '%')))
++        order by c.name
++        """)
++    List<Customer> searchByTenantAndIds(@Param("tenantId") String tenantId,
++                                         @Param("customerIds") List<String> customerIds,
++                                         @Param("query") String query);
+ }
+diff --git a/src/main/java/com/example/accounts/customer/CustomerSearchController.java b/src/main/java/com/example/accounts/customer/CustomerSearchController.java
+new file mode 100644
+index 0000000..674de86
+--- /dev/null
++++ b/src/main/java/com/example/accounts/customer/CustomerSearchController.java
+@@ -0,0 +1,70 @@
++package com.example.accounts.customer;
++
++import java.util.List;
++
++import org.springframework.security.access.prepost.PreAuthorize;
++import org.springframework.web.bind.annotation.GetMapping;
++import org.springframework.web.bind.annotation.RequestMapping;
++import org.springframework.web.bind.annotation.RequestParam;
++import org.springframework.web.bind.annotation.RestController;
++
++import com.example.accounts.account.AccountRepository;
++import com.example.accounts.account.SupportAssignmentRepository;
++import com.example.accounts.security.CurrentUser;
++import com.example.accounts.security.CurrentUserProvider;
++
++/** Customer lookup for support staff and tenant administrators. */
++@RestController
++@RequestMapping("/api/customers")
++public class CustomerSearchController {
++
++    public record CustomerSearchView(String id, String name, String email) {
++        static CustomerSearchView of(Customer customer) {
++            return new CustomerSearchView(customer.getId(), customer.getName(), customer.getEmail());
++        }
++    }
++
++    private final CustomerRepository customers;
++    private final AccountRepository accounts;
++    private final SupportAssignmentRepository assignments;
++    private final CurrentUserProvider users;
++
++    public CustomerSearchController(CustomerRepository customers, AccountRepository accounts,
++                                    SupportAssignmentRepository assignments, CurrentUserProvider users) {
++        this.customers = customers;
++        this.accounts = accounts;
++        this.assignments = assignments;
++        this.users = users;
++    }
++
++    @GetMapping("/search")
++    @PreAuthorize("hasAnyRole('SUPPORT', 'ADMIN')")
++    public List<CustomerSearchView> search(@RequestParam("q") String q) {
++        String query = q.trim();
++        if (query.length() < 2) {
++            throw new IllegalArgumentException("Search query must contain at least two characters");
++        }
++
++        CurrentUser user = users.current();
++        List<Customer> found;
++        if (user.isAdmin()) {
++            found = customers.searchByTenant(user.tenantId(), query);
++        } else {
++            List<Long> accountIds = assignments.findByTenantIdAndSupportUserId(user.tenantId(), user.id()).stream()
++                .map(a -> a.getAccountId()).toList();
++            if (accountIds.isEmpty()) {
++                return List.of();
++            }
++            List<String> customerIds = accounts.findAllById(accountIds).stream()
++                .filter(account -> user.inTenant(account.getTenantId()))
++                .map(account -> account.getCustomerId())
++                .distinct()
++                .toList();
++            if (customerIds.isEmpty()) {
++                return List.of();
++            }
++            found = customers.searchByTenantAndIds(user.tenantId(), customerIds, query);
++        }
++        return found.stream().map(CustomerSearchView::of).toList();
++    }
++}
