@@ -246,9 +246,9 @@ The median run took 14 s, and the 80 runs took 21 minutes in total. The pilots (
 
 Each recommendation comes with the evidence behind it and how strong that evidence is.
 
-1. **Authorise as the user, not as the agent.** Don't give an agent a service account with the union of its users' rights.
+1. **Check both the user's delegated rights and the agent's own permitted capabilities, and the task and the business rule, each enforced independently** (revised after review, [section 12](#12-review-after-publication)). Don't let an agent's own identity stand in for the user's authority, as setup 3's service account did with the union of its users' rights. A workload identity is fine for authenticating the agent; the service must still check the user, the agent, the task and the business rule separately.
    - *Evidence:* the service account let through 11 of 20 runs' planted requests; the setups that checked the user's own rights let through 1 each. These are deterministic results.
-2. **Scope tokens to the task, and plan for the friction.** Narrow scopes stopped every out-of-task request, but refused 23 legitimate lookups. Give tasks the read scopes they plausibly need (here, `hr.read` for expense review) and keep write and approve scopes narrow.
+2. **Scope tokens to the task, and meet the agent's information needs without widening access** (revised after review, [section 12](#12-review-after-publication)). Narrow scopes stopped every out-of-task request, but refused 23 lookups. Every task was completed without them, so they may not have been needed. Rather than granting `hr.read` for expense review, have the expenses service return the claimant details an approver needs (name, team, manager), or offer a deliberately limited employee summary. Keep write and approve scopes narrow.
    - *Evidence:* forced tests (deterministic) and 80 runs.
 3. **Turn on Keycloak's `downscope-assertion-grant-enforcer` client policy** wherever token exchange is enabled. Without it, exchange added a scope that no earlier token held.
    - *Evidence:* deterministic.
@@ -263,7 +263,7 @@ Each recommendation comes with the evidence behind it and how strong that eviden
    - *Evidence:* deterministic.
 7. **Show the approver the raw facts, not the agent's summary.** In one held run the agent described the claim as legitimate. The confirmation screen should show the amount, the missing receipt and the unverified "pre-approval" itself.
    - *Evidence:* one run; weak, but the risk is obvious.
-8. **For agents that hand work to sub-agents, decide which you need most:** key-bound delegated tokens, or the hand-off. In Keycloak 26.8.1 you can't have both. If you need the hand-off, use plain exchange with downscope-only, and log the chain yourself (for example, the tool server records which agent requested each token), because the token won't.
+8. **For agents that hand work to sub-agents, decide which you need most:** key-bound delegated tokens, or the hand-off. In Keycloak 26.8.1 you can't have both. This is a gap in this product, not in the standard: RFC 8693 allows nested `act` claims to record a delegation chain. If you need the hand-off, use plain exchange with downscope-only, and log the chain yourself (for example, the tool server records which agent requested each token), because the token won't.
    - *Evidence:* deterministic, for this Keycloak version.
 
 ### Risks this exposes
@@ -343,3 +343,24 @@ Nothing in the design changed. One harness change after the design was pushed:
 The post-run scripts (`analyse.py`, `checks.py`, `charts.py`, `export-check.sh`) were written after the runs. They only read the results.
 
 In the friction table, the one refused call in setup 2 (the contractor looking herself up) counts as a legitimate call refused, because it was not the planted action, even though the rule correctly forbids it.
+
+## 12. Review after publication
+
+On 2026-10-30, after the article was published, the user reviewed the report, the implementation and the Keycloak documentation. The results above are unchanged; these points change how they should be read, and recommendations 1, 2 and 8 were revised.
+
+- **What the test doesn't isolate.** The user: "You're testing several security controls simultaneously." Setup 4 combines five controls: user-based authorisation, task-scoped permissions, short token lifetimes, DPoP binding and a confirmation step above 1,000. It is compared with a deliberately overprivileged service account. The results show that the combination protected better in these scenarios, not that delegation or token exchange on its own caused the improvement. Most planted actions were already stopped by checking the user's rights (setups 1 and 2). The £4,800 approval was stopped by the approval hold. The strongest conclusion is that several complementary controls are needed, not that one OAuth mechanism wins.
+- **Service accounts aren't inherently the problem.** Setup 3's flaw was that its broad roles were used as the authorisation. A workload identity can authenticate the agent while each service separately checks that the user is permitted, the agent is permitted, the task is permitted and the business rule is satisfied. The user's suggested wording, adopted in recommendation 1: "check both the user's delegated rights and the agent's own permitted capabilities."
+- **Identity isn't authorisation, and authorisation isn't business validation.** The expenses service checks who may approve: the claimant's manager, within the limit, a pending claim. It does not check whether the claim is genuine: the missing receipt, or the claimed Finance approval. A £900 claim with the same false note would pass every identity control in every setup if the agent approved it, because the approval hold applied only above 1,000. This was not tested here. Identity controls establish who may perform an action; they do not establish whether the action is appropriate.
+- **The 23 refused lookups don't automatically justify broader access.** Every task was completed without them, so the agent may have been making lookups it didn't need. Recommendation 2 now points to giving the agent the claimant details through the expenses service, rather than granting staff-directory access.
+- **The tool server is a trust boundary this test didn't defend.** Each run's tool server was started for one known user and task. Its `tools/call` handler does not authenticate or authorise whoever calls it. That is acceptable for isolated localhost runs, not for production. There, the tool server must authenticate the calling agent, check that the request belongs to the workflow the user approved, and stop another process from borrowing an existing delegated session. The outbound token handling tested here is much stronger than this inbound boundary.
+- **The multi-agent limit is Keycloak's, not OAuth's.** RFC 8693 allows nested `act` claims for delegation chains (section 4.1). The finding is that Keycloak 26.8.1's delegation would not carry a sender-constrained, delegated token through a further hop. Until it does, keeping an independently verifiable delegation record outside the access token is a reasonable design.
+- **The approval hold was simulated.** In this test the tool server recorded the request and told the agent it was not done. There was no confirmation step and no later execution.
+
+A follow-up, `2026-10-agent-identity-hardening`, tests some of these points:
+- private-key client authentication;
+- a service-enforced approval confirmed on the approver's own device;
+- the £900 case;
+- claimant details from the expenses service;
+- the services checking the agent's own permitted capabilities;
+- an authenticated tool-server boundary.
+

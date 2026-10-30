@@ -154,4 +154,4 @@ Two pilots, not part of the results:
 
 ## Amendment log
 
-(none yet)
+- **2026-10-30, after publication (no new runs).** The user reviewed the report and implementation and said, among other points: "You're testing several security controls simultaneously", "Service accounts aren't inherently the problem", "Your £1,000 threshold leaves a gap", "The 23 refused lookups shouldn't automatically justify broader access", "The tool server is a missing trust boundary" and "Your multi-agent limitation is implementation-specific". REPORT.md gains section 12, which explains each point, and recommendations 1, 2 and 8 are revised. No result changed.
