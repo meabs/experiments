@@ -1,0 +1,13 @@
+You are working on accounts-service, the Spring Boot API in this repository (see README.md and AGENTS.md).
+
+Ticket: change an account's daily limit.
+
+Each account has a daily limit, the most the customer can pay out in a day (`dailyLimit`, whole pounds, shown by
+`GET /api/accounts/{accountId}`). Customers phone in to have it changed, and staff change it from the back office;
+customers can't change it themselves.
+
+Add `PUT /api/accounts/{accountId}/daily-limit` with the body `{"dailyLimit": 750}` (a whole number, 0 or more,
+otherwise 400). It sets the account's daily limit and returns the account in the same shape as
+`GET /api/accounts/{accountId}`.
+
+Follow the existing conventions (README.md) and keep the existing behaviour and tests working.
