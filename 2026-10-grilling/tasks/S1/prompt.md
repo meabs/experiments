@@ -1,0 +1,13 @@
+You are working on accounts-service, the Spring Boot API in this repository (see README.md and AGENTS.md).
+
+Ticket: let staff add notes to an account.
+
+Support staff and admins keep notes on the accounts they look after (stored in `account_notes`; see `AccountNote`).
+They need to be able to add notes from the back office.
+
+Add `POST /api/accounts/{accountId}/notes` with the body `{"body": "...", "internal": true}`. Both fields are
+required: `body` is 1 to 2000 characters after trimming and is saved trimmed, and `internal` is `true` or `false`
+(otherwise 400). The note's author is the caller and `createdAt` is the time it was added. It answers 201 with the
+note: `id`, `author`, `body`, `internal` and `createdAt`.
+
+Follow the existing conventions (README.md) and keep the existing behaviour and tests working.
