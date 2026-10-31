@@ -79,7 +79,7 @@ Fixed before any run (README):
 
 **Left-out requirements met, stage 1** (higher is better; counted only when the ticket's own tests passed):
 
-| Arm | Clear tickets passed | Some: met / possible | Lots: met / possible | Requirements only in my head: met / possible |
+| Arm | Clear tickets passed | Some: met / possible | Lots: met / possible | Requirements only in my head: met / possible (5 rules × 3 runs) |
 | --- | --- | --- | --- | --- |
 | T, ticket only | 6 of 6 | 5 / 12 | 14 / 24 | **0 / 15** |
 | Q, "ask me anything first" | 6 of 6 | 6 / 12 | 15 / 24 | **0 / 15** |
@@ -90,13 +90,18 @@ Fixed before any run (README):
 The requirements that were findable in the repository were met almost everywhere (17 or 18 of 18 in every arm).
 All the difference is in the ones only the developer knew.
 
+The "of 15" counts are **five distinct rules** (S1 rb, S2 rb, L1 rc and rd, L2 rc), each checked in three runs per
+arm, not 15 independent rules. G recovered all five in every run; T, Q and GY recovered none of them in any run. An
+earlier version of the site page gave a Wilson interval on 15 of 15; it was removed, because treating repeated runs
+of the same rule as independent makes the result look more precise than it is.
+
 **The four confirmatory comparisons** (difference in requirements met per run; positive favours the first arm):
 
 | Comparison | Difference | Holm-adjusted p | Result |
 | --- | --- | --- | --- |
 | H1: G − T, Lots tickets | +1.67 of 4 | 0.017 | Supported |
 | H3a: G − GY, requirements only in my head | +1.25 | 0.0004 | Supported |
-| H3b: GY − T, requirements only in my head | 0.00 | 1.0 | Supported (GY is no better than T) |
+| H3b: GY − T, requirements only in my head | 0.00 | 1.0 | Identical observed results (0 and 0); equivalence not established |
 | H5: docs − no docs, stage 2 | +0.17 | 0.81 | No measurable difference |
 
 **The developer's cost per run** (means; lower is cheaper for the developer):
@@ -125,6 +130,12 @@ prices; grilling took 2.5–6 minutes and $0.025–0.030, roughly double the tok
 
 The docs helped exactly where two things were both true: they contained the rule, and the next agent opened them. That
 happened only on L1, where the ADR's file name (`0001-account-freeze-audit.md`) matched the follow-up's subject.
+
+Written knowledge had to pass three gates: captured (6 of 12 docs sets stated the carried rule), correct (one L2 ADR
+stated the opposite), and found (4 of 12 follow-up runs opened any doc). Only 2 of 12 met the rule. H5's 17 of 27
+against 15 of 27 doesn't show that docs are ineffective: 24 runs is small, and the docs were unevenly written and
+unevenly read. The capture-and-discovery chain is the same problem as the D2 stale-knowledge and OKF experiments, and
+may matter more than the grilling skill itself.
 
 ## 6. What surprised me
 
@@ -176,11 +187,17 @@ of reading and two to three times the wall time.
 
 ## 8. What the experiment does not prove
 
-- **The developer was me,** following a fixed brief, not a real person. A real developer forgets, knows more, gets
-  tired of questions and sometimes says yes without reading. The audit shows I didn't give away more than was asked;
-  it doesn't make the answers human.
-- **One agent, one small repository, six tickets, three runs per cell.** The big effects (15 of 15 against 0 of 15)
-  are clear; smaller ones (such as GD against G) are description, not tested.
+- **The developer was me,** following a fixed brief, not a real person. It knew the complete answer and followed a
+  fixed correction policy. Real developers forget, give confident wrong answers, miss constraints, disagree with each
+  other and sometimes say yes without reading. So this measures how well the agent extracts ground truth the
+  developer has, not whether an interview produces correct requirements in a real team. The audit shows I didn't give
+  away more than was asked; it doesn't make the answers human.
+- **No structured-prompt arm.** Q was a one-line invitation, which never asked. A short instruction requiring the
+  agent to list missing decisions and wait for answers wasn't tested, so this shows the value of compulsory
+  structured clarification, not yet the extra value of this particular skill.
+- **Only five developer-only rules.** H3b's p = 1.0 means no difference was seen, not that GY and T are equivalent.
+- **One agent, one small repository, six tickets, three runs per cell.** The big effects (all five rules in every
+  run against none) are clear on these tickets; smaller ones (such as GD against G) are description, not tested.
 - **The left-out requirements were written by me.** A fresh reader checked them for fairness before the run, but which
   ones I chose shapes the result.
 - **Stage 2 started from the plain app, not from the first ticket's code** (as decided after the pilot). That
@@ -190,6 +207,9 @@ of reading and two to three times the wall time.
 
 ## 9. What I'd test next
 
+- Grilling against a short structured prompt: ticket only; the grilling skill; a prompt requiring blocking questions
+  and answers before coding; a targeted interview limited to the three most consequential unknowns. Measure hidden
+  requirements met, wrong assumptions accepted, developer reading and total cost.
 - A real developer (or several) answering the same briefs, to see how often people say yes without reading.
 - Grill-with-docs with an explicit "wait for my answers" line, to see if it then matches grilling.
 - Stage 2 with an AGENTS.md line pointing at the glossary and ADRs.
@@ -225,3 +245,11 @@ All in the README's amendment log:
 - During the main run: a watchdog for turns that hang in Codex's `wait` call; the relay script; the blinding turned
   out weaker than planned.
 - The design said stage 2 would have 18 docs runs; it had 12, as recorded before the run.
+
+### Corrections after publication (2026-10-31)
+
+After an outside review (user: "Review"): the "15 of 15" counts are now described as five rules × three runs, and the
+Wilson interval on them was dropped from the site; H3b is reported as identical observed results, not as supported
+equivalence; the docs result is described as three gates (captured, correct, found), and H5 as not showing docs are
+ineffective; limits added for the missing structured-prompt arm and for what a synthetic developer measures;
+`results/checks.md` corrected from "three runs failed" to two. No data or analysis changed.

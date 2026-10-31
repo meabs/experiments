@@ -7,9 +7,9 @@
 - **Isolation:** no agent's event stream mentions the hidden tests, the briefs, the reference implementations or the
   experiment folder. The sandbox doesn't mount them (as in repo-injection).
 - **Grading:** hidden JUnit tests run after each session, protected files restored from the app first
-  (`scripts/grade.py`). The existing 25 tests passed in every run. Three runs failed their ticket tests: two S2 runs
-  (T and GY) whose new route ended up under the existing `/api/cases` prefix, so every call answered 404, and none
-  other in stage 1; in stage 2, none failed.
+  (`scripts/grade.py`). The existing 25 tests passed in every run. Two runs failed their ticket tests, both stage 1 runs
+  on S2 (T and GY): the new route ended up under the existing `/api/cases` prefix, so every call answered 404. No
+  other run failed, in stage 1 or stage 2.
 - **Developer audit:** `scripts/audit.py` (judge `openai/gpt-6-luna`, JSON mode) read every developer reply against
   its brief and the agent's message. It found **no leaks in any of the 54 interviews**: no reply gave a left-out
   requirement the agent's message hadn't touched. Its free-text remarks (in `results/main/audit.log`) are about
