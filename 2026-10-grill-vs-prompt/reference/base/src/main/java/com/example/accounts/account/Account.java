@@ -33,7 +33,7 @@ public class Account {
     @Column(nullable = false)
     private BigDecimal balance;
 
-    /** Most the customer can pay out in a day, in pounds. Set by the bank (admins), not by the customer. */
+    /** Most the customer can pay out in a day, in pounds. Set by the bank, not by the customer. */
     @Column(nullable = false)
     private int dailyLimit;
 

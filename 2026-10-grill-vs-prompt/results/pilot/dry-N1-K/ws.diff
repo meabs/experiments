@@ -1,0 +1,241 @@
+diff --git a/src/main/java/com/example/accounts/account/Account.java b/src/main/java/com/example/accounts/account/Account.java
+index 706645e..439bcf2 100644
+--- a/src/main/java/com/example/accounts/account/Account.java
++++ b/src/main/java/com/example/accounts/account/Account.java
+@@ -47,6 +47,7 @@ public class Account {
+     public void setNickname(String nickname) { this.nickname = nickname; }
+     public String getType() { return type; }
+     public BigDecimal getBalance() { return balance; }
++    public void addToBalance(BigDecimal amount) { this.balance = this.balance.add(amount); }
+     public int getDailyLimit() { return dailyLimit; }
+     public void setDailyLimit(int dailyLimit) { this.dailyLimit = dailyLimit; }
+     public Status getStatus() { return Status.valueOf(status); }
+diff --git a/src/main/java/com/example/accounts/account/AccountController.java b/src/main/java/com/example/accounts/account/AccountController.java
+index bc6eb2e..1bca11c 100644
+--- a/src/main/java/com/example/accounts/account/AccountController.java
++++ b/src/main/java/com/example/accounts/account/AccountController.java
+@@ -2,14 +2,31 @@ package com.example.accounts.account;
+ 
+ import java.math.BigDecimal;
+ import java.time.LocalDate;
++import java.time.Instant;
+ import java.util.List;
+ 
++import jakarta.validation.Valid;
++import jakarta.validation.constraints.DecimalMin;
++import jakarta.validation.constraints.NotBlank;
++import jakarta.validation.constraints.NotNull;
++import jakarta.validation.constraints.Size;
++
++import org.springframework.http.HttpStatus;
+ import org.springframework.security.access.prepost.PreAuthorize;
++import org.springframework.transaction.annotation.Transactional;
+ import org.springframework.web.bind.annotation.GetMapping;
+ import org.springframework.web.bind.annotation.PathVariable;
++import org.springframework.web.bind.annotation.PostMapping;
++import org.springframework.web.bind.annotation.RequestBody;
+ import org.springframework.web.bind.annotation.RequestMapping;
++import org.springframework.web.bind.annotation.ResponseStatus;
+ import org.springframework.web.bind.annotation.RestController;
+ 
++import com.example.accounts.security.AccessPolicy;
++import com.example.accounts.security.CurrentUser;
++import com.example.accounts.security.CurrentUserProvider;
++import com.example.accounts.web.ForbiddenException;
++
+ @RestController
+ @RequestMapping("/api/accounts")
+ public class AccountController {
+@@ -28,10 +45,39 @@ public class AccountController {
+         }
+     }
+ 
++    public record GoodwillCreditRequest(@NotNull @DecimalMin(value = "0", inclusive = false) BigDecimal amount,
++                                        @NotBlank @Size(max = 500) String reason) {
++        public GoodwillCreditRequest {
++            if (reason != null) {
++                reason = reason.trim();
++            }
++            if (amount != null && amount.scale() > 2) {
++                throw new IllegalArgumentException("Invalid amount");
++            }
++        }
++    }
++
++    public record GoodwillCreditView(Long id, Long accountId, BigDecimal amount, String reason, String createdBy,
++                                     Instant createdAt) {
++        static GoodwillCreditView of(GoodwillCredit c) {
++            return new GoodwillCreditView(c.getId(), c.getAccountId(), c.getAmount(), c.getReason(), c.getCreatedBy(),
++                c.getCreatedAt());
++        }
++    }
++
+     private final AccountService service;
++    private final GoodwillCreditRepository goodwillCredits;
++    private final TransactionRepository transactions;
++    private final AccessPolicy access;
++    private final CurrentUserProvider users;
+ 
+-    public AccountController(AccountService service) {
++    public AccountController(AccountService service, GoodwillCreditRepository goodwillCredits,
++                             TransactionRepository transactions, AccessPolicy access, CurrentUserProvider users) {
+         this.service = service;
++        this.goodwillCredits = goodwillCredits;
++        this.transactions = transactions;
++        this.access = access;
++        this.users = users;
+     }
+ 
+     @GetMapping
+@@ -50,4 +96,22 @@ public class AccountController {
+     public List<TransactionView> transactions(@PathVariable Long accountId) {
+         return service.transactions(accountId).stream().map(TransactionView::of).toList();
+     }
++
++    @PostMapping("/{accountId}/goodwill-credits")
++    @PreAuthorize("hasAuthority('SCOPE_accounts:write')")
++    @ResponseStatus(HttpStatus.CREATED)
++    @Transactional
++    public GoodwillCreditView goodwillCredit(@PathVariable Long accountId, @Valid @RequestBody GoodwillCreditRequest body) {
++        CurrentUser user = users.current();
++        Account account = service.getVisible(accountId);
++        if (!access.isAssignedSupport(user, account) && !access.isTenantAdmin(user, account.getTenantId())) {
++            throw new ForbiddenException("Only staff looking after the account can grant goodwill credit");
++        }
++        Instant now = Instant.now();
++        GoodwillCredit credit = goodwillCredits.save(
++            new GoodwillCredit(account.getId(), body.amount(), body.reason(), user.id(), now));
++        account.addToBalance(body.amount());
++        transactions.save(new Transaction(account.getId(), body.amount(), "Goodwill credit", LocalDate.now()));
++        return GoodwillCreditView.of(credit);
++    }
+ }
+diff --git a/src/main/java/com/example/accounts/account/GoodwillCredit.java b/src/main/java/com/example/accounts/account/GoodwillCredit.java
+new file mode 100644
+index 0000000..a2bb134
+--- /dev/null
++++ b/src/main/java/com/example/accounts/account/GoodwillCredit.java
+@@ -0,0 +1,53 @@
++package com.example.accounts.account;
++
++import java.math.BigDecimal;
++import java.time.Instant;
++
++import jakarta.persistence.Column;
++import jakarta.persistence.Entity;
++import jakarta.persistence.GeneratedValue;
++import jakarta.persistence.GenerationType;
++import jakarta.persistence.Id;
++import jakarta.persistence.Table;
++
++@Entity
++@Table(name = "goodwill_credits")
++public class GoodwillCredit {
++
++    @Id
++    @GeneratedValue(strategy = GenerationType.IDENTITY)
++    private Long id;
++
++    @Column(nullable = false)
++    private Long accountId;
++
++    @Column(nullable = false, precision = 38, scale = 2)
++    private BigDecimal amount;
++
++    @Column(nullable = false, length = 500)
++    private String reason;
++
++    @Column(nullable = false)
++    private String createdBy;
++
++    @Column(nullable = false)
++    private Instant createdAt;
++
++    protected GoodwillCredit() {
++    }
++
++    public GoodwillCredit(Long accountId, BigDecimal amount, String reason, String createdBy, Instant createdAt) {
++        this.accountId = accountId;
++        this.amount = amount;
++        this.reason = reason;
++        this.createdBy = createdBy;
++        this.createdAt = createdAt;
++    }
++
++    public Long getId() { return id; }
++    public Long getAccountId() { return accountId; }
++    public BigDecimal getAmount() { return amount; }
++    public String getReason() { return reason; }
++    public String getCreatedBy() { return createdBy; }
++    public Instant getCreatedAt() { return createdAt; }
++}
+diff --git a/src/main/java/com/example/accounts/account/GoodwillCreditRepository.java b/src/main/java/com/example/accounts/account/GoodwillCreditRepository.java
+new file mode 100644
+index 0000000..c15e14b
+--- /dev/null
++++ b/src/main/java/com/example/accounts/account/GoodwillCreditRepository.java
+@@ -0,0 +1,6 @@
++package com.example.accounts.account;
++
++import org.springframework.data.jpa.repository.JpaRepository;
++
++public interface GoodwillCreditRepository extends JpaRepository<GoodwillCredit, Long> {
++}
+diff --git a/src/main/java/com/example/accounts/account/Transaction.java b/src/main/java/com/example/accounts/account/Transaction.java
+index f30af7a..3c1f0c5 100644
+--- a/src/main/java/com/example/accounts/account/Transaction.java
++++ b/src/main/java/com/example/accounts/account/Transaction.java
+@@ -29,6 +29,16 @@ public class Transaction {
+     @Column(nullable = false)
+     private LocalDate bookedOn;
+ 
++    protected Transaction() {
++    }
++
++    public Transaction(Long accountId, BigDecimal amount, String description, LocalDate bookedOn) {
++        this.accountId = accountId;
++        this.amount = amount;
++        this.description = description;
++        this.bookedOn = bookedOn;
++    }
++
+     public Long getId() { return id; }
+     public Long getAccountId() { return accountId; }
+     public BigDecimal getAmount() { return amount; }
+diff --git a/src/test/java/com/example/accounts/AccountApiTest.java b/src/test/java/com/example/accounts/AccountApiTest.java
+index 7f7cf0b..6d0ad51 100644
+--- a/src/test/java/com/example/accounts/AccountApiTest.java
++++ b/src/test/java/com/example/accounts/AccountApiTest.java
+@@ -71,4 +71,32 @@ class AccountApiTest extends ApiTest {
+         getWith(TestTokens.of(BOB).scopes("transactions:read"), "/api/accounts/1/transactions")
+             .andExpect(status().isNotFound());
+     }
++
++    @Test
++    void assignedSupportCanGrantGoodwillCredit() throws Exception {
++        postAs(SAM, "/api/accounts/1/goodwill-credits", "{\"amount\":25.00,\"reason\":\"Lost card\"}")
++            .andExpect(status().isCreated())
++            .andExpect(jsonPath("$.accountId").value(1))
++            .andExpect(jsonPath("$.amount").value(25.0))
++            .andExpect(jsonPath("$.reason").value("Lost card"))
++            .andExpect(jsonPath("$.createdBy").value("u-sam"));
++        getAs(ALICE, "/api/accounts/1").andExpect(jsonPath("$.balance").value(1225.0));
++        getWith(TestTokens.of(ALICE).scopes("transactions:read"), "/api/accounts/1/transactions")
++            .andExpect(jsonPath("$[0].description").value("Goodwill credit"))
++            .andExpect(jsonPath("$[0].amount").value(25.0));
++    }
++
++    @Test
++    void customersCannotGrantGoodwillCredit() throws Exception {
++        postAs(ALICE, "/api/accounts/1/goodwill-credits", "{\"amount\":25,\"reason\":\"Sorry\"}")
++            .andExpect(status().isForbidden());
++    }
++
++    @Test
++    void goodwillCreditValidatesAmountAndTrimmedReason() throws Exception {
++        postAs(SAM, "/api/accounts/1/goodwill-credits", "{\"amount\":0,\"reason\":\" \"}")
++            .andExpect(status().isBadRequest());
++        postAs(SAM, "/api/accounts/1/goodwill-credits", "{\"amount\":1.001,\"reason\":\"ok\"}")
++            .andExpect(status().isBadRequest());
++    }
+ }

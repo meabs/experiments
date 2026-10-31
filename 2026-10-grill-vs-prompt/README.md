@@ -163,3 +163,27 @@ cost this is about $3–4 of agent time at list prices, plus the audit.
 - 2026-10-31: design written at the user's request ("Do it"), following an outside review of GRL that proposed this
   comparison, and my plan in reply (four arms; few-flat, many-flat and nested tickets; about 15 distinct rules; 5 runs
   per cell with a pre-registered margin).
+- 2026-10-31, while building, before any measured run (the pilot and dry runs are not measured runs):
+  - **Changes after the brief check** (`checks/brief-check.md`; reader `openai/gpt-6-luna` through OpenRouter):
+    - M1: the starter overlay drops "(admins)" from `Account.java`'s comment on `dailyLimit` ("Set by the bank, not by
+      the customer"), which pointed against rc. The ticket's validation now reads "A missing, negative or non-whole
+      `dailyLimit` is 400" instead of "a whole number, 0 or more", which read as a promise that any such number is
+      accepted and so contradicted rd. Support setting the current value moved to "don't mind". re's test now
+      requires the brief's 409.
+    - N1: the ticket says "Paying a credit adds the amount…" instead of "A credit adds the amount…", which stated that
+      every credit is paid at once and so contradicted rb. rc's tests add approving twice (409) and require 404 for an
+      approver from another bank.
+    - N2: rb's test adds a rejected request (409) as well as an approved one.
+    - Not changed: the reader judged M1 re (savings accounts fixed) unreasonable as an unstated rule. It's kept: "does
+      this apply to every account type?" is a question a colleague would ask, and the pilot shows the ticket doesn't
+      give it away. The reader's other points were coverage gaps, not ways a correct change could fail.
+    - Every reference still meets every requirement, and the untouched app passes no ticket.
+  - **Pilot** (ticket only, 2 runs per task): every run passed its ticket; the 15 in-my-head rules were met in 0 of 30
+    rule checks, so no ticket or file gives one away. L2 rd (guessable) was met in 2 of 2, as in GRL. M1 rb (closed
+    accounts, labelled "in the repo") was missed in 2 of 2: the agent changed a closed account's limit. It stays
+    labelled as it is; it isn't one of the 15.
+  - **Dry run** (one S and one K on N1, one G on N2): the openers behaved as written (S listed ten decisions with
+    recommendations and waited; K asked three questions and waited; G asked two rounds of six). The nesting rule could
+    be followed: S recommended "no maximum amount", was told the parent rule (over £100 needs approving), asked
+    nothing more, and built its own reading of it. K and G never reached a parent rule. The audit found no leaks in the
+    four replies.

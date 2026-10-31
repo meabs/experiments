@@ -10,8 +10,7 @@ Level: many unknowns, flat. Each left-out requirement is a separate topic, settl
   409 convention.
 - **rc (in my head): support can only lower it.** Admins of the account's bank can set any limit. Support users
   assigned to the account can lower it (customers ring up to reduce it after a scare, and that shouldn't wait), but not
-  raise it: 403, nothing changes. Raising is a credit decision, which is an admin's. Setting the same value counts as
-  lowering.
+  raise it: 403, nothing changes. Raising is a credit decision, which is an admin's.
 - **rd (in my head): a ceiling of £5,000.** No account's limit can go above 5000, whoever sets it: 400, nothing
   changes. Why: above that, the card scheme needs a different product.
 - **re (in my head): savings accounts are fixed.** A `SAVINGS` account's limit can't be changed at all: 409, nothing
@@ -23,4 +22,5 @@ Level: many unknowns, flat. Each left-out requirement is a separate topic, settl
 ## Don't mind ("your call")
 
 - The exact wording of the note, as long as it has both numbers.
+- Support setting the limit to the value it already has.
 - Whether to add a test, and where.

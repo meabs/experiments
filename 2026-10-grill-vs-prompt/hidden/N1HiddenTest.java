@@ -131,11 +131,19 @@ class N1HiddenTest extends ApiTest {
     }
 
     @Test
+    void rc_approvingTwiceIs409() throws Exception {
+        long id = create(ADA, 1, "150.00");
+        postAs(AL, approve(id), null).andExpect(status().is2xxSuccessful());
+        postAs(AL, approve(id), null).andExpect(status().isConflict());
+        assertThat(balance(1)).isEqualByComparingTo("1350.00");
+    }
+
+    @Test
     void rc_nonApproversCannotApprove() throws Exception {
         long id = create(ADA, 1, "150.00");
         postAs(SAM, approve(id), null).andExpect(status().is(anyOf(is(403), is(404))));
         postAs(ADA, approve(id), null).andExpect(status().is(anyOf(is(403), is(404))));
-        postAs(GWEN, approve(id), null).andExpect(status().is(anyOf(is(403), is(404))));
+        postAs(GWEN, approve(id), null).andExpect(status().isNotFound());
         assertThat(balance(1)).isEqualByComparingTo("1200.00");
     }
 

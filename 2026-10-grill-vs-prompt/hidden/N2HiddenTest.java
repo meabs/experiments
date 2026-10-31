@@ -113,6 +113,11 @@ class N2HiddenTest extends ApiTest {
     void rb_onlyPendingRequests() throws Exception {
         postAs(ANA, approve(3), null).andExpect(status().isConflict());
         assertThat(requestStatus(3)).isEqualTo("APPROVED");
+        emptyAccount3();
+        sql("UPDATE closure_requests SET status = 'REJECTED' WHERE id = 2");
+        postAs(ANA, approve(2), null).andExpect(status().isConflict());
+        assertThat(requestStatus(2)).isEqualTo("REJECTED");
+        assertThat(accountStatus(3)).isEqualTo("OPEN");
     }
 
     @Test

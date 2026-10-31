@@ -20,7 +20,7 @@ copy() {  # <run> <dest folder>
 rm -rf "$E/results/main" "$E/results/pilot"; mkdir -p "$E/results/main" "$E/results/pilot"
 for d in "$W"/main-* "$W"/i[0-9][0-9][0-9]-*; do [ -d "$d" ] && copy "$(basename "$d")" "$E/results/main"; done
 for d in "$W"/pilot-* "$W"/dry-*; do [ -d "$d" ] && copy "$(basename "$d")" "$E/results/pilot"; done
-cp "$W/key.json" "$E/results/main/key.json"
+[ -f "$W/key.json" ] && cp "$W/key.json" "$E/results/main/key.json"
 for f in main-scripted.log grade-interviews.log audit.log; do [ -f "$W/$f" ] && cp "$W/$f" "$E/results/main/"; done
 find "$E/results/main" "$E/results/pilot" -type f \( -name '*.json' -o -name '*.log' -o -name '*.md' -o -name '*.diff' \
   -o -name '*.jsonl' -o -name '*.stderr' \) -print0 | xargs -0 perl -pi -e "s#\Q$HOME\E#~#g; s#\Q$HOST\E#host#g; s#\b\Q$U\E\b#user#g"

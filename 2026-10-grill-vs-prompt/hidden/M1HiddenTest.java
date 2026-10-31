@@ -130,8 +130,7 @@ class M1HiddenTest extends ApiTest {
 
     @Test
     void re_savingsLimitIsFixed() throws Exception {
-        putAs(ADA, "/api/accounts/2/daily-limit", body(100)).andExpect(status().is(allOf(greaterThanOrEqualTo(400),
-            lessThan(500), not(404))));
+        putAs(ADA, "/api/accounts/2/daily-limit", body(100)).andExpect(status().isConflict());
         assertThat(limit(2)).isEqualTo(250);
     }
 

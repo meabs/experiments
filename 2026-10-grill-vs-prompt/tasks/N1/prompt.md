@@ -7,7 +7,7 @@ goodwill payment. This is done in the back office by the staff who look after th
 
 Add `POST /api/accounts/{accountId}/goodwill-credits` with the body `{"amount": 25.00, "reason": "..."}`: `amount`
 more than 0 with at most 2 decimal places, `reason` 1 to 500 characters after trimming (otherwise 400). It answers
-201 with `{"id", "accountId", "amount", "reason", "createdBy", "createdAt"}`. A credit adds the amount to the
-account's balance and books a transaction on the account with the description `Goodwill credit`.
+201 with `{"id", "accountId", "amount", "reason", "createdBy", "createdAt"}`. Paying a credit adds the amount to
+the account's balance and books a transaction on the account with the description `Goodwill credit`.
 
 Follow the existing conventions (README.md) and keep the existing behaviour and tests working.
