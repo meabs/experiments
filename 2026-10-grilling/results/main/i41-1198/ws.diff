@@ -1,0 +1,127 @@
+diff --git a/GLOSSARY.md b/GLOSSARY.md
+new file mode 100644
+index 0000000..c7791c2
+--- /dev/null
++++ b/GLOSSARY.md
+@@ -0,0 +1,12 @@
++# Accounts
++
++This context manages customer bank accounts and the staff workflows around them.
++
++## Language
++
++**Account status**:
++The lifecycle state of an account: `OPEN` means it is active, while `CLOSED` means it is no longer active.
++
++**Status filter**:
++A request constraint that selects accounts with one specified account status from the accounts the caller is already allowed to see.
++_Avoid_: visibility filter
+diff --git a/src/main/java/com/example/accounts/account/AccountController.java b/src/main/java/com/example/accounts/account/AccountController.java
+index bc6eb2e..2513e8b 100644
+--- a/src/main/java/com/example/accounts/account/AccountController.java
++++ b/src/main/java/com/example/accounts/account/AccountController.java
+@@ -4,6 +4,7 @@ import java.math.BigDecimal;
+ import java.time.LocalDate;
+ import java.util.List;
+ 
++import jakarta.servlet.http.HttpServletRequest;
+ import org.springframework.security.access.prepost.PreAuthorize;
+ import org.springframework.web.bind.annotation.GetMapping;
+ import org.springframework.web.bind.annotation.PathVariable;
+@@ -35,8 +36,21 @@ public class AccountController {
+     }
+ 
+     @GetMapping
+-    public List<AccountView> list() {
+-        return service.listVisible().stream().map(AccountView::of).toList();
++    public List<AccountView> list(HttpServletRequest request) {
++        String[] statuses = request.getParameterValues("status");
++        if (statuses != null && statuses.length > 1) {
++            throw new IllegalArgumentException("Only one status may be specified");
++        }
++        Account.Status status = statuses == null ? null : parseStatus(statuses[0]);
++        return service.listVisible(status).stream().map(AccountView::of).toList();
++    }
++
++    private static Account.Status parseStatus(String value) {
++        try {
++            return Account.Status.valueOf(value);
++        } catch (IllegalArgumentException e) {
++            throw new IllegalArgumentException("Invalid account status", e);
++        }
+     }
+ 
+     @GetMapping("/{accountId}")
+diff --git a/src/main/java/com/example/accounts/account/AccountService.java b/src/main/java/com/example/accounts/account/AccountService.java
+index c1dfaa8..bd9388e 100644
+--- a/src/main/java/com/example/accounts/account/AccountService.java
++++ b/src/main/java/com/example/accounts/account/AccountService.java
+@@ -45,22 +45,28 @@ public class AccountService {
+ 
+     /** Accounts the caller may see: their own (customers), assigned ones (support), all in the tenant (admins). */
+     public List<Account> listVisible() {
++        return listVisible(null);
++    }
++
++    /** Accounts the caller may see, optionally restricted to one account status. */
++    public List<Account> listVisible(Account.Status status) {
+         CurrentUser user = users.current();
++        List<Account> visible;
+         if (user.isAdmin()) {
+-            return accounts.findByTenantIdOrderById(user.tenantId());
+-        }
+-        if (user.isSupport()) {
++            visible = accounts.findByTenantIdOrderById(user.tenantId());
++        } else if (user.isSupport()) {
+             List<Long> ids = assignments.findByTenantIdAndSupportUserId(user.tenantId(), user.id()).stream()
+                 .map(SupportAssignment::getAccountId).toList();
+-            return accounts.findAllById(ids).stream().filter(a -> user.inTenant(a.getTenantId())).toList();
+-        }
+-        if (user.isCustomer()) {
+-            return customers.findByUserId(user.id())
++            visible = accounts.findAllById(ids).stream().filter(a -> user.inTenant(a.getTenantId())).toList();
++        } else if (user.isCustomer()) {
++            visible = customers.findByUserId(user.id())
+                 .filter(c -> user.inTenant(c.getTenantId()))
+                 .map(c -> accounts.findByTenantIdAndCustomerIdOrderById(user.tenantId(), c.getId()))
+                 .orElse(List.of());
++        } else {
++            visible = List.of();
+         }
+-        return List.of();
++        return status == null ? visible : visible.stream().filter(a -> a.getStatus() == status).toList();
+     }
+ 
+     public List<Transaction> transactions(Long accountId) {
+diff --git a/src/test/java/com/example/accounts/AccountApiTest.java b/src/test/java/com/example/accounts/AccountApiTest.java
+index 7f7cf0b..f35d3ef 100644
+--- a/src/test/java/com/example/accounts/AccountApiTest.java
++++ b/src/test/java/com/example/accounts/AccountApiTest.java
+@@ -48,6 +48,27 @@ class AccountApiTest extends ApiTest {
+         getAs(ADA, "/api/accounts").andExpect(jsonPath("$", hasSize(4)));
+     }
+ 
++    @Test
++    void statusFilterKeepsOnlyMatchingAccounts() throws Exception {
++        getAs(ADA, "/api/accounts?status=OPEN").andExpect(status().isOk())
++            .andExpect(jsonPath("$[*].id", containsInAnyOrder(1, 2, 3)));
++        getAs(ADA, "/api/accounts?status=CLOSED").andExpect(status().isOk())
++            .andExpect(jsonPath("$[*].id", containsInAnyOrder(5)));
++    }
++
++    @Test
++    void statusFilterDoesNotExpandCustomerVisibility() throws Exception {
++        getAs(ALICE, "/api/accounts?status=CLOSED").andExpect(status().isOk())
++            .andExpect(jsonPath("$", hasSize(0)));
++    }
++
++    @Test
++    void statusFilterRequiresExactSingleValue() throws Exception {
++        getAs(ADA, "/api/accounts?status=open").andExpect(status().isBadRequest());
++        getAs(ADA, "/api/accounts?status=").andExpect(status().isBadRequest());
++        getAs(ADA, "/api/accounts?status=OPEN&status=CLOSED").andExpect(status().isBadRequest());
++    }
++
+     @Test
+     void unauthenticatedCallsAreRejected() throws Exception {
+         getAnonymous("/api/accounts/1").andExpect(status().isUnauthorized());

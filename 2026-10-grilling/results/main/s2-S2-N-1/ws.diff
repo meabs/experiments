@@ -1,0 +1,118 @@
+diff --git a/src/main/java/com/example/accounts/cases/CaseController.java b/src/main/java/com/example/accounts/cases/CaseController.java
+index b39b900..9dda105 100644
+--- a/src/main/java/com/example/accounts/cases/CaseController.java
++++ b/src/main/java/com/example/accounts/cases/CaseController.java
+@@ -14,8 +14,8 @@ import org.springframework.security.access.prepost.PreAuthorize;
+ import org.springframework.transaction.annotation.Transactional;
+ import org.springframework.web.bind.annotation.GetMapping;
+ import org.springframework.web.bind.annotation.PostMapping;
++import org.springframework.web.bind.annotation.PathVariable;
+ import org.springframework.web.bind.annotation.RequestBody;
+-import org.springframework.web.bind.annotation.RequestMapping;
+ import org.springframework.web.bind.annotation.ResponseStatus;
+ import org.springframework.web.bind.annotation.RestController;
+ 
+@@ -25,11 +25,12 @@ import com.example.accounts.customer.CustomerRepository;
+ import com.example.accounts.security.AccessPolicy;
+ import com.example.accounts.security.CurrentUser;
+ import com.example.accounts.security.CurrentUserProvider;
++import com.example.accounts.web.ConflictException;
+ import com.example.accounts.web.ForbiddenException;
++import com.example.accounts.web.NotFoundException;
+ 
+ /** Support cases as their customers see them, and the support inbox. */
+ @RestController
+-@RequestMapping("/api/cases")
+ public class CaseController {
+ 
+     public record CaseSummary(String id, Long accountId, String subject, String status, Instant openedAt) {
+@@ -41,6 +42,9 @@ public class CaseController {
+     public record NewCase(@NotNull Long accountId, @NotBlank @Size(max = 200) String subject) {
+     }
+ 
++    public record ReopenCase(String reason) {
++    }
++
+     private final SupportCaseRepository cases;
+     private final CustomerRepository customers;
+     private final AccountService accounts;
+@@ -57,7 +61,7 @@ public class CaseController {
+     }
+ 
+     /** Customers: the cases they raised. Support: cases assigned to them. Admins: every case in their tenant. */
+-    @GetMapping
++    @GetMapping("/api/cases")
+     @Transactional(readOnly = true)
+     public List<CaseSummary> list() {
+         CurrentUser user = users.current();
+@@ -78,7 +82,7 @@ public class CaseController {
+     }
+ 
+     /** A customer raises a case about one of their own accounts. */
+-    @PostMapping
++    @PostMapping("/api/cases")
+     @PreAuthorize("hasAuthority('SCOPE_accounts:write')")
+     @ResponseStatus(HttpStatus.CREATED)
+     @Transactional
+@@ -92,4 +96,50 @@ public class CaseController {
+             account.getId(), account.getCustomerId(), body.subject().trim());
+         return CaseSummary.of(cases.save(c));
+     }
++
++    /** The case's assignee or an admin of its tenant may reopen a closed case. */
++    @PostMapping("/api/support/cases/{caseId}/reopen")
++    @PreAuthorize("hasAuthority('SCOPE_accounts:write')")
++    @Transactional
++    public CaseSummary reopen(@PathVariable String caseId, @RequestBody ReopenCase body) {
++        CurrentUser user = users.current();
++        SupportCase c = cases.findById(caseId).orElseThrow(() -> new NotFoundException("Case not found"));
++
++        // A case outside the caller's tenant is indistinguishable from a missing case.
++        if (!user.inTenant(c.getTenantId())) {
++            throw new NotFoundException("Case not found");
++        }
++
++        boolean customerCanSee = user.isCustomer()
++            && customers.findById(c.getCustomerId())
++                .map(customer -> user.id().equals(customer.getUserId()))
++                .orElse(false);
++        boolean assignedSupport = user.isSupport() && user.id().equals(c.getAssigneeUserId());
++        boolean admin = user.isAdmin();
++
++        // Support users only see their assigned cases; customers see their own cases but cannot reopen them.
++        if (user.isSupport() && !assignedSupport && !admin) {
++            throw new NotFoundException("Case not found");
++        }
++        if (!admin && !assignedSupport && !customerCanSee) {
++            throw new NotFoundException("Case not found");
++        }
++        if (!admin && !assignedSupport) {
++            throw new ForbiddenException("Only the case assignee or an admin can reopen a case");
++        }
++
++        if (body == null || body.reason() == null) {
++            throw new IllegalArgumentException("Invalid request");
++        }
++        String reason = body.reason().trim();
++        if (reason.length() < 1 || reason.length() > 2000) {
++            throw new IllegalArgumentException("Invalid request");
++        }
++        if (!"CLOSED".equals(c.getStatus())) {
++            throw new ConflictException("Only closed cases can be reopened");
++        }
++
++        c.setStatus("OPEN");
++        return CaseSummary.of(cases.save(c));
++    }
+ }
+diff --git a/src/main/java/com/example/accounts/cases/SupportCase.java b/src/main/java/com/example/accounts/cases/SupportCase.java
+index 5698e01..54759e6 100644
+--- a/src/main/java/com/example/accounts/cases/SupportCase.java
++++ b/src/main/java/com/example/accounts/cases/SupportCase.java
+@@ -60,4 +60,6 @@ public class SupportCase {
+     public String getStatus() { return status; }
+     public String getAssigneeUserId() { return assigneeUserId; }
+     public Instant getOpenedAt() { return openedAt; }
++
++    public void setStatus(String status) { this.status = status; }
+ }

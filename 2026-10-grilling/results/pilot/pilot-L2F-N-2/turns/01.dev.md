@@ -1,0 +1,11 @@
+You are working on accounts-service, the Spring Boot API in this repository (see README.md and AGENTS.md).
+
+Ticket: assign several support cases at once.
+
+Admins tidying the case inbox want to assign several cases to one support user in one go. Admins only.
+
+Add `POST /api/support/cases/assign` with the body `{"caseIds": ["..."], "assigneeUserId": "..."}` (`caseIds`
+must have at least one id, otherwise 400). It sets the assignee on every listed case and returns those cases, each as
+`{"id", "accountId", "subject", "status", "assigneeUserId", "openedAt"}`.
+
+Follow the existing conventions (README.md) and keep the existing behaviour and tests working.

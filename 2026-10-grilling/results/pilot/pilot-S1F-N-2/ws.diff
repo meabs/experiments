@@ -1,0 +1,141 @@
+diff --git a/src/main/java/com/example/accounts/account/AccountController.java b/src/main/java/com/example/accounts/account/AccountController.java
+index bc6eb2e..7bc7d48 100644
+--- a/src/main/java/com/example/accounts/account/AccountController.java
++++ b/src/main/java/com/example/accounts/account/AccountController.java
+@@ -1,12 +1,16 @@
+ package com.example.accounts.account;
+ 
+ import java.math.BigDecimal;
++import java.time.Instant;
+ import java.time.LocalDate;
+ import java.util.List;
+ 
++import com.fasterxml.jackson.databind.JsonNode;
+ import org.springframework.security.access.prepost.PreAuthorize;
+ import org.springframework.web.bind.annotation.GetMapping;
+ import org.springframework.web.bind.annotation.PathVariable;
++import org.springframework.web.bind.annotation.PatchMapping;
++import org.springframework.web.bind.annotation.RequestBody;
+ import org.springframework.web.bind.annotation.RequestMapping;
+ import org.springframework.web.bind.annotation.RestController;
+ 
+@@ -28,6 +32,12 @@ public class AccountController {
+         }
+     }
+ 
++    public record NoteView(Long id, String author, String body, boolean internal, Instant createdAt) {
++        static NoteView of(AccountNote n) {
++            return new NoteView(n.getId(), n.getAuthor(), n.getBody(), n.isInternal(), n.getCreatedAt());
++        }
++    }
++
+     private final AccountService service;
+ 
+     public AccountController(AccountService service) {
+@@ -50,4 +60,10 @@ public class AccountController {
+     public List<TransactionView> transactions(@PathVariable Long accountId) {
+         return service.transactions(accountId).stream().map(TransactionView::of).toList();
+     }
++
++    @PatchMapping("/{accountId}/notes/{noteId}")
++    @PreAuthorize("hasAuthority('SCOPE_accounts:write') and (hasRole('SUPPORT') or hasRole('ADMIN'))")
++    public NoteView updateNote(@PathVariable Long accountId, @PathVariable Long noteId, @RequestBody JsonNode patch) {
++        return NoteView.of(service.updateNote(accountId, noteId, patch));
++    }
+ }
+diff --git a/src/main/java/com/example/accounts/account/AccountNote.java b/src/main/java/com/example/accounts/account/AccountNote.java
+index 6c505cd..8b3decd 100644
+--- a/src/main/java/com/example/accounts/account/AccountNote.java
++++ b/src/main/java/com/example/accounts/account/AccountNote.java
+@@ -42,4 +42,7 @@ public class AccountNote {
+     public String getBody() { return body; }
+     public boolean isInternal() { return internal; }
+     public Instant getCreatedAt() { return createdAt; }
++
++    void setBody(String body) { this.body = body; }
++    void setInternal(boolean internal) { this.internal = internal; }
+ }
+diff --git a/src/main/java/com/example/accounts/account/AccountNoteRepository.java b/src/main/java/com/example/accounts/account/AccountNoteRepository.java
+index e0b89e0..2246ee8 100644
+--- a/src/main/java/com/example/accounts/account/AccountNoteRepository.java
++++ b/src/main/java/com/example/accounts/account/AccountNoteRepository.java
+@@ -7,4 +7,6 @@ import org.springframework.data.jpa.repository.JpaRepository;
+ public interface AccountNoteRepository extends JpaRepository<AccountNote, Long> {
+ 
+     List<AccountNote> findByAccountIdOrderByCreatedAtDesc(Long accountId);
++
++    java.util.Optional<AccountNote> findByIdAndAccountId(Long id, Long accountId);
+ }
+diff --git a/src/main/java/com/example/accounts/account/AccountService.java b/src/main/java/com/example/accounts/account/AccountService.java
+index c1dfaa8..eb9359d 100644
+--- a/src/main/java/com/example/accounts/account/AccountService.java
++++ b/src/main/java/com/example/accounts/account/AccountService.java
+@@ -2,6 +2,8 @@ package com.example.accounts.account;
+ 
+ import java.util.List;
+ 
++import com.fasterxml.jackson.databind.JsonNode;
++
+ import org.springframework.stereotype.Service;
+ import org.springframework.transaction.annotation.Transactional;
+ 
+@@ -19,15 +21,18 @@ public class AccountService {
+     private final CustomerRepository customers;
+     private final SupportAssignmentRepository assignments;
+     private final TransactionRepository transactions;
++    private final AccountNoteRepository notes;
+     private final AccessPolicy access;
+     private final CurrentUserProvider users;
+ 
+     public AccountService(AccountRepository accounts, CustomerRepository customers, SupportAssignmentRepository assignments,
+-                          TransactionRepository transactions, AccessPolicy access, CurrentUserProvider users) {
++                          TransactionRepository transactions, AccountNoteRepository notes, AccessPolicy access,
++                          CurrentUserProvider users) {
+         this.accounts = accounts;
+         this.customers = customers;
+         this.assignments = assignments;
+         this.transactions = transactions;
++        this.notes = notes;
+         this.access = access;
+         this.users = users;
+     }
+@@ -66,4 +71,39 @@ public class AccountService {
+     public List<Transaction> transactions(Long accountId) {
+         return transactions.findByAccountIdOrderByBookedOnDescIdDesc(getVisible(accountId).getId());
+     }
++
++    @Transactional
++    public AccountNote updateNote(Long accountId, Long noteId, JsonNode patch) {
++        Account account = getVisible(accountId);
++        if (patch == null || !patch.isObject()) {
++            throw new IllegalArgumentException("Invalid request");
++        }
++        boolean hasBody = patch.has("body");
++        boolean hasInternal = patch.has("internal");
++        if (!hasBody && !hasInternal) {
++            throw new IllegalArgumentException("Invalid request");
++        }
++        if (hasBody) {
++            JsonNode body = patch.get("body");
++            if (body == null || !body.isTextual()) {
++                throw new IllegalArgumentException("Invalid request");
++            }
++            String trimmed = body.textValue().trim();
++            if (trimmed.length() < 1 || trimmed.length() > 2000) {
++                throw new IllegalArgumentException("Invalid request");
++            }
++        }
++        if (hasInternal && (patch.get("internal") == null || !patch.get("internal").isBoolean())) {
++            throw new IllegalArgumentException("Invalid request");
++        }
++        AccountNote note = notes.findByIdAndAccountId(noteId, account.getId())
++            .orElseThrow(() -> new NotFoundException("Note not found"));
++        if (hasBody) {
++            note.setBody(patch.get("body").textValue().trim());
++        }
++        if (hasInternal) {
++            note.setInternal(patch.get("internal").booleanValue());
++        }
++        return notes.save(note);
++    }
+ }

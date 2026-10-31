@@ -1,0 +1,100 @@
+diff --git a/src/main/java/com/example/accounts/cases/SupportCase.java b/src/main/java/com/example/accounts/cases/SupportCase.java
+index 5698e01..e1d8815 100644
+--- a/src/main/java/com/example/accounts/cases/SupportCase.java
++++ b/src/main/java/com/example/accounts/cases/SupportCase.java
+@@ -60,4 +60,10 @@ public class SupportCase {
+     public String getStatus() { return status; }
+     public String getAssigneeUserId() { return assigneeUserId; }
+     public Instant getOpenedAt() { return openedAt; }
++
++    /** Reopen a previously closed case without changing its assignee. */
++    public void reopen() {
++        this.status = "OPEN";
++        this.openedAt = Instant.now();
++    }
+ }
+diff --git a/src/main/java/com/example/accounts/cases/SupportCaseController.java b/src/main/java/com/example/accounts/cases/SupportCaseController.java
+new file mode 100644
+index 0000000..16248b8
+--- /dev/null
++++ b/src/main/java/com/example/accounts/cases/SupportCaseController.java
+@@ -0,0 +1,79 @@
++package com.example.accounts.cases;
++
++import java.time.Instant;
++
++import org.springframework.http.HttpStatus;
++import org.springframework.security.access.prepost.PreAuthorize;
++import org.springframework.transaction.annotation.Transactional;
++import org.springframework.web.bind.annotation.PathVariable;
++import org.springframework.web.bind.annotation.PostMapping;
++import org.springframework.web.bind.annotation.RequestBody;
++import org.springframework.web.bind.annotation.RequestMapping;
++import org.springframework.web.bind.annotation.ResponseStatus;
++import org.springframework.web.bind.annotation.RestController;
++
++import com.example.accounts.customer.CustomerRepository;
++import com.example.accounts.security.CurrentUser;
++import com.example.accounts.security.CurrentUserProvider;
++import com.example.accounts.web.ConflictException;
++import com.example.accounts.web.ForbiddenException;
++import com.example.accounts.web.NotFoundException;
++
++/** Staff operations on support cases. */
++@RestController
++@RequestMapping("/api/support/cases")
++public class SupportCaseController {
++
++    public record ReopenRequest(String reason) {
++    }
++
++    public record ReopenedCase(String id, Long accountId, String subject, String status, Instant openedAt) {
++        static ReopenedCase of(SupportCase c) {
++            return new ReopenedCase(c.getId(), c.getAccountId(), c.getSubject(), c.getStatus(), c.getOpenedAt());
++        }
++    }
++
++    private final SupportCaseRepository cases;
++    private final CustomerRepository customers;
++    private final CurrentUserProvider users;
++
++    public SupportCaseController(SupportCaseRepository cases, CustomerRepository customers,
++                                 CurrentUserProvider users) {
++        this.cases = cases;
++        this.customers = customers;
++        this.users = users;
++    }
++
++    @PostMapping("/{caseId}/reopen")
++    @PreAuthorize("hasAuthority('SCOPE_accounts:write')")
++    @ResponseStatus(HttpStatus.OK)
++    @Transactional
++    public ReopenedCase reopen(@PathVariable String caseId, @RequestBody ReopenRequest body) {
++        if (body == null || body.reason() == null || body.reason().trim().length() < 1
++                || body.reason().trim().length() > 2000) {
++            throw new IllegalArgumentException("Invalid request");
++        }
++
++        CurrentUser user = users.current();
++        SupportCase c = cases.findById(caseId)
++            .orElseThrow(() -> new NotFoundException("Case not found"));
++
++        boolean sameTenant = user.inTenant(c.getTenantId());
++        boolean assignee = sameTenant && user.isSupport() && user.id().equals(c.getAssigneeUserId());
++        boolean admin = sameTenant && user.isAdmin();
++        if (!assignee && !admin) {
++            boolean customerOwns = sameTenant && user.isCustomer()
++                && customers.findById(c.getCustomerId()).map(customer -> user.id().equals(customer.getUserId())).orElse(false);
++            if (customerOwns) {
++                throw new ForbiddenException("Only the assigned support user or a tenant admin can reopen a case");
++            }
++            throw new NotFoundException("Case not found");
++        }
++
++        if (!"CLOSED".equals(c.getStatus())) {
++            throw new ConflictException("Case is not closed");
++        }
++        c.reopen();
++        return ReopenedCase.of(cases.save(c));
++    }
++}

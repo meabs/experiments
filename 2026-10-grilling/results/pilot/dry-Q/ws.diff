@@ -1,0 +1,102 @@
+diff --git a/src/main/java/com/example/accounts/account/AccountController.java b/src/main/java/com/example/accounts/account/AccountController.java
+index bc6eb2e..b611f91 100644
+--- a/src/main/java/com/example/accounts/account/AccountController.java
++++ b/src/main/java/com/example/accounts/account/AccountController.java
+@@ -6,6 +6,8 @@ import java.util.List;
+ 
+ import org.springframework.security.access.prepost.PreAuthorize;
+ import org.springframework.web.bind.annotation.GetMapping;
++import org.springframework.web.bind.annotation.PatchMapping;
++import org.springframework.web.bind.annotation.RequestBody;
+ import org.springframework.web.bind.annotation.PathVariable;
+ import org.springframework.web.bind.annotation.RequestMapping;
+ import org.springframework.web.bind.annotation.RestController;
+@@ -28,6 +30,21 @@ public class AccountController {
+         }
+     }
+ 
++    /** Fields are tracked separately so an explicitly supplied null is invalid, while omitted fields are unchanged. */
++    public static final class AccountPatch {
++        private String nickname;
++        private Integer dailyLimit;
++        private boolean nicknameSet;
++        private boolean dailyLimitSet;
++
++        public String getNickname() { return nickname; }
++        public void setNickname(String nickname) { this.nickname = nickname; this.nicknameSet = true; }
++        public Integer getDailyLimit() { return dailyLimit; }
++        public void setDailyLimit(Integer dailyLimit) { this.dailyLimit = dailyLimit; this.dailyLimitSet = true; }
++        public boolean hasNickname() { return nicknameSet; }
++        public boolean hasDailyLimit() { return dailyLimitSet; }
++    }
++
+     private final AccountService service;
+ 
+     public AccountController(AccountService service) {
+@@ -44,6 +61,12 @@ public class AccountController {
+         return AccountView.of(service.getVisible(accountId));
+     }
+ 
++    @PatchMapping("/{accountId}")
++    @PreAuthorize("hasAuthority('SCOPE_accounts:write')")
++    public AccountView patch(@PathVariable Long accountId, @RequestBody AccountPatch request) {
++        return AccountView.of(service.patch(accountId, request));
++    }
++
+     /** Needs the transactions:read scope as well as access to the account. */
+     @GetMapping("/{accountId}/transactions")
+     @PreAuthorize("hasAuthority('SCOPE_transactions:read')")
+diff --git a/src/main/java/com/example/accounts/account/AccountService.java b/src/main/java/com/example/accounts/account/AccountService.java
+index c1dfaa8..96d7a7f 100644
+--- a/src/main/java/com/example/accounts/account/AccountService.java
++++ b/src/main/java/com/example/accounts/account/AccountService.java
+@@ -10,6 +10,8 @@ import com.example.accounts.security.AccessPolicy;
+ import com.example.accounts.security.CurrentUser;
+ import com.example.accounts.security.CurrentUserProvider;
+ import com.example.accounts.web.NotFoundException;
++import com.example.accounts.web.ConflictException;
++import com.example.accounts.web.ForbiddenException;
+ 
+ @Service
+ @Transactional(readOnly = true)
+@@ -66,4 +68,40 @@ public class AccountService {
+     public List<Transaction> transactions(Long accountId) {
+         return transactions.findByAccountIdOrderByBookedOnDescIdDesc(getVisible(accountId).getId());
+     }
++
++    @Transactional
++    public Account patch(Long accountId, AccountController.AccountPatch request) {
++        CurrentUser user = users.current();
++        Account account = getVisible(accountId);
++        if (request == null || (!request.hasNickname() && !request.hasDailyLimit())) {
++            throw new IllegalArgumentException("Patch must contain at least one field");
++        }
++        String nickname = request.getNickname();
++        if (request.hasNickname() && (nickname == null || nickname.trim().length() < 1 || nickname.trim().length() > 40)) {
++            throw new IllegalArgumentException("Invalid nickname");
++        }
++        Integer dailyLimit = request.getDailyLimit();
++        if (request.hasDailyLimit() && (dailyLimit == null || dailyLimit < 0 || dailyLimit > 5000)) {
++            throw new IllegalArgumentException("Invalid daily limit");
++        }
++
++        boolean admin = access.isTenantAdmin(user, account.getTenantId());
++        boolean owner = access.ownsAccount(user, account);
++        if ((request.hasNickname() && !admin && !owner) || (request.hasDailyLimit() && !admin)) {
++            throw new ForbiddenException("You may not change these account fields");
++        }
++        if (dailyLimit != null && dailyLimit > 2000 && (!admin || !user.hasRole(CurrentUser.APPROVER))) {
++            throw new ForbiddenException("An approver is required for daily limits above 2000");
++        }
++        if (account.getStatus() == Account.Status.CLOSED) {
++            throw new ConflictException("Closed accounts cannot be changed");
++        }
++        if (request.hasNickname()) {
++            account.setNickname(nickname.trim());
++        }
++        if (request.hasDailyLimit()) {
++            account.setDailyLimit(dailyLimit);
++        }
++        return account;
++    }
+ }

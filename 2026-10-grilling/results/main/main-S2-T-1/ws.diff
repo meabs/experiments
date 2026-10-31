@@ -1,0 +1,94 @@
+diff --git a/src/main/java/com/example/accounts/cases/CaseController.java b/src/main/java/com/example/accounts/cases/CaseController.java
+index b39b900..e86694f 100644
+--- a/src/main/java/com/example/accounts/cases/CaseController.java
++++ b/src/main/java/com/example/accounts/cases/CaseController.java
+@@ -13,6 +13,7 @@ import org.springframework.http.HttpStatus;
+ import org.springframework.security.access.prepost.PreAuthorize;
+ import org.springframework.transaction.annotation.Transactional;
+ import org.springframework.web.bind.annotation.GetMapping;
++import org.springframework.web.bind.annotation.PathVariable;
+ import org.springframework.web.bind.annotation.PostMapping;
+ import org.springframework.web.bind.annotation.RequestBody;
+ import org.springframework.web.bind.annotation.RequestMapping;
+@@ -25,7 +26,9 @@ import com.example.accounts.customer.CustomerRepository;
+ import com.example.accounts.security.AccessPolicy;
+ import com.example.accounts.security.CurrentUser;
+ import com.example.accounts.security.CurrentUserProvider;
++import com.example.accounts.web.ConflictException;
+ import com.example.accounts.web.ForbiddenException;
++import com.example.accounts.web.NotFoundException;
+ 
+ /** Support cases as their customers see them, and the support inbox. */
+ @RestController
+@@ -41,6 +44,9 @@ public class CaseController {
+     public record NewCase(@NotNull Long accountId, @NotBlank @Size(max = 200) String subject) {
+     }
+ 
++    public record CloseCase(@NotBlank String resolution) {
++    }
++
+     private final SupportCaseRepository cases;
+     private final CustomerRepository customers;
+     private final AccountService accounts;
+@@ -92,4 +98,34 @@ public class CaseController {
+             account.getId(), account.getCustomerId(), body.subject().trim());
+         return CaseSummary.of(cases.save(c));
+     }
++
++    /** The case assignee or an admin of the case's tenant closes a case. */
++    @PostMapping("/api/support/cases/{caseId}/close")
++    @PreAuthorize("hasAuthority('SCOPE_accounts:write')")
++    @Transactional
++    public CaseSummary close(@PathVariable String caseId, @Valid @RequestBody CloseCase body) {
++        CurrentUser user = users.current();
++        SupportCase c = cases.findById(caseId)
++            .filter(found -> user.inTenant(found.getTenantId()))
++            .orElseThrow(() -> new NotFoundException("Case not found"));
++
++        if (user.isSupport() && !user.isAdmin() && !user.id().equals(c.getAssigneeUserId())) {
++            // Support users can only see cases assigned to them; don't reveal another case in their tenant.
++            throw new NotFoundException("Case not found");
++        }
++        if (!access.isTenantAdmin(user, c.getTenantId())
++            && !(user.isSupport() && user.id().equals(c.getAssigneeUserId()))) {
++            throw new ForbiddenException("Only the case assignee or an admin can close a case");
++        }
++        if (c.getStatus().equals("CLOSED")) {
++            throw new ConflictException("Case is already closed");
++        }
++
++        String resolution = body.resolution().trim();
++        if (resolution.length() < 1 || resolution.length() > 2000) {
++            throw new IllegalArgumentException("Invalid resolution");
++        }
++        c.close(resolution);
++        return CaseSummary.of(c);
++    }
+ }
+diff --git a/src/main/java/com/example/accounts/cases/SupportCase.java b/src/main/java/com/example/accounts/cases/SupportCase.java
+index 5698e01..b857b1a 100644
+--- a/src/main/java/com/example/accounts/cases/SupportCase.java
++++ b/src/main/java/com/example/accounts/cases/SupportCase.java
+@@ -36,6 +36,10 @@ public class SupportCase {
+     /** User id of the support user handling the case; null until someone picks it up. */
+     private String assigneeUserId;
+ 
++    /** Short explanation recorded when the case is closed. */
++    @Column(length = 2000)
++    private String resolution;
++
+     @Column(nullable = false)
+     private Instant openedAt;
+ 
+@@ -59,5 +63,11 @@ public class SupportCase {
+     public String getSubject() { return subject; }
+     public String getStatus() { return status; }
+     public String getAssigneeUserId() { return assigneeUserId; }
++    public String getResolution() { return resolution; }
+     public Instant getOpenedAt() { return openedAt; }
++
++    public void close(String resolution) {
++        this.status = "CLOSED";
++        this.resolution = resolution;
++    }
+ }

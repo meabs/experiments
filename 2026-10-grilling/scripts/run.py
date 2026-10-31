@@ -10,7 +10,7 @@ codex-home/ (the session), turns/NN.{dev,agent}.md, turns/NN.jsonl (Codex's even
 Arms: T ticket only; Q ask first; G grilling; GD grill-with-docs; GY grilling with "yes" to everything. Stage 2 runs
 (arm D docs, N no docs) start from the same app, plus (D) the GLOSSARY.md and docs/adr/ one GD run wrote.
 """
-import argparse, glob, json, os, re, shutil, subprocess, sys, time
+import argparse, glob, json, os, re, shutil, signal, subprocess, sys, time
 
 E = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 APP = os.path.join(os.path.dirname(E), "2026-10-sec-authz", "app")
@@ -98,8 +98,11 @@ def turn(run, message=None):
     t0 = time.time()
     with open(os.path.join(d, "turns", f"{n:02d}.jsonl"), "w") as out, \
             open(os.path.join(d, "turns", f"{n:02d}.stderr"), "w") as err:
-        p = subprocess.run(cmd, cwd=os.path.join(d, "ws"), input=message, text=True, stdout=out, stderr=err,
-                           env=env, timeout=1800)
+        p = subprocess.Popen(cmd, cwd=os.path.join(d, "ws"), stdin=subprocess.PIPE, text=True, stdout=out,
+                             stderr=err, env=env, start_new_session=True)
+        p.stdin.write(message)
+        p.stdin.close()
+        stalled = watch(p, os.path.join(d, "turns", f"{n:02d}.jsonl"), t0)
     if m["session"] is None:
         for line in open(os.path.join(d, "turns", f"{n:02d}.jsonl")):
             try:
@@ -110,11 +113,42 @@ def turn(run, message=None):
                 m["session"] = e["thread_id"]
                 break
     m["turns"] = n
-    m.setdefault("turn_log", []).append({"n": n, "exit": p.returncode, "seconds": round(time.time() - t0, 1)})
+    m.setdefault("turn_log", []).append({"n": n, "exit": p.returncode, "seconds": round(time.time() - t0, 1),
+                                         **({"stalled": stalled} if stalled else {})})
     save_meta(run, m)
     reply = agent_text(os.path.join(d, "turns", f"{n:02d}.jsonl"))
     open(last, "w").write(reply)
     return reply, p.returncode
+
+
+STALL = 120  # seconds with no new event, in the turn or any subagent, while the agent sits in a `wait` call
+
+
+def watch(p, jsonl, t0):
+    """Waits for Codex to finish. Ends the turn if Codex hangs in a collaboration `wait` (amendment, 2026-10-31: the
+    agent sometimes calls wait_agent with a one-hour timeout after posting its questions, or misses a finished
+    subagent), or after 30 minutes in all. Returns why it ended the turn, or None."""
+    while p.poll() is None:
+        time.sleep(5)
+        home = os.path.join(os.path.dirname(os.path.dirname(jsonl)), "codex-home", "sessions")
+        newest = max([os.path.getmtime(jsonl)] + [os.path.getmtime(f) for f in
+                                                  glob.glob(os.path.join(home, "**", "*.jsonl"), recursive=True)])
+        idle = time.time() - newest   # subagents write to their own session files
+        last = ""
+        try:
+            last = open(jsonl).read().rstrip().rsplit("\n", 1)[-1]
+        except OSError:
+            pass
+        if idle > STALL and '"type":"item.started"' in last and '"tool":"wait"' in last:
+            why = "wait"
+        elif time.time() - t0 > 1800:
+            why = "timeout"
+        else:
+            continue
+        os.killpg(p.pid, 9)
+        p.wait()
+        return why
+    return None
 
 
 def agent_text(path):

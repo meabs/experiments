@@ -1,0 +1,105 @@
+diff --git a/src/main/java/com/example/accounts/cases/CaseController.java b/src/main/java/com/example/accounts/cases/CaseController.java
+index b39b900..99ba2d2 100644
+--- a/src/main/java/com/example/accounts/cases/CaseController.java
++++ b/src/main/java/com/example/accounts/cases/CaseController.java
+@@ -1,7 +1,9 @@
+ package com.example.accounts.cases;
+ 
+ import java.time.Instant;
++import java.util.LinkedHashMap;
+ import java.util.List;
++import java.util.Map;
+ import java.util.UUID;
+ 
+ import jakarta.validation.Valid;
+@@ -26,10 +28,11 @@ import com.example.accounts.security.AccessPolicy;
+ import com.example.accounts.security.CurrentUser;
+ import com.example.accounts.security.CurrentUserProvider;
+ import com.example.accounts.web.ForbiddenException;
++import com.example.accounts.web.NotFoundException;
+ 
+ /** Support cases as their customers see them, and the support inbox. */
+ @RestController
+-@RequestMapping("/api/cases")
++@RequestMapping("/api")
+ public class CaseController {
+ 
+     public record CaseSummary(String id, Long accountId, String subject, String status, Instant openedAt) {
+@@ -38,9 +41,21 @@ public class CaseController {
+         }
+     }
+ 
++    public record AssignedCaseSummary(String id, Long accountId, String subject, String status,
++                                      String assigneeUserId, Instant openedAt) {
++        static AssignedCaseSummary of(SupportCase c) {
++            return new AssignedCaseSummary(c.getId(), c.getAccountId(), c.getSubject(), c.getStatus(),
++                c.getAssigneeUserId(), c.getOpenedAt());
++        }
++    }
++
+     public record NewCase(@NotNull Long accountId, @NotBlank @Size(max = 200) String subject) {
+     }
+ 
++    public record AssignCases(@NotNull @Size(min = 1) List<@NotBlank String> caseIds,
++                              @NotBlank String assigneeUserId) {
++    }
++
+     private final SupportCaseRepository cases;
+     private final CustomerRepository customers;
+     private final AccountService accounts;
+@@ -57,7 +72,7 @@ public class CaseController {
+     }
+ 
+     /** Customers: the cases they raised. Support: cases assigned to them. Admins: every case in their tenant. */
+-    @GetMapping
++    @GetMapping("/cases")
+     @Transactional(readOnly = true)
+     public List<CaseSummary> list() {
+         CurrentUser user = users.current();
+@@ -78,7 +93,7 @@ public class CaseController {
+     }
+ 
+     /** A customer raises a case about one of their own accounts. */
+-    @PostMapping
++    @PostMapping("/cases")
+     @PreAuthorize("hasAuthority('SCOPE_accounts:write')")
+     @ResponseStatus(HttpStatus.CREATED)
+     @Transactional
+@@ -92,4 +107,24 @@ public class CaseController {
+             account.getId(), account.getCustomerId(), body.subject().trim());
+         return CaseSummary.of(cases.save(c));
+     }
++
++    /** An admin assigns all the requested cases in their tenant to one support user. */
++    @PostMapping("/support/cases/assign")
++    @PreAuthorize("hasRole('ADMIN') && hasAuthority('SCOPE_accounts:write')")
++    @Transactional
++    public List<AssignedCaseSummary> assign(@Valid @RequestBody AssignCases body) {
++        CurrentUser user = users.current();
++
++        // Load and validate every case before mutating any of them, so a bad request is all-or-nothing.
++        Map<String, SupportCase> found = new LinkedHashMap<>();
++        for (String id : body.caseIds()) {
++            SupportCase c = cases.findById(id)
++                .filter(candidate -> user.inTenant(candidate.getTenantId()))
++                .orElseThrow(() -> new NotFoundException("Case not found"));
++            found.putIfAbsent(id, c);
++        }
++
++        found.values().forEach(c -> c.assignTo(body.assigneeUserId().trim()));
++        return found.values().stream().map(AssignedCaseSummary::of).toList();
++    }
+ }
+diff --git a/src/main/java/com/example/accounts/cases/SupportCase.java b/src/main/java/com/example/accounts/cases/SupportCase.java
+index 5698e01..1d8c6d7 100644
+--- a/src/main/java/com/example/accounts/cases/SupportCase.java
++++ b/src/main/java/com/example/accounts/cases/SupportCase.java
+@@ -60,4 +60,8 @@ public class SupportCase {
+     public String getStatus() { return status; }
+     public String getAssigneeUserId() { return assigneeUserId; }
+     public Instant getOpenedAt() { return openedAt; }
++
++    public void assignTo(String userId) {
++        this.assigneeUserId = userId;
++    }
+ }

@@ -1,0 +1,11 @@
+You are working on accounts-service, the Spring Boot API in this repository (see README.md and AGENTS.md).
+
+Ticket: let staff reopen closed support cases.
+
+Customers sometimes come back after their case has been closed. Add `POST /api/support/cases/{caseId}/reopen` with
+the body `{"reason": "..."}` (1 to 2000 characters after trimming, otherwise 400). The case's status becomes `OPEN`
+again, with the same assignee. The support user handling the case (its assignee) or an admin can reopen it; support
+users who aren't the case's assignee, customers, and staff of other banks can't. It returns `{"id", "accountId",
+"subject", "status", "openedAt"}`.
+
+Follow the existing conventions (README.md) and keep the existing behaviour and tests working.

@@ -249,3 +249,16 @@ differences of a run or two mean nothing, and the report says "no measurable dif
   - **L2 rd is relabelled "guessable"** (user's choice, "Keep, not in H3"): after L2's ticket stopped saying "Admins
     do this", the ticket-only agent met it in 2 of 2 runs. It stays in the main score but is left out of hypothesis 3,
     which compares requirements only the developer knows.
+- 2026-10-31, during the main run (user: "Y s" to pushing the build and starting the main run).
+  - **Stall watchdog.** In the first batch of interviews, two first turns hung in Codex's collaboration `wait` call:
+    one agent posted its questions and then called `wait_agent` with a one-hour timeout although no subagent was
+    running; in the other, a subagent finished but the parent never woke. Both were stopped by hand after about
+    10 minutes, which ends the turn as a user interrupting would; the agent's message, if any, is kept and the
+    developer replies as usual. From then on `run.py` ends a turn itself after 2 minutes with no new event, in the turn's
+    stream or any subagent's session file, while the agent sits in a `wait` call (or after 30 minutes in all), and logs `stalled` in the run's `turn_log`. Stalls are
+    counted per arm in the report. If a stalled turn ends with no message to the developer, the developer replies
+    "Carry on." (labelled `nudge`), which adds no requirement.
+  - **Relay.** `scripts/relay.py` creates the 54 interview runs under anonymous IDs in a shuffled order (key in the
+    work folder, read only at analysis) and sends each reply with its labels. The scripted arms run through
+    `scripts/main.sh`. Blinding is weaker than hoped: the agents often name the skill they are using ("I'm using the
+    grill-with-docs skill"), so the arm is often visible. The audit stays the real check.

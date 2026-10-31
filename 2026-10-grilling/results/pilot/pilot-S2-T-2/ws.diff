@@ -1,0 +1,111 @@
+diff --git a/src/main/java/com/example/accounts/cases/SupportCase.java b/src/main/java/com/example/accounts/cases/SupportCase.java
+index 5698e01..e19843f 100644
+--- a/src/main/java/com/example/accounts/cases/SupportCase.java
++++ b/src/main/java/com/example/accounts/cases/SupportCase.java
+@@ -33,6 +33,9 @@ public class SupportCase {
+     @Column(nullable = false)
+     private String status;
+ 
++    @Column(length = 2000)
++    private String resolution;
++
+     /** User id of the support user handling the case; null until someone picks it up. */
+     private String assigneeUserId;
+ 
+@@ -58,6 +61,12 @@ public class SupportCase {
+     public String getCustomerId() { return customerId; }
+     public String getSubject() { return subject; }
+     public String getStatus() { return status; }
++    public String getResolution() { return resolution; }
+     public String getAssigneeUserId() { return assigneeUserId; }
+     public Instant getOpenedAt() { return openedAt; }
++
++    public void close(String resolution) {
++        this.status = "CLOSED";
++        this.resolution = resolution;
++    }
+ }
+diff --git a/src/main/java/com/example/accounts/cases/SupportCaseController.java b/src/main/java/com/example/accounts/cases/SupportCaseController.java
+new file mode 100644
+index 0000000..a591f53
+--- /dev/null
++++ b/src/main/java/com/example/accounts/cases/SupportCaseController.java
+@@ -0,0 +1,78 @@
++package com.example.accounts.cases;
++
++import org.springframework.security.access.prepost.PreAuthorize;
++import org.springframework.transaction.annotation.Transactional;
++import org.springframework.web.bind.annotation.PathVariable;
++import org.springframework.web.bind.annotation.PostMapping;
++import org.springframework.web.bind.annotation.RequestBody;
++import org.springframework.web.bind.annotation.RestController;
++
++import com.example.accounts.customer.CustomerRepository;
++import com.example.accounts.security.CurrentUser;
++import com.example.accounts.security.CurrentUserProvider;
++import com.example.accounts.web.ConflictException;
++import com.example.accounts.web.ForbiddenException;
++import com.example.accounts.web.NotFoundException;
++
++/** Staff operations on support cases. */
++@RestController
++public class SupportCaseController {
++
++    public record CloseCase(String resolution) {
++    }
++
++    private final SupportCaseRepository cases;
++    private final CustomerRepository customers;
++    private final CurrentUserProvider users;
++
++    public SupportCaseController(SupportCaseRepository cases, CustomerRepository customers, CurrentUserProvider users) {
++        this.cases = cases;
++        this.customers = customers;
++        this.users = users;
++    }
++
++    @PostMapping("/api/support/cases/{caseId}/close")
++    @PreAuthorize("hasAuthority('SCOPE_accounts:write')")
++    @Transactional
++    public CaseController.CaseSummary close(@PathVariable String caseId, @RequestBody CloseCase body) {
++        CurrentUser user = users.current();
++        SupportCase supportCase = cases.findById(caseId)
++            .orElseThrow(() -> new NotFoundException("Case not found"));
++
++        // A case in another tenant is deliberately indistinguishable from a missing case.
++        if (!user.inTenant(supportCase.getTenantId())) {
++            throw new NotFoundException("Case not found");
++        }
++
++        boolean assignedSupport = user.isSupport() && user.id().equals(supportCase.getAssigneeUserId());
++        boolean admin = user.isAdmin();
++        boolean ownCustomerCase = customers.findByUserId(user.id())
++            .map(c -> c.getId().equals(supportCase.getCustomerId()))
++            .orElse(false);
++
++        // Non-assigned support users do not have visibility of this case.
++        if (user.isSupport() && !assignedSupport && !admin) {
++            throw new NotFoundException("Case not found");
++        }
++        if (!admin && !assignedSupport) {
++            // A customer can see only their own cases, but closing is staff-only.
++            if (user.isCustomer() && !ownCustomerCase) {
++                throw new NotFoundException("Case not found");
++            }
++            throw new ForbiddenException("Only the assignee or an admin can close a case");
++        }
++
++        if (supportCase.getStatus().equals("CLOSED")) {
++            throw new ConflictException("Case is already closed");
++        }
++        if (body == null || body.resolution() == null) {
++            throw new IllegalArgumentException("Invalid resolution");
++        }
++        String resolution = body.resolution().trim();
++        if (resolution.length() < 1 || resolution.length() > 2000) {
++            throw new IllegalArgumentException("Invalid resolution");
++        }
++        supportCase.close(resolution);
++        return CaseController.CaseSummary.of(supportCase);
++    }
++}

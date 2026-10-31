@@ -1,0 +1,13 @@
+You are working on accounts-service, the Spring Boot API in this repository (see README.md and AGENTS.md).
+
+Ticket: freeze all of a customer's accounts.
+
+When fraud is confirmed on a customer, the fraud team wants to freeze all of that customer's accounts in one go. Admins
+do this from the back office.
+
+Add `POST /api/customers/{customerId}/freeze` with the body `{"reason": "..."}` (1 to 500 characters after
+trimming, otherwise 400). It freezes the customer's open accounts: a frozen account has status `FROZEN`, which
+`GET /api/accounts/{accountId}` shows. It returns all of the customer's accounts, each in the same shape as
+`GET /api/accounts/{accountId}`.
+
+Follow the existing conventions (README.md) and keep the existing behaviour and tests working.

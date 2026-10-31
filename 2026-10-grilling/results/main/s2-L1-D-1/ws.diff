@@ -1,0 +1,151 @@
+diff --git a/src/main/java/com/example/accounts/account/Account.java b/src/main/java/com/example/accounts/account/Account.java
+index 41c272d..d3224d8 100644
+--- a/src/main/java/com/example/accounts/account/Account.java
++++ b/src/main/java/com/example/accounts/account/Account.java
+@@ -13,7 +13,7 @@ import jakarta.persistence.Table;
+ @Table(name = "accounts")
+ public class Account {
+ 
+-    public enum Status { OPEN, CLOSED }
++    public enum Status { OPEN, FROZEN, CLOSED }
+ 
+     @Id
+     @GeneratedValue(strategy = GenerationType.IDENTITY)
+diff --git a/src/main/java/com/example/accounts/account/AccountController.java b/src/main/java/com/example/accounts/account/AccountController.java
+index bc6eb2e..8078f04 100644
+--- a/src/main/java/com/example/accounts/account/AccountController.java
++++ b/src/main/java/com/example/accounts/account/AccountController.java
+@@ -16,7 +16,7 @@ public class AccountController {
+ 
+     public record AccountView(Long id, String customerId, String nickname, String type, BigDecimal balance, int dailyLimit,
+                               String status) {
+-        static AccountView of(Account a) {
++        public static AccountView of(Account a) {
+             return new AccountView(a.getId(), a.getCustomerId(), a.getNickname(), a.getType(), a.getBalance(),
+                 a.getDailyLimit(), a.getStatus().name());
+         }
+diff --git a/src/main/java/com/example/accounts/account/AccountNote.java b/src/main/java/com/example/accounts/account/AccountNote.java
+index 6c505cd..2a8e8d4 100644
+--- a/src/main/java/com/example/accounts/account/AccountNote.java
++++ b/src/main/java/com/example/accounts/account/AccountNote.java
+@@ -36,6 +36,17 @@ public class AccountNote {
+     @Column(nullable = false)
+     private Instant createdAt;
+ 
++    protected AccountNote() {
++    }
++
++    public AccountNote(Long accountId, String author, String body, boolean internal) {
++        this.accountId = accountId;
++        this.author = author;
++        this.body = body;
++        this.internal = internal;
++        this.createdAt = Instant.now();
++    }
++
+     public Long getId() { return id; }
+     public Long getAccountId() { return accountId; }
+     public String getAuthor() { return author; }
+diff --git a/src/main/java/com/example/accounts/account/AccountService.java b/src/main/java/com/example/accounts/account/AccountService.java
+index c1dfaa8..b5720ff 100644
+--- a/src/main/java/com/example/accounts/account/AccountService.java
++++ b/src/main/java/com/example/accounts/account/AccountService.java
+@@ -19,15 +19,18 @@ public class AccountService {
+     private final CustomerRepository customers;
+     private final SupportAssignmentRepository assignments;
+     private final TransactionRepository transactions;
++    private final AccountNoteRepository notes;
+     private final AccessPolicy access;
+     private final CurrentUserProvider users;
+ 
+     public AccountService(AccountRepository accounts, CustomerRepository customers, SupportAssignmentRepository assignments,
+-                          TransactionRepository transactions, AccessPolicy access, CurrentUserProvider users) {
++                          TransactionRepository transactions, AccountNoteRepository notes, AccessPolicy access,
++                          CurrentUserProvider users) {
+         this.accounts = accounts;
+         this.customers = customers;
+         this.assignments = assignments;
+         this.transactions = transactions;
++        this.notes = notes;
+         this.access = access;
+         this.users = users;
+     }
+@@ -66,4 +69,19 @@ public class AccountService {
+     public List<Transaction> transactions(Long accountId) {
+         return transactions.findByAccountIdOrderByBookedOnDescIdDesc(getVisible(accountId).getId());
+     }
++
++    @Transactional
++    public List<Account> freezeCustomer(String customerId, String reason) {
++        CurrentUser user = users.current();
++        customers.findByIdAndTenantId(customerId, user.tenantId())
++            .orElseThrow(() -> new NotFoundException("Customer not found"));
++        List<Account> customerAccounts = accounts.findByTenantIdAndCustomerIdOrderById(user.tenantId(), customerId);
++        for (Account account : customerAccounts) {
++            if (account.getStatus() == Account.Status.OPEN) {
++                account.setStatus(Account.Status.FROZEN);
++                notes.save(new AccountNote(account.getId(), user.id(), "Account frozen: " + reason, true));
++            }
++        }
++        return customerAccounts;
++    }
+ }
+diff --git a/src/main/java/com/example/accounts/customer/AdminCustomerController.java b/src/main/java/com/example/accounts/customer/AdminCustomerController.java
+index f0a6ea6..6ae2aca 100644
+--- a/src/main/java/com/example/accounts/customer/AdminCustomerController.java
++++ b/src/main/java/com/example/accounts/customer/AdminCustomerController.java
+@@ -38,4 +38,5 @@ public class AdminCustomerController {
+             .orElseThrow(() -> new NotFoundException("Customer not found"));
+         return AdminCustomerView.of(c);
+     }
++
+ }
+diff --git a/src/main/java/com/example/accounts/customer/CustomerFreezeController.java b/src/main/java/com/example/accounts/customer/CustomerFreezeController.java
+new file mode 100644
+index 0000000..389f091
+--- /dev/null
++++ b/src/main/java/com/example/accounts/customer/CustomerFreezeController.java
+@@ -0,0 +1,43 @@
++package com.example.accounts.customer;
++
++import java.util.List;
++
++import jakarta.validation.Valid;
++import jakarta.validation.constraints.NotBlank;
++import jakarta.validation.constraints.Size;
++
++import org.springframework.security.access.prepost.PreAuthorize;
++import org.springframework.web.bind.annotation.PathVariable;
++import org.springframework.web.bind.annotation.PostMapping;
++import org.springframework.web.bind.annotation.RequestBody;
++import org.springframework.web.bind.annotation.RequestMapping;
++import org.springframework.web.bind.annotation.RestController;
++
++import com.example.accounts.account.AccountController.AccountView;
++import com.example.accounts.account.AccountService;
++
++/** Admin action to freeze all open accounts belonging to a customer. */
++@RestController
++@RequestMapping("/api/customers")
++public class CustomerFreezeController {
++
++    public record FreezeRequest(@NotBlank @Size(max = 500) String reason) {
++        public FreezeRequest {
++            if (reason != null) {
++                reason = reason.trim();
++            }
++        }
++    }
++
++    private final AccountService accounts;
++
++    public CustomerFreezeController(AccountService accounts) {
++        this.accounts = accounts;
++    }
++
++    @PostMapping("/{customerId}/freeze")
++    @PreAuthorize("hasRole('ADMIN') and hasAuthority('SCOPE_accounts:write')")
++    public List<AccountView> freeze(@PathVariable String customerId, @Valid @RequestBody FreezeRequest body) {
++        return accounts.freezeCustomer(customerId, body.reason()).stream().map(AccountView::of).toList();
++    }
++}
