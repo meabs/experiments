@@ -165,8 +165,8 @@ savings accounts being different), no interview format helped; the rule has to b
 
 ### Risks this exposes
 
-- **An interview feels thorough without being complete.** G asked 10–13 questions per run and still missed every
-  nested parent. The developer can't tell from the length of the interview what wasn't asked.
+- **An interview feels thorough without being complete.** G asked 10–13 questions per run and still missed the
+  nested parent rule in 9 of its 10 nested runs. The developer can't tell from the length of the interview what wasn't asked.
 - **The gaps are shared.** The arms found the same rules and missed the same ones: all three mostly missed that
   support may only add internal notes (S1), and none found the savings rule or N2's parent. Relying on any interview
   for rules like those is relying on luck.
@@ -210,3 +210,7 @@ scripts/export.sh                           # copies runs into results/, checks 
 All in the README's amendment log: the brief-check changes and the pilot (before the main run), and during the main run
 the developer replies that needed a judgement call. Nothing changed in the hypotheses, tickets, tests or analysis
 after the main run started.
+
+**Correction (1 November 2026, after the site page went live):** section 7 said grilling "missed every nested parent".
+One G run did raise N1's parent; the text now says it missed the parent in 9 of its 10 nested runs. No number or
+hypothesis changed.
