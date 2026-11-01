@@ -1,6 +1,6 @@
 # Multi-agent swarms or a boring state machine?
 
-**Status: design.** Written 2026-11-01, after two small pilots and before the measured run. Later changes go in the
+**Status: done.** Results in [REPORT.md](REPORT.md). Design written 2026-11-01, after two small pilots and before the measured run. Later changes go in the
 amendment log at the end.
 
 ## Question
@@ -159,3 +159,6 @@ python3 -I src/analyse.py <out> > results/analysis.md
 - 2026-11-01: the user proposed the experiment ("Multi-Agent Swarms are the Future" Deterministic Code vs. Agent
   Handoffs: Proving when a boring if/else state machine or typed schema beats a 3-agent crew) and, after the pilot
   summary, said "Do it".
+- 2026-11-01, after the main run: no change to cases, architectures, measures or hypotheses. `src/judge.py` and
+  `src/analyse.py` were written after the design push, while the main run was going and its interim resolved rates
+  were visible in the progress log; they implement the measures and tests described above.
