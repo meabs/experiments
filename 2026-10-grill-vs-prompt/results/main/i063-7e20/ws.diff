@@ -1,0 +1,247 @@
+diff --git a/src/main/java/com/example/accounts/account/Account.java b/src/main/java/com/example/accounts/account/Account.java
+index 706645e..f53a7f7 100644
+--- a/src/main/java/com/example/accounts/account/Account.java
++++ b/src/main/java/com/example/accounts/account/Account.java
+@@ -47,6 +47,7 @@ public class Account {
+     public void setNickname(String nickname) { this.nickname = nickname; }
+     public String getType() { return type; }
+     public BigDecimal getBalance() { return balance; }
++    public void setBalance(BigDecimal balance) { this.balance = balance; }
+     public int getDailyLimit() { return dailyLimit; }
+     public void setDailyLimit(int dailyLimit) { this.dailyLimit = dailyLimit; }
+     public Status getStatus() { return Status.valueOf(status); }
+diff --git a/src/main/java/com/example/accounts/account/GoodwillCredit.java b/src/main/java/com/example/accounts/account/GoodwillCredit.java
+new file mode 100644
+index 0000000..73307c0
+--- /dev/null
++++ b/src/main/java/com/example/accounts/account/GoodwillCredit.java
+@@ -0,0 +1,70 @@
++package com.example.accounts.account;
++
++import java.math.BigDecimal;
++import java.time.Instant;
++
++import jakarta.persistence.Column;
++import jakarta.persistence.Entity;
++import jakarta.persistence.EnumType;
++import jakarta.persistence.Enumerated;
++import jakarta.persistence.GeneratedValue;
++import jakarta.persistence.GenerationType;
++import jakarta.persistence.Id;
++import jakarta.persistence.Table;
++
++@Entity
++@Table(name = "goodwill_credits")
++public class GoodwillCredit {
++
++    public enum Status { PAID, PENDING }
++
++    @Id
++    @GeneratedValue(strategy = GenerationType.IDENTITY)
++    private Long id;
++
++    @Column(nullable = false)
++    private String tenantId;
++
++    @Column(nullable = false)
++    private Long accountId;
++
++    @Column(nullable = false)
++    private BigDecimal amount;
++
++    @Column(nullable = false, length = 500)
++    private String reason;
++
++    @Column(nullable = false)
++    private String createdBy;
++
++    @Column(nullable = false)
++    private Instant createdAt;
++
++    @Enumerated(EnumType.STRING)
++    @Column(nullable = false)
++    private Status status;
++
++    protected GoodwillCredit() {
++    }
++
++    public GoodwillCredit(String tenantId, Long accountId, BigDecimal amount, String reason, String createdBy,
++                          Status status) {
++        this.tenantId = tenantId;
++        this.accountId = accountId;
++        this.amount = amount;
++        this.reason = reason;
++        this.createdBy = createdBy;
++        this.createdAt = Instant.now();
++        this.status = status;
++    }
++
++    public Long getId() { return id; }
++    public String getTenantId() { return tenantId; }
++    public Long getAccountId() { return accountId; }
++    public BigDecimal getAmount() { return amount; }
++    public String getReason() { return reason; }
++    public String getCreatedBy() { return createdBy; }
++    public Instant getCreatedAt() { return createdAt; }
++    public Status getStatus() { return status; }
++    public void setStatus(Status status) { this.status = status; }
++}
+diff --git a/src/main/java/com/example/accounts/account/GoodwillCreditController.java b/src/main/java/com/example/accounts/account/GoodwillCreditController.java
+new file mode 100644
+index 0000000..d83bb2b
+--- /dev/null
++++ b/src/main/java/com/example/accounts/account/GoodwillCreditController.java
+@@ -0,0 +1,117 @@
++package com.example.accounts.account;
++
++import java.math.BigDecimal;
++import java.time.Instant;
++import java.time.LocalDate;
++import java.time.ZoneOffset;
++
++import org.springframework.http.HttpStatus;
++import org.springframework.security.access.prepost.PreAuthorize;
++import org.springframework.transaction.annotation.Transactional;
++import org.springframework.web.bind.annotation.PathVariable;
++import org.springframework.web.bind.annotation.PostMapping;
++import org.springframework.web.bind.annotation.RequestBody;
++import org.springframework.web.bind.annotation.ResponseStatus;
++import org.springframework.web.bind.annotation.RestController;
++
++import com.example.accounts.security.AccessPolicy;
++import com.example.accounts.security.CurrentUser;
++import com.example.accounts.security.CurrentUserProvider;
++import com.example.accounts.web.ConflictException;
++import com.example.accounts.web.ForbiddenException;
++import com.example.accounts.web.NotFoundException;
++
++@RestController
++public class GoodwillCreditController {
++
++    public record GoodwillRequest(BigDecimal amount, String reason) { }
++
++    public record GoodwillView(Long id, Long accountId, BigDecimal amount, String reason, String createdBy,
++                               Instant createdAt, GoodwillCredit.Status status) {
++        static GoodwillView of(GoodwillCredit c) {
++            return new GoodwillView(c.getId(), c.getAccountId(), c.getAmount(), c.getReason(), c.getCreatedBy(),
++                c.getCreatedAt(), c.getStatus());
++        }
++    }
++
++    private final GoodwillCreditRepository credits;
++    private final AccountRepository accounts;
++    private final TransactionRepository transactions;
++    private final AccountService accountService;
++    private final AccessPolicy access;
++    private final CurrentUserProvider users;
++
++    public GoodwillCreditController(GoodwillCreditRepository credits, AccountRepository accounts,
++                                    TransactionRepository transactions, AccountService accountService,
++                                    AccessPolicy access, CurrentUserProvider users) {
++        this.credits = credits;
++        this.accounts = accounts;
++        this.transactions = transactions;
++        this.accountService = accountService;
++        this.access = access;
++        this.users = users;
++    }
++
++    @PostMapping("/api/accounts/{accountId}/goodwill-credits")
++    @PreAuthorize("hasAuthority('SCOPE_accounts:write')")
++    @ResponseStatus(HttpStatus.CREATED)
++    @Transactional
++    public GoodwillView create(@PathVariable Long accountId, @RequestBody GoodwillRequest body) {
++        validate(body);
++        CurrentUser user = users.current();
++        Account account = accountService.getVisible(accountId);
++        if (!access.isAssignedSupport(user, account) && !access.isTenantAdmin(user, account.getTenantId())) {
++            throw new ForbiddenException("Only assigned support or an admin can create a goodwill credit");
++        }
++        if (account.getStatus() == Account.Status.CLOSED) {
++            throw new ConflictException("Account is closed");
++        }
++        BigDecimal amount = body.amount().setScale(2);
++        GoodwillCredit.Status status = amount.compareTo(BigDecimal.valueOf(100)) > 0
++            ? GoodwillCredit.Status.PENDING : GoodwillCredit.Status.PAID;
++        GoodwillCredit credit = credits.save(new GoodwillCredit(account.getTenantId(), accountId, amount,
++            body.reason().trim(), user.id(), status));
++        if (status == GoodwillCredit.Status.PAID) {
++            pay(account, credit);
++        }
++        return GoodwillView.of(credit);
++    }
++
++    @PostMapping("/api/goodwill-credits/{creditId}/approve")
++    @PreAuthorize("hasAuthority('SCOPE_accounts:write') && hasRole('APPROVER')")
++    @ResponseStatus(HttpStatus.OK)
++    @Transactional
++    public GoodwillView approve(@PathVariable Long creditId) {
++        CurrentUser user = users.current();
++        GoodwillCredit credit = credits.findByIdAndTenantId(creditId, user.tenantId())
++            .orElseThrow(() -> new NotFoundException("Goodwill credit not found"));
++        if (!credit.getStatus().equals(GoodwillCredit.Status.PENDING)) {
++            throw new ConflictException("Goodwill credit is not pending");
++        }
++        if (user.id().equals(credit.getCreatedBy())) {
++            throw new ForbiddenException("The creator cannot approve the goodwill credit");
++        }
++        Account account = accounts.findById(credit.getAccountId())
++            .filter(a -> user.inTenant(a.getTenantId()))
++            .orElseThrow(() -> new NotFoundException("Goodwill credit not found"));
++        if (account.getStatus() == Account.Status.CLOSED) {
++            throw new ConflictException("Account is closed");
++        }
++        pay(account, credit);
++        return GoodwillView.of(credit);
++    }
++
++    private void pay(Account account, GoodwillCredit credit) {
++        account.setBalance(account.getBalance().add(credit.getAmount()));
++        transactions.save(new Transaction(account.getId(), credit.getAmount(), "Goodwill credit",
++            LocalDate.now(ZoneOffset.UTC)));
++        credit.setStatus(GoodwillCredit.Status.PAID);
++    }
++
++    private static void validate(GoodwillRequest body) {
++        if (body == null || body.amount() == null || body.amount().signum() <= 0 || body.amount().scale() > 2
++            || body.reason() == null || body.reason().trim().length() < 1 || body.reason().trim().length() > 500) {
++            throw new IllegalArgumentException("Invalid request");
++        }
++    }
++}
+diff --git a/src/main/java/com/example/accounts/account/GoodwillCreditRepository.java b/src/main/java/com/example/accounts/account/GoodwillCreditRepository.java
+new file mode 100644
+index 0000000..31013d5
+--- /dev/null
++++ b/src/main/java/com/example/accounts/account/GoodwillCreditRepository.java
+@@ -0,0 +1,9 @@
++package com.example.accounts.account;
++
++import java.util.Optional;
++
++import org.springframework.data.jpa.repository.JpaRepository;
++
++public interface GoodwillCreditRepository extends JpaRepository<GoodwillCredit, Long> {
++    Optional<GoodwillCredit> findByIdAndTenantId(Long id, String tenantId);
++}
+diff --git a/src/main/java/com/example/accounts/account/Transaction.java b/src/main/java/com/example/accounts/account/Transaction.java
+index f30af7a..3c1f0c5 100644
+--- a/src/main/java/com/example/accounts/account/Transaction.java
++++ b/src/main/java/com/example/accounts/account/Transaction.java
+@@ -29,6 +29,16 @@ public class Transaction {
+     @Column(nullable = false)
+     private LocalDate bookedOn;
+ 
++    protected Transaction() {
++    }
++
++    public Transaction(Long accountId, BigDecimal amount, String description, LocalDate bookedOn) {
++        this.accountId = accountId;
++        this.amount = amount;
++        this.description = description;
++        this.bookedOn = bookedOn;
++    }
++
+     public Long getId() { return id; }
+     public Long getAccountId() { return accountId; }
+     public BigDecimal getAmount() { return amount; }

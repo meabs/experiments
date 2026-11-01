@@ -1,0 +1,133 @@
+diff --git a/src/main/java/com/example/accounts/account/AccountController.java b/src/main/java/com/example/accounts/account/AccountController.java
+index bc6eb2e..19dc347 100644
+--- a/src/main/java/com/example/accounts/account/AccountController.java
++++ b/src/main/java/com/example/accounts/account/AccountController.java
+@@ -4,11 +4,15 @@ import java.math.BigDecimal;
+ import java.time.LocalDate;
+ import java.util.List;
+ 
++import com.fasterxml.jackson.databind.JsonNode;
++
+ import org.springframework.security.access.prepost.PreAuthorize;
+ import org.springframework.web.bind.annotation.GetMapping;
+ import org.springframework.web.bind.annotation.PathVariable;
+ import org.springframework.web.bind.annotation.RequestMapping;
+ import org.springframework.web.bind.annotation.RestController;
++import org.springframework.web.bind.annotation.PutMapping;
++import org.springframework.web.bind.annotation.RequestBody;
+ 
+ @RestController
+ @RequestMapping("/api/accounts")
+@@ -44,6 +48,20 @@ public class AccountController {
+         return AccountView.of(service.getVisible(accountId));
+     }
+ 
++    @PutMapping("/{accountId}/daily-limit")
++    @PreAuthorize("hasAuthority('SCOPE_accounts:write')")
++    public AccountView changeDailyLimit(@PathVariable Long accountId, @RequestBody JsonNode body) {
++        if (body == null || !body.isObject()) {
++            throw new IllegalArgumentException("Invalid request");
++        }
++        JsonNode value = body.get("dailyLimit");
++        if (value == null || !value.isIntegralNumber() || !value.canConvertToInt()
++            || value.intValue() < 0 || value.intValue() > 5000) {
++            throw new IllegalArgumentException("Invalid request");
++        }
++        return AccountView.of(service.changeDailyLimit(accountId, value.intValue()));
++    }
++
+     /** Needs the transactions:read scope as well as access to the account. */
+     @GetMapping("/{accountId}/transactions")
+     @PreAuthorize("hasAuthority('SCOPE_transactions:read')")
+diff --git a/src/main/java/com/example/accounts/account/AccountNote.java b/src/main/java/com/example/accounts/account/AccountNote.java
+index 6c505cd..abc11de 100644
+--- a/src/main/java/com/example/accounts/account/AccountNote.java
++++ b/src/main/java/com/example/accounts/account/AccountNote.java
+@@ -36,6 +36,17 @@ public class AccountNote {
+     @Column(nullable = false)
+     private Instant createdAt;
+ 
++    public AccountNote(Long accountId, String author, String body, boolean internal, Instant createdAt) {
++        this.accountId = accountId;
++        this.author = author;
++        this.body = body;
++        this.internal = internal;
++        this.createdAt = createdAt;
++    }
++
++    protected AccountNote() {
++    }
++
+     public Long getId() { return id; }
+     public Long getAccountId() { return accountId; }
+     public String getAuthor() { return author; }
+diff --git a/src/main/java/com/example/accounts/account/AccountService.java b/src/main/java/com/example/accounts/account/AccountService.java
+index c1dfaa8..bbbab5b 100644
+--- a/src/main/java/com/example/accounts/account/AccountService.java
++++ b/src/main/java/com/example/accounts/account/AccountService.java
+@@ -1,6 +1,7 @@
+ package com.example.accounts.account;
+ 
+ import java.util.List;
++import java.time.Instant;
+ 
+ import org.springframework.stereotype.Service;
+ import org.springframework.transaction.annotation.Transactional;
+@@ -10,6 +11,8 @@ import com.example.accounts.security.AccessPolicy;
+ import com.example.accounts.security.CurrentUser;
+ import com.example.accounts.security.CurrentUserProvider;
+ import com.example.accounts.web.NotFoundException;
++import com.example.accounts.web.ConflictException;
++import com.example.accounts.web.ForbiddenException;
+ 
+ @Service
+ @Transactional(readOnly = true)
+@@ -19,15 +22,18 @@ public class AccountService {
+     private final CustomerRepository customers;
+     private final SupportAssignmentRepository assignments;
+     private final TransactionRepository transactions;
++    private final AccountNoteRepository notes;
+     private final AccessPolicy access;
+     private final CurrentUserProvider users;
+ 
+     public AccountService(AccountRepository accounts, CustomerRepository customers, SupportAssignmentRepository assignments,
+-                          TransactionRepository transactions, AccessPolicy access, CurrentUserProvider users) {
++                          TransactionRepository transactions, AccountNoteRepository notes, AccessPolicy access,
++                          CurrentUserProvider users) {
+         this.accounts = accounts;
+         this.customers = customers;
+         this.assignments = assignments;
+         this.transactions = transactions;
++        this.notes = notes;
+         this.access = access;
+         this.users = users;
+     }
+@@ -66,4 +72,28 @@ public class AccountService {
+     public List<Transaction> transactions(Long accountId) {
+         return transactions.findByAccountIdOrderByBookedOnDescIdDesc(getVisible(accountId).getId());
+     }
++
++    @Transactional
++    public Account changeDailyLimit(Long accountId, int newLimit) {
++        CurrentUser user = users.current();
++        Account account = getVisible(accountId);
++        boolean admin = access.isTenantAdmin(user, account.getTenantId());
++        boolean support = access.isAssignedSupport(user, account);
++        if (!admin && !support) {
++            throw new ForbiddenException("Only an account admin or assigned support can change the daily limit");
++        }
++        if (account.getStatus() == Account.Status.CLOSED) {
++            throw new ConflictException("Account is closed");
++        }
++        int oldLimit = account.getDailyLimit();
++        if (support && newLimit >= oldLimit) {
++            throw new ForbiddenException("Support can only lower the daily limit");
++        }
++        if (newLimit != oldLimit) {
++            account.setDailyLimit(newLimit);
++            notes.save(new AccountNote(account.getId(), user.id(),
++                "Daily limit changed from " + oldLimit + " to " + newLimit + ".", true, Instant.now()));
++        }
++        return account;
++    }
+ }

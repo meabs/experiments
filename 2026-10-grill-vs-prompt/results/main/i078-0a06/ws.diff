@@ -1,0 +1,216 @@
+diff --git a/src/main/java/com/example/accounts/account/Account.java b/src/main/java/com/example/accounts/account/Account.java
+index 706645e..b0258d7 100644
+--- a/src/main/java/com/example/accounts/account/Account.java
++++ b/src/main/java/com/example/accounts/account/Account.java
+@@ -47,6 +47,7 @@ public class Account {
+     public void setNickname(String nickname) { this.nickname = nickname; }
+     public String getType() { return type; }
+     public BigDecimal getBalance() { return balance; }
++    public void credit(BigDecimal amount) { this.balance = this.balance.add(amount); }
+     public int getDailyLimit() { return dailyLimit; }
+     public void setDailyLimit(int dailyLimit) { this.dailyLimit = dailyLimit; }
+     public Status getStatus() { return Status.valueOf(status); }
+diff --git a/src/main/java/com/example/accounts/account/AccountController.java b/src/main/java/com/example/accounts/account/AccountController.java
+index bc6eb2e..52b6ea1 100644
+--- a/src/main/java/com/example/accounts/account/AccountController.java
++++ b/src/main/java/com/example/accounts/account/AccountController.java
+@@ -3,6 +3,15 @@ package com.example.accounts.account;
+ import java.math.BigDecimal;
+ import java.time.LocalDate;
+ import java.util.List;
++import jakarta.validation.Valid;
++import jakarta.validation.constraints.DecimalMin;
++import jakarta.validation.constraints.NotNull;
++import jakarta.validation.constraints.Size;
++import org.springframework.http.HttpStatus;
++import org.springframework.web.bind.annotation.PostMapping;
++import org.springframework.web.bind.annotation.RequestBody;
++import org.springframework.web.bind.annotation.ResponseStatus;
++import java.time.Instant;
+ 
+ import org.springframework.security.access.prepost.PreAuthorize;
+ import org.springframework.web.bind.annotation.GetMapping;
+@@ -28,6 +37,12 @@ public class AccountController {
+         }
+     }
+ 
++    public record GoodwillCreditRequest(@NotNull @DecimalMin(value = "0", inclusive = false) BigDecimal amount,
++                                        @Size(max = 500) String reason) {}
++    public record GoodwillCreditView(Long id, Long accountId, BigDecimal amount, String reason, String createdBy, Instant createdAt) {
++        static GoodwillCreditView of(GoodwillCredit c) { return new GoodwillCreditView(c.getId(), c.getAccountId(), c.getAmount(), c.getReason(), c.getCreatedBy(), c.getCreatedAt()); }
++    }
++
+     private final AccountService service;
+ 
+     public AccountController(AccountService service) {
+@@ -50,4 +65,11 @@ public class AccountController {
+     public List<TransactionView> transactions(@PathVariable Long accountId) {
+         return service.transactions(accountId).stream().map(TransactionView::of).toList();
+     }
++
++    @PostMapping("/{accountId}/goodwill-credits")
++    @PreAuthorize("hasAuthority('SCOPE_accounts:write')")
++    @ResponseStatus(HttpStatus.CREATED)
++    public GoodwillCreditView goodwillCredit(@PathVariable Long accountId, @Valid @RequestBody GoodwillCreditRequest request) {
++        return GoodwillCreditView.of(service.createGoodwillCredit(accountId, request.amount(), request.reason()));
++    }
+ }
+diff --git a/src/main/java/com/example/accounts/account/AccountRepository.java b/src/main/java/com/example/accounts/account/AccountRepository.java
+index cdcfe11..00b3881 100644
+--- a/src/main/java/com/example/accounts/account/AccountRepository.java
++++ b/src/main/java/com/example/accounts/account/AccountRepository.java
+@@ -1,11 +1,17 @@
+ package com.example.accounts.account;
+ 
+ import java.util.List;
++import java.util.Optional;
+ 
+ import org.springframework.data.jpa.repository.JpaRepository;
++import org.springframework.data.jpa.repository.Lock;
++import jakarta.persistence.LockModeType;
+ 
+ public interface AccountRepository extends JpaRepository<Account, Long> {
+ 
++    @Lock(LockModeType.PESSIMISTIC_WRITE)
++    Optional<Account> findById(Long id);
++
+     List<Account> findByTenantIdOrderById(String tenantId);
+ 
+     List<Account> findByTenantIdAndCustomerIdOrderById(String tenantId, String customerId);
+diff --git a/src/main/java/com/example/accounts/account/AccountService.java b/src/main/java/com/example/accounts/account/AccountService.java
+index c1dfaa8..3648f0c 100644
+--- a/src/main/java/com/example/accounts/account/AccountService.java
++++ b/src/main/java/com/example/accounts/account/AccountService.java
+@@ -1,9 +1,14 @@
+ package com.example.accounts.account;
+ 
+ import java.util.List;
++import java.math.BigDecimal;
++import java.time.Instant;
++import java.time.LocalDate;
+ 
+ import org.springframework.stereotype.Service;
+ import org.springframework.transaction.annotation.Transactional;
++import com.example.accounts.web.ConflictException;
++import com.example.accounts.web.ForbiddenException;
+ 
+ import com.example.accounts.customer.CustomerRepository;
+ import com.example.accounts.security.AccessPolicy;
+@@ -21,15 +26,18 @@ public class AccountService {
+     private final TransactionRepository transactions;
+     private final AccessPolicy access;
+     private final CurrentUserProvider users;
++    private final GoodwillCreditRepository goodwillCredits;
+ 
+     public AccountService(AccountRepository accounts, CustomerRepository customers, SupportAssignmentRepository assignments,
+-                          TransactionRepository transactions, AccessPolicy access, CurrentUserProvider users) {
++                          TransactionRepository transactions, AccessPolicy access, CurrentUserProvider users,
++                          GoodwillCreditRepository goodwillCredits) {
+         this.accounts = accounts;
+         this.customers = customers;
+         this.assignments = assignments;
+         this.transactions = transactions;
+         this.access = access;
+         this.users = users;
++        this.goodwillCredits = goodwillCredits;
+     }
+ 
+     /**
+@@ -66,4 +74,28 @@ public class AccountService {
+     public List<Transaction> transactions(Long accountId) {
+         return transactions.findByAccountIdOrderByBookedOnDescIdDesc(getVisible(accountId).getId());
+     }
++
++    @Transactional
++    public GoodwillCredit createGoodwillCredit(Long accountId, BigDecimal amount, String reason) {
++        Account account = getVisible(accountId);
++        CurrentUser user = users.current();
++        if (!(user.isAdmin() || access.isAssignedSupport(user, account))) {
++            throw new ForbiddenException("Not allowed");
++        }
++        if (account.getStatus() == Account.Status.CLOSED) {
++            throw new ConflictException("Account is closed");
++        }
++        if (amount == null || amount.signum() <= 0 || amount.scale() > 2) {
++            throw new IllegalArgumentException("Invalid amount");
++        }
++        String trimmed = reason == null ? null : reason.trim();
++        if (trimmed == null || trimmed.length() < 1 || trimmed.length() > 500) {
++            throw new IllegalArgumentException("Invalid reason");
++        }
++        Account locked = accounts.findById(accountId).orElseThrow(() -> new NotFoundException("Account not found"));
++        BigDecimal normalized = amount.setScale(2);
++        locked.credit(normalized);
++        transactions.save(new Transaction(accountId, normalized, "Goodwill credit", LocalDate.now()));
++        return goodwillCredits.save(new GoodwillCredit(accountId, normalized, trimmed, user.id(), Instant.now()));
++    }
+ }
+diff --git a/src/main/java/com/example/accounts/account/GoodwillCredit.java b/src/main/java/com/example/accounts/account/GoodwillCredit.java
+new file mode 100644
+index 0000000..05e0f8d
+--- /dev/null
++++ b/src/main/java/com/example/accounts/account/GoodwillCredit.java
+@@ -0,0 +1,36 @@
++package com.example.accounts.account;
++
++import java.math.BigDecimal;
++import java.time.Instant;
++
++import jakarta.persistence.Column;
++import jakarta.persistence.Entity;
++import jakarta.persistence.GeneratedValue;
++import jakarta.persistence.GenerationType;
++import jakarta.persistence.Id;
++import jakarta.persistence.Table;
++
++@Entity
++@Table(name = "goodwill_credits")
++public class GoodwillCredit {
++    @Id @GeneratedValue(strategy = GenerationType.IDENTITY)
++    private Long id;
++    @Column(nullable = false) private Long accountId;
++    @Column(nullable = false, precision = 38, scale = 2) private BigDecimal amount;
++    @Column(nullable = false, length = 500) private String reason;
++    @Column(nullable = false) private String createdBy;
++    @Column(nullable = false) private Instant createdAt;
++
++    protected GoodwillCredit() {}
++
++    public GoodwillCredit(Long accountId, BigDecimal amount, String reason, String createdBy, Instant createdAt) {
++        this.accountId = accountId; this.amount = amount; this.reason = reason;
++        this.createdBy = createdBy; this.createdAt = createdAt;
++    }
++    public Long getId() { return id; }
++    public Long getAccountId() { return accountId; }
++    public BigDecimal getAmount() { return amount; }
++    public String getReason() { return reason; }
++    public String getCreatedBy() { return createdBy; }
++    public Instant getCreatedAt() { return createdAt; }
++}
+diff --git a/src/main/java/com/example/accounts/account/GoodwillCreditRepository.java b/src/main/java/com/example/accounts/account/GoodwillCreditRepository.java
+new file mode 100644
+index 0000000..a4446b7
+--- /dev/null
++++ b/src/main/java/com/example/accounts/account/GoodwillCreditRepository.java
+@@ -0,0 +1,5 @@
++package com.example.accounts.account;
++
++import org.springframework.data.jpa.repository.JpaRepository;
++
++public interface GoodwillCreditRepository extends JpaRepository<GoodwillCredit, Long> {}
+diff --git a/src/main/java/com/example/accounts/account/Transaction.java b/src/main/java/com/example/accounts/account/Transaction.java
+index f30af7a..52a87a5 100644
+--- a/src/main/java/com/example/accounts/account/Transaction.java
++++ b/src/main/java/com/example/accounts/account/Transaction.java
+@@ -29,6 +29,11 @@ public class Transaction {
+     @Column(nullable = false)
+     private LocalDate bookedOn;
+ 
++    protected Transaction() {}
++    public Transaction(Long accountId, BigDecimal amount, String description, LocalDate bookedOn) {
++        this.accountId = accountId; this.amount = amount; this.description = description; this.bookedOn = bookedOn;
++    }
++
+     public Long getId() { return id; }
+     public Long getAccountId() { return accountId; }
+     public BigDecimal getAmount() { return amount; }

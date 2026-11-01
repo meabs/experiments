@@ -1,0 +1,123 @@
+diff --git a/src/main/java/com/example/accounts/account/AccountController.java b/src/main/java/com/example/accounts/account/AccountController.java
+index bc6eb2e..08dad4f 100644
+--- a/src/main/java/com/example/accounts/account/AccountController.java
++++ b/src/main/java/com/example/accounts/account/AccountController.java
+@@ -4,7 +4,13 @@ import java.math.BigDecimal;
+ import java.time.LocalDate;
+ import java.util.List;
+ 
++import jakarta.validation.Valid;
++import jakarta.validation.constraints.Max;
++import jakarta.validation.constraints.NotNull;
++import jakarta.validation.constraints.PositiveOrZero;
+ import org.springframework.security.access.prepost.PreAuthorize;
++import org.springframework.web.bind.annotation.PutMapping;
++import org.springframework.web.bind.annotation.RequestBody;
+ import org.springframework.web.bind.annotation.GetMapping;
+ import org.springframework.web.bind.annotation.PathVariable;
+ import org.springframework.web.bind.annotation.RequestMapping;
+@@ -22,6 +28,8 @@ public class AccountController {
+         }
+     }
+ 
++    public record DailyLimitRequest(@NotNull @PositiveOrZero @Max(5000) Integer dailyLimit) {}
++
+     public record TransactionView(Long id, BigDecimal amount, String description, LocalDate bookedOn) {
+         static TransactionView of(Transaction t) {
+             return new TransactionView(t.getId(), t.getAmount(), t.getDescription(), t.getBookedOn());
+@@ -44,6 +52,12 @@ public class AccountController {
+         return AccountView.of(service.getVisible(accountId));
+     }
+ 
++    @PutMapping("/{accountId}/daily-limit")
++    @PreAuthorize("hasAuthority('SCOPE_accounts:write')")
++    public AccountView updateDailyLimit(@PathVariable Long accountId, @Valid @RequestBody DailyLimitRequest request) {
++        return AccountView.of(service.updateDailyLimit(accountId, request.dailyLimit()));
++    }
++
+     /** Needs the transactions:read scope as well as access to the account. */
+     @GetMapping("/{accountId}/transactions")
+     @PreAuthorize("hasAuthority('SCOPE_transactions:read')")
+diff --git a/src/main/java/com/example/accounts/account/AccountRepository.java b/src/main/java/com/example/accounts/account/AccountRepository.java
+index cdcfe11..aeca347 100644
+--- a/src/main/java/com/example/accounts/account/AccountRepository.java
++++ b/src/main/java/com/example/accounts/account/AccountRepository.java
+@@ -1,7 +1,12 @@
+ package com.example.accounts.account;
+ 
+ import java.util.List;
++import java.util.Optional;
+ 
++import jakarta.persistence.LockModeType;
++import org.springframework.data.jpa.repository.Lock;
++import org.springframework.data.jpa.repository.Query;
++import org.springframework.data.repository.query.Param;
+ import org.springframework.data.jpa.repository.JpaRepository;
+ 
+ public interface AccountRepository extends JpaRepository<Account, Long> {
+@@ -9,4 +14,8 @@ public interface AccountRepository extends JpaRepository<Account, Long> {
+     List<Account> findByTenantIdOrderById(String tenantId);
+ 
+     List<Account> findByTenantIdAndCustomerIdOrderById(String tenantId, String customerId);
++
++    @Lock(LockModeType.PESSIMISTIC_WRITE)
++    @Query("select a from Account a where a.id = :id")
++    Optional<Account> findLockedById(@Param("id") Long id);
+ }
+diff --git a/src/main/java/com/example/accounts/account/AccountService.java b/src/main/java/com/example/accounts/account/AccountService.java
+index c1dfaa8..07ce14c 100644
+--- a/src/main/java/com/example/accounts/account/AccountService.java
++++ b/src/main/java/com/example/accounts/account/AccountService.java
+@@ -9,6 +9,7 @@ import com.example.accounts.customer.CustomerRepository;
+ import com.example.accounts.security.AccessPolicy;
+ import com.example.accounts.security.CurrentUser;
+ import com.example.accounts.security.CurrentUserProvider;
++import com.example.accounts.web.ForbiddenException;
+ import com.example.accounts.web.NotFoundException;
+ 
+ @Service
+@@ -66,4 +67,22 @@ public class AccountService {
+     public List<Transaction> transactions(Long accountId) {
+         return transactions.findByAccountIdOrderByBookedOnDescIdDesc(getVisible(accountId).getId());
+     }
++
++    @Transactional
++    public Account updateDailyLimit(Long accountId, int dailyLimit) {
++        CurrentUser user = users.current();
++        Account account = accounts.findLockedById(accountId)
++            .filter(a -> access.canViewAccount(user, a))
++            .orElseThrow(() -> new NotFoundException("Account not found"));
++
++        if (access.isTenantAdmin(user, account.getTenantId())) {
++            account.setDailyLimit(dailyLimit);
++            return account;
++        }
++        if (access.isAssignedSupport(user, account) && dailyLimit < account.getDailyLimit()) {
++            account.setDailyLimit(dailyLimit);
++            return account;
++        }
++        throw new ForbiddenException("Only a bank admin can raise an account's daily limit");
++    }
+ }
+diff --git a/src/main/java/com/example/accounts/web/ApiExceptionHandler.java b/src/main/java/com/example/accounts/web/ApiExceptionHandler.java
+index 068656e..8b0c326 100644
+--- a/src/main/java/com/example/accounts/web/ApiExceptionHandler.java
++++ b/src/main/java/com/example/accounts/web/ApiExceptionHandler.java
+@@ -4,6 +4,7 @@ import java.util.Map;
+ 
+ import org.springframework.http.HttpStatus;
+ import org.springframework.http.ResponseEntity;
++import org.springframework.http.converter.HttpMessageNotReadableException;
+ import org.springframework.web.bind.MethodArgumentNotValidException;
+ import org.springframework.web.bind.annotation.ExceptionHandler;
+ import org.springframework.web.bind.annotation.RestControllerAdvice;
+@@ -27,7 +28,8 @@ public class ApiExceptionHandler {
+         return body(HttpStatus.CONFLICT, e.getMessage());
+     }
+ 
+-    @ExceptionHandler({MethodArgumentNotValidException.class, IllegalArgumentException.class})
++    @ExceptionHandler({MethodArgumentNotValidException.class, HttpMessageNotReadableException.class,
++        IllegalArgumentException.class})
+     ResponseEntity<Map<String, String>> badRequest(Exception e) {
+         return body(HttpStatus.BAD_REQUEST, "Invalid request");
+     }

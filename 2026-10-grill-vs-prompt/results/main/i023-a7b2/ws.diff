@@ -1,0 +1,107 @@
+diff --git a/src/main/java/com/example/accounts/account/AccountController.java b/src/main/java/com/example/accounts/account/AccountController.java
+index bc6eb2e..d5279d2 100644
+--- a/src/main/java/com/example/accounts/account/AccountController.java
++++ b/src/main/java/com/example/accounts/account/AccountController.java
+@@ -7,9 +7,13 @@ import java.util.List;
+ import org.springframework.security.access.prepost.PreAuthorize;
+ import org.springframework.web.bind.annotation.GetMapping;
+ import org.springframework.web.bind.annotation.PathVariable;
++import org.springframework.web.bind.annotation.PutMapping;
++import org.springframework.web.bind.annotation.RequestBody;
+ import org.springframework.web.bind.annotation.RequestMapping;
+ import org.springframework.web.bind.annotation.RestController;
+ 
++import com.fasterxml.jackson.databind.JsonNode;
++
+ @RestController
+ @RequestMapping("/api/accounts")
+ public class AccountController {
+@@ -28,6 +32,9 @@ public class AccountController {
+         }
+     }
+ 
++    public record DailyLimitRequest(JsonNode dailyLimit) {
++    }
++
+     private final AccountService service;
+ 
+     public AccountController(AccountService service) {
+@@ -44,6 +51,12 @@ public class AccountController {
+         return AccountView.of(service.getVisible(accountId));
+     }
+ 
++    @PutMapping("/{accountId}/daily-limit")
++    @PreAuthorize("hasAuthority('SCOPE_accounts:write')")
++    public AccountView setDailyLimit(@PathVariable Long accountId, @RequestBody DailyLimitRequest body) {
++        return AccountView.of(service.setDailyLimit(accountId, body == null ? null : body.dailyLimit()));
++    }
++
+     /** Needs the transactions:read scope as well as access to the account. */
+     @GetMapping("/{accountId}/transactions")
+     @PreAuthorize("hasAuthority('SCOPE_transactions:read')")
+diff --git a/src/main/java/com/example/accounts/account/AccountService.java b/src/main/java/com/example/accounts/account/AccountService.java
+index c1dfaa8..76b0f17 100644
+--- a/src/main/java/com/example/accounts/account/AccountService.java
++++ b/src/main/java/com/example/accounts/account/AccountService.java
+@@ -1,5 +1,6 @@
+ package com.example.accounts.account;
+ 
++import java.math.BigDecimal;
+ import java.util.List;
+ 
+ import org.springframework.stereotype.Service;
+@@ -9,7 +10,10 @@ import com.example.accounts.customer.CustomerRepository;
+ import com.example.accounts.security.AccessPolicy;
+ import com.example.accounts.security.CurrentUser;
+ import com.example.accounts.security.CurrentUserProvider;
++import com.example.accounts.web.ConflictException;
++import com.example.accounts.web.ForbiddenException;
+ import com.example.accounts.web.NotFoundException;
++import com.fasterxml.jackson.databind.JsonNode;
+ 
+ @Service
+ @Transactional(readOnly = true)
+@@ -66,4 +70,43 @@ public class AccountService {
+     public List<Transaction> transactions(Long accountId) {
+         return transactions.findByAccountIdOrderByBookedOnDescIdDesc(getVisible(accountId).getId());
+     }
++
++    @Transactional
++    public Account setDailyLimit(Long accountId, JsonNode value) {
++        Account account = getVisible(accountId);
++        CurrentUser user = users.current();
++        int dailyLimit = parseDailyLimit(value);
++        if (account.getStatus() == Account.Status.CLOSED) {
++            throw new ConflictException("Closed accounts cannot have their daily limit changed");
++        }
++        if (!access.isTenantAdmin(user, account.getTenantId())
++            && (!access.isAssignedSupport(user, account) || dailyLimit > account.getDailyLimit())) {
++            throw new ForbiddenException("You cannot set this account's daily limit");
++        }
++        account.setDailyLimit(dailyLimit);
++        return account;
++    }
++
++    private int parseDailyLimit(JsonNode value) {
++        if (value == null || !value.isNumber()) {
++            throw new IllegalArgumentException("dailyLimit must be a whole number");
++        }
++        BigDecimal limit;
++        try {
++            limit = value.decimalValue();
++        } catch (ArithmeticException e) {
++            throw new IllegalArgumentException("dailyLimit must be a whole number", e);
++        }
++        if (limit.scale() > 0 && limit.stripTrailingZeros().scale() > 0) {
++            throw new IllegalArgumentException("dailyLimit must be a whole number");
++        }
++        if (limit.signum() < 0 || limit.compareTo(BigDecimal.valueOf(5000)) > 0) {
++            throw new IllegalArgumentException("dailyLimit is outside the allowed range");
++        }
++        try {
++            return limit.intValueExact();
++        } catch (ArithmeticException e) {
++            throw new IllegalArgumentException("dailyLimit must be a whole number", e);
++        }
++    }
+ }

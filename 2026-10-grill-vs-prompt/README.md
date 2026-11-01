@@ -187,3 +187,18 @@ cost this is about $3–4 of agent time at list prices, plus the audit.
     be followed: S recommended "no maximum amount", was told the parent rule (over £100 needs approving), asked
     nothing more, and built its own reading of it. K and G never reached a parent rule. The audit found no leaks in the
     four replies.
+- 2026-11-01, during the main run (user: "Go"). No change to the design. Recorded for transparency:
+  - **Judgement calls in the developer's replies**, applied the same way in every arm:
+    - A recommendation that only mentioned the `int` range inside a question about JSON number formats was answered
+      "yes", not taken as touching M1 rd (the £5,000 ceiling); an explicit question or recommendation about a maximum
+      or upper bound got rd.
+    - In N1, a question about the approval endpoint got rc (the role and endpoint) but not rd; rd was given only when
+      the agent asked who may approve or proposed a rule about it, as the brief says.
+    - Recommendations that contradicted the ticket itself (for example "admins or approvers may approve" in N2,
+      whose ticket says approvers) were corrected from the ticket; recommendations that relied on a status the code
+      doesn't have were answered by pointing to the code.
+    - When an agent misread an earlier "yes" and asked again, the reply restated the earlier answer.
+  - **Stalls:** 8 interview turns were ended by the watchdog (G 7, S 1); in each, the agent's questions had already been
+    posted and were answered as usual.
+  - **Audit:** the first audit command matched the reply files as well as the run folders and stopped on the first
+    file; it was rerun on the run folders only.

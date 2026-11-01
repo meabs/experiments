@@ -1,0 +1,146 @@
+diff --git a/README.md b/README.md
+index 2ec6a48..88bcfbd 100644
+--- a/README.md
++++ b/README.md
+@@ -34,3 +34,10 @@ Tests are API tests over MockMvc with real signed tokens (`src/test/java/.../sup
+ - **409** the resource's state does not allow this. **400** invalid input.
+ - A change request that includes anything the caller may not change is refused as a whole (403) and changes nothing.
+ - Staff-only data (internal notes and comments, risk scores) is never returned to customers.
++
++## Daily limits
++
++`PUT /api/accounts/{accountId}/daily-limit` changes an account's daily payout limit. Send a JSON body such as
++`{"dailyLimit":750}`. The limit must be a whole number from 0 through 5000; invalid or additional fields return 400.
++Tenant admins may set any valid limit. Support users assigned to the account may set the current limit or lower it, but
++may not raise it. Customers cannot change limits. Inaccessible accounts return 404 and closed accounts return 409.
+diff --git a/src/main/java/com/example/accounts/account/AccountController.java b/src/main/java/com/example/accounts/account/AccountController.java
+index bc6eb2e..f12c731 100644
+--- a/src/main/java/com/example/accounts/account/AccountController.java
++++ b/src/main/java/com/example/accounts/account/AccountController.java
+@@ -4,9 +4,20 @@ import java.math.BigDecimal;
+ import java.time.LocalDate;
+ import java.util.List;
+ 
++import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
++import com.fasterxml.jackson.annotation.JsonAnySetter;
++import com.fasterxml.jackson.databind.JsonNode;
++import jakarta.validation.Valid;
++import jakarta.validation.constraints.DecimalMax;
++import jakarta.validation.constraints.DecimalMin;
++import jakarta.validation.constraints.Digits;
++import jakarta.validation.constraints.NotNull;
++
+ import org.springframework.security.access.prepost.PreAuthorize;
+ import org.springframework.web.bind.annotation.GetMapping;
+ import org.springframework.web.bind.annotation.PathVariable;
++import org.springframework.web.bind.annotation.PutMapping;
++import org.springframework.web.bind.annotation.RequestBody;
+ import org.springframework.web.bind.annotation.RequestMapping;
+ import org.springframework.web.bind.annotation.RestController;
+ 
+@@ -22,6 +33,15 @@ public class AccountController {
+         }
+     }
+ 
++    @JsonIgnoreProperties(ignoreUnknown = false)
++    public record DailyLimitRequest(@NotNull @DecimalMin("0") @DecimalMax("5000") @Digits(integer = 4, fraction = 0)
++                                    BigDecimal dailyLimit) {
++        @JsonAnySetter
++        public void rejectUnknown(String name, JsonNode value) {
++            throw new IllegalArgumentException("Unknown field: " + name);
++        }
++    }
++
+     public record TransactionView(Long id, BigDecimal amount, String description, LocalDate bookedOn) {
+         static TransactionView of(Transaction t) {
+             return new TransactionView(t.getId(), t.getAmount(), t.getDescription(), t.getBookedOn());
+@@ -44,6 +64,12 @@ public class AccountController {
+         return AccountView.of(service.getVisible(accountId));
+     }
+ 
++    @PutMapping("/{accountId}/daily-limit")
++    @PreAuthorize("hasAuthority('SCOPE_accounts:write')")
++    public AccountView changeDailyLimit(@PathVariable Long accountId, @Valid @RequestBody DailyLimitRequest body) {
++        return AccountView.of(service.changeDailyLimit(accountId, body.dailyLimit().intValueExact()));
++    }
++
+     /** Needs the transactions:read scope as well as access to the account. */
+     @GetMapping("/{accountId}/transactions")
+     @PreAuthorize("hasAuthority('SCOPE_transactions:read')")
+diff --git a/src/main/java/com/example/accounts/account/AccountService.java b/src/main/java/com/example/accounts/account/AccountService.java
+index c1dfaa8..b8f7b71 100644
+--- a/src/main/java/com/example/accounts/account/AccountService.java
++++ b/src/main/java/com/example/accounts/account/AccountService.java
+@@ -10,6 +10,8 @@ import com.example.accounts.security.AccessPolicy;
+ import com.example.accounts.security.CurrentUser;
+ import com.example.accounts.security.CurrentUserProvider;
+ import com.example.accounts.web.NotFoundException;
++import com.example.accounts.web.ConflictException;
++import com.example.accounts.web.ForbiddenException;
+ 
+ @Service
+ @Transactional(readOnly = true)
+@@ -66,4 +68,23 @@ public class AccountService {
+     public List<Transaction> transactions(Long accountId) {
+         return transactions.findByAccountIdOrderByBookedOnDescIdDesc(getVisible(accountId).getId());
+     }
++
++    @Transactional
++    public Account changeDailyLimit(Long accountId, int dailyLimit) {
++        CurrentUser user = users.current();
++        Account account = getVisible(accountId);
++        boolean admin = access.isTenantAdmin(user, account.getTenantId());
++        boolean assignedSupport = access.isAssignedSupport(user, account);
++        if (!admin && !assignedSupport) {
++            throw new ForbiddenException("Only an account bank admin or assigned support user can change the daily limit");
++        }
++        if (account.getStatus() == Account.Status.CLOSED) {
++            throw new ConflictException("Cannot change the limit of a closed account");
++        }
++        if (assignedSupport && !admin && dailyLimit > account.getDailyLimit()) {
++            throw new ForbiddenException("Support users may not raise the daily limit");
++        }
++        account.setDailyLimit(dailyLimit);
++        return accounts.save(account);
++    }
+ }
+diff --git a/src/test/java/com/example/accounts/AccountApiTest.java b/src/test/java/com/example/accounts/AccountApiTest.java
+index 7f7cf0b..1a12774 100644
+--- a/src/test/java/com/example/accounts/AccountApiTest.java
++++ b/src/test/java/com/example/accounts/AccountApiTest.java
+@@ -71,4 +71,35 @@ class AccountApiTest extends ApiTest {
+         getWith(TestTokens.of(BOB).scopes("transactions:read"), "/api/accounts/1/transactions")
+             .andExpect(status().isNotFound());
+     }
++
++    @Test
++    void adminCanSetAnyDailyLimit() throws Exception {
++        putAs(ADA, "/api/accounts/1/daily-limit", "{\"dailyLimit\":5000}")
++            .andExpect(status().isOk()).andExpect(jsonPath("$.dailyLimit").value(5000));
++    }
++
++    @Test
++    void assignedSupportCanLowerButNotRaiseDailyLimit() throws Exception {
++        putAs(SAM, "/api/accounts/1/daily-limit", "{\"dailyLimit\":400}")
++            .andExpect(status().isOk()).andExpect(jsonPath("$.dailyLimit").value(400));
++        putAs(SAM, "/api/accounts/1/daily-limit", "{\"dailyLimit\":600}")
++            .andExpect(status().isForbidden());
++    }
++
++    @Test
++    void customersCannotChangeDailyLimit() throws Exception {
++        putAs(ALICE, "/api/accounts/1/daily-limit", "{\"dailyLimit\":400}")
++            .andExpect(status().isForbidden());
++    }
++
++    @Test
++    void dailyLimitValidationAndClosedAccounts() throws Exception {
++        putAs(ADA, "/api/accounts/1/daily-limit", "{}").andExpect(status().isBadRequest());
++        putAs(ADA, "/api/accounts/1/daily-limit", "{\"dailyLimit\":-1}").andExpect(status().isBadRequest());
++        putAs(ADA, "/api/accounts/1/daily-limit", "{\"dailyLimit\":5001}").andExpect(status().isBadRequest());
++        putAs(ADA, "/api/accounts/1/daily-limit", "{\"dailyLimit\":1.5}").andExpect(status().isBadRequest());
++        putAs(ADA, "/api/accounts/1/daily-limit", "{\"dailyLimit\":750,\"other\":true}")
++            .andExpect(status().isBadRequest());
++        putAs(ADA, "/api/accounts/5/daily-limit", "{\"dailyLimit\":0}").andExpect(status().isConflict());
++    }
+ }

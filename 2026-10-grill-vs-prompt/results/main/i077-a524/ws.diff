@@ -1,0 +1,95 @@
+diff --git a/src/main/java/com/example/accounts/account/AccountService.java b/src/main/java/com/example/accounts/account/AccountService.java
+index c1dfaa8..199d4eb 100644
+--- a/src/main/java/com/example/accounts/account/AccountService.java
++++ b/src/main/java/com/example/accounts/account/AccountService.java
+@@ -43,6 +43,13 @@ public class AccountService {
+             .orElseThrow(() -> new NotFoundException("Account not found"));
+     }
+ 
++    /** The account in the caller's tenant, regardless of resource-level account visibility. */
++    public Account getInTenant(Long accountId, String tenantId) {
++        return accounts.findById(accountId)
++            .filter(a -> tenantId != null && tenantId.equals(a.getTenantId()))
++            .orElseThrow(() -> new NotFoundException("Account not found"));
++    }
++
+     /** Accounts the caller may see: their own (customers), assigned ones (support), all in the tenant (admins). */
+     public List<Account> listVisible() {
+         CurrentUser user = users.current();
+diff --git a/src/main/java/com/example/accounts/closure/ClosureController.java b/src/main/java/com/example/accounts/closure/ClosureController.java
+index 702334d..e4a6919 100644
+--- a/src/main/java/com/example/accounts/closure/ClosureController.java
++++ b/src/main/java/com/example/accounts/closure/ClosureController.java
+@@ -19,15 +19,16 @@ import com.example.accounts.security.CurrentUser;
+ import com.example.accounts.security.CurrentUserProvider;
+ import com.example.accounts.web.ConflictException;
+ import com.example.accounts.web.ForbiddenException;
++import com.example.accounts.web.NotFoundException;
+ 
+ @RestController
+ public class ClosureController {
+ 
+     public record ClosureView(Long id, Long accountId, String requestedBy, String status, String decidedBy,
+-                              Instant requestedAt) {
++                              Instant requestedAt, Instant decidedAt) {
+         static ClosureView of(ClosureRequest r) {
+             return new ClosureView(r.getId(), r.getAccountId(), r.getRequestedBy(), r.getStatus().name(), r.getDecidedBy(),
+-                r.getRequestedAt());
++                r.getRequestedAt(), r.getDecidedAt());
+         }
+     }
+ 
+@@ -71,4 +72,29 @@ public class ClosureController {
+         return requests.findByTenantIdAndStatusOrderByRequestedAt(user.tenantId(), ClosureRequest.Status.PENDING.name())
+             .stream().map(ClosureView::of).toList();
+     }
++
++    /** Approve a pending closure request in the approver's tenant. */
++    @PostMapping("/api/closure-requests/{requestId}/approve")
++    @PreAuthorize("hasRole('APPROVER') and hasAuthority('SCOPE_accounts:write')")
++    @Transactional
++    public ClosureView approve(@PathVariable Long requestId) {
++        CurrentUser user = users.current();
++        ClosureRequest request = requests.findById(requestId)
++            .filter(r -> user.inTenant(r.getTenantId()))
++            .orElseThrow(() -> new NotFoundException("Closure request not found"));
++        if (request.getStatus() != ClosureRequest.Status.PENDING) {
++            throw new ConflictException("Closure request is already decided");
++        }
++
++        Account account = accounts.getInTenant(request.getAccountId(), user.tenantId());
++        if (account.getStatus() == Account.Status.CLOSED) {
++            throw new ConflictException("Account is already closed");
++        }
++        Instant decidedAt = Instant.now();
++        request.setStatus(ClosureRequest.Status.APPROVED);
++        request.setDecidedBy(user.id());
++        request.setDecidedAt(decidedAt);
++        account.setStatus(Account.Status.CLOSED);
++        return ClosureView.of(request);
++    }
+ }
+diff --git a/src/test/java/com/example/accounts/ClosureApiTest.java b/src/test/java/com/example/accounts/ClosureApiTest.java
+index 44707e5..4330eea 100644
+--- a/src/test/java/com/example/accounts/ClosureApiTest.java
++++ b/src/test/java/com/example/accounts/ClosureApiTest.java
+@@ -38,4 +38,19 @@ class ClosureApiTest extends ApiTest {
+         getAs(ADA, "/api/closure-requests").andExpect(status().isForbidden());
+         getAs(ALICE, "/api/closure-requests").andExpect(status().isForbidden());
+     }
++
++    @Test
++    void approverApprovesPendingRequestAndClosesAccount() throws Exception {
++        postAs(AL, "/api/closure-requests/1/approve", null).andExpect(status().isOk())
++            .andExpect(jsonPath("$.status").value("APPROVED"))
++            .andExpect(jsonPath("$.decidedBy").value("u-al"))
++            .andExpect(jsonPath("$.decidedAt").isNotEmpty());
++        getAs(ALICE, "/api/accounts/2").andExpect(status().isOk())
++            .andExpect(jsonPath("$.status").value("CLOSED"));
++    }
++
++    @Test
++    void approvingAlreadyDecidedRequestConflicts() throws Exception {
++        postAs(AL, "/api/closure-requests/3/approve", null).andExpect(status().isConflict());
++    }
+ }

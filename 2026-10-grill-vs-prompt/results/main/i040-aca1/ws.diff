@@ -1,0 +1,124 @@
+diff --git a/src/main/java/com/example/accounts/account/AccountController.java b/src/main/java/com/example/accounts/account/AccountController.java
+index bc6eb2e..01f5287 100644
+--- a/src/main/java/com/example/accounts/account/AccountController.java
++++ b/src/main/java/com/example/accounts/account/AccountController.java
+@@ -4,7 +4,11 @@ import java.math.BigDecimal;
+ import java.time.LocalDate;
+ import java.util.List;
+ 
++import com.fasterxml.jackson.databind.JsonNode;
++import jakarta.transaction.Transactional;
+ import org.springframework.security.access.prepost.PreAuthorize;
++import org.springframework.web.bind.annotation.PutMapping;
++import org.springframework.web.bind.annotation.RequestBody;
+ import org.springframework.web.bind.annotation.GetMapping;
+ import org.springframework.web.bind.annotation.PathVariable;
+ import org.springframework.web.bind.annotation.RequestMapping;
+@@ -28,6 +32,9 @@ public class AccountController {
+         }
+     }
+ 
++    public record DailyLimitRequest(JsonNode dailyLimit) {
++    }
++
+     private final AccountService service;
+ 
+     public AccountController(AccountService service) {
+@@ -44,6 +51,29 @@ public class AccountController {
+         return AccountView.of(service.getVisible(accountId));
+     }
+ 
++    @PutMapping("/{accountId}/daily-limit")
++    @PreAuthorize("hasAuthority('SCOPE_accounts:write')")
++    @Transactional
++    public AccountView updateDailyLimit(@PathVariable Long accountId, @RequestBody DailyLimitRequest body) {
++        if (body == null || body.dailyLimit() == null || !body.dailyLimit().isNumber()) {
++            throw new IllegalArgumentException("dailyLimit must be a number");
++        }
++        BigDecimal value = body.dailyLimit().decimalValue();
++        if (value.signum() < 0 || value.stripTrailingZeros().scale() > 0) {
++            throw new IllegalArgumentException("dailyLimit must be a non-negative whole number");
++        }
++        final int limit;
++        try {
++            limit = value.intValueExact();
++        } catch (ArithmeticException e) {
++            throw new IllegalArgumentException("dailyLimit is out of range", e);
++        }
++        if (limit > 5000) {
++            throw new IllegalArgumentException("dailyLimit exceeds the maximum");
++        }
++        return AccountView.of(service.updateDailyLimit(accountId, limit));
++    }
++
+     /** Needs the transactions:read scope as well as access to the account. */
+     @GetMapping("/{accountId}/transactions")
+     @PreAuthorize("hasAuthority('SCOPE_transactions:read')")
+diff --git a/src/main/java/com/example/accounts/account/AccountService.java b/src/main/java/com/example/accounts/account/AccountService.java
+index c1dfaa8..1dba743 100644
+--- a/src/main/java/com/example/accounts/account/AccountService.java
++++ b/src/main/java/com/example/accounts/account/AccountService.java
+@@ -10,6 +10,7 @@ import com.example.accounts.security.AccessPolicy;
+ import com.example.accounts.security.CurrentUser;
+ import com.example.accounts.security.CurrentUserProvider;
+ import com.example.accounts.web.NotFoundException;
++import com.example.accounts.web.ForbiddenException;
+ 
+ @Service
+ @Transactional(readOnly = true)
+@@ -66,4 +67,22 @@ public class AccountService {
+     public List<Transaction> transactions(Long accountId) {
+         return transactions.findByAccountIdOrderByBookedOnDescIdDesc(getVisible(accountId).getId());
+     }
++
++    @Transactional
++    public Account updateDailyLimit(Long accountId, int dailyLimit) {
++        CurrentUser user = users.current();
++        Account account = getVisible(accountId);
++        if (access.isTenantAdmin(user, account.getTenantId())) {
++            account.setDailyLimit(dailyLimit);
++            return account;
++        }
++        if (access.isAssignedSupport(user, account)) {
++            if (dailyLimit > account.getDailyLimit()) {
++                throw new ForbiddenException("Support users may only lower an account's daily limit");
++            }
++            account.setDailyLimit(dailyLimit);
++            return account;
++        }
++        throw new ForbiddenException("Only bank admins or assigned support users may change the daily limit");
++    }
+ }
+diff --git a/src/test/java/com/example/accounts/AccountApiTest.java b/src/test/java/com/example/accounts/AccountApiTest.java
+index 7f7cf0b..d0743ee 100644
+--- a/src/test/java/com/example/accounts/AccountApiTest.java
++++ b/src/test/java/com/example/accounts/AccountApiTest.java
+@@ -71,4 +71,28 @@ class AccountApiTest extends ApiTest {
+         getWith(TestTokens.of(BOB).scopes("transactions:read"), "/api/accounts/1/transactions")
+             .andExpect(status().isNotFound());
+     }
++
++    @Test
++    void bankAdminCanChangeDailyLimit() throws Exception {
++        putAs(ADA, "/api/accounts/1/daily-limit", "{\"dailyLimit\":750}")
++            .andExpect(status().isOk()).andExpect(jsonPath("$.dailyLimit").value(750));
++    }
++
++    @Test
++    void assignedSupportCanOnlyLowerDailyLimit() throws Exception {
++        putAs(SAM, "/api/accounts/1/daily-limit", "{\"dailyLimit\":400}")
++            .andExpect(status().isOk()).andExpect(jsonPath("$.dailyLimit").value(400));
++        putAs(SAM, "/api/accounts/1/daily-limit", "{\"dailyLimit\":501}")
++            .andExpect(status().isForbidden());
++    }
++
++    @Test
++    void dailyLimitValidationIsStrict() throws Exception {
++        putAs(ADA, "/api/accounts/1/daily-limit", "{\"dailyLimit\":5001}")
++            .andExpect(status().isBadRequest());
++        putAs(ADA, "/api/accounts/1/daily-limit", "{\"dailyLimit\":1.5}")
++            .andExpect(status().isBadRequest());
++        putAs(ADA, "/api/accounts/1/daily-limit", "{}")
++            .andExpect(status().isBadRequest());
++    }
+ }
