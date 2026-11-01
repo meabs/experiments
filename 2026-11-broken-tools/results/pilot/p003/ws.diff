@@ -1,0 +1,120 @@
+diff --git a/src/main/java/com/example/accounts/cases/CaseCloseController.java b/src/main/java/com/example/accounts/cases/CaseCloseController.java
+new file mode 100644
+index 0000000..5f12c5b
+--- /dev/null
++++ b/src/main/java/com/example/accounts/cases/CaseCloseController.java
+@@ -0,0 +1,79 @@
++package com.example.accounts.cases;
++
++import java.time.Instant;
++
++import org.springframework.http.HttpStatus;
++import org.springframework.security.access.prepost.PreAuthorize;
++import org.springframework.transaction.annotation.Transactional;
++import org.springframework.web.bind.annotation.PathVariable;
++import org.springframework.web.bind.annotation.PostMapping;
++import org.springframework.web.bind.annotation.RequestBody;
++import org.springframework.web.bind.annotation.ResponseStatus;
++import org.springframework.web.bind.annotation.RestController;
++
++import com.example.accounts.security.CurrentUser;
++import com.example.accounts.security.CurrentUserProvider;
++import com.example.accounts.customer.CustomerRepository;
++import com.example.accounts.web.ConflictException;
++import com.example.accounts.web.ForbiddenException;
++import com.example.accounts.web.NotFoundException;
++
++/** Staff operation for resolving support cases. */
++@RestController
++public class CaseCloseController {
++
++    public record Resolution(String resolution) {
++    }
++
++    public record CaseSummary(String id, Long accountId, String subject, String status, Instant openedAt) {
++        static CaseSummary of(SupportCase c) {
++            return new CaseSummary(c.getId(), c.getAccountId(), c.getSubject(), c.getStatus(), c.getOpenedAt());
++        }
++    }
++
++    private final SupportCaseRepository cases;
++    private final CaseCommentRepository comments;
++    private final CustomerRepository customers;
++    private final CurrentUserProvider users;
++
++    public CaseCloseController(SupportCaseRepository cases, CaseCommentRepository comments,
++                               CustomerRepository customers, CurrentUserProvider users) {
++        this.cases = cases;
++        this.comments = comments;
++        this.customers = customers;
++        this.users = users;
++    }
++
++    @PostMapping("/api/support/cases/{caseId}/close")
++    @PreAuthorize("hasAuthority('SCOPE_accounts:write')")
++    @ResponseStatus(HttpStatus.OK)
++    @Transactional
++    public CaseSummary close(@PathVariable String caseId, @RequestBody Resolution body) {
++        String resolution = body == null || body.resolution() == null ? null : body.resolution().trim();
++        if (resolution == null || resolution.length() < 1 || resolution.length() > 2000) {
++            throw new IllegalArgumentException("Invalid resolution");
++        }
++
++        SupportCase supportCase = cases.findById(caseId)
++            .orElseThrow(() -> new NotFoundException("Case not found"));
++        CurrentUser user = users.current();
++        boolean tenantMatch = user.inTenant(supportCase.getTenantId());
++        boolean allowed = tenantMatch && (user.isAdmin()
++            || (user.isSupport() && user.id().equals(supportCase.getAssigneeUserId())));
++        boolean ownCustomerCase = user.isCustomer() && customers.findById(supportCase.getCustomerId())
++            .map(customer -> user.id().equals(customer.getUserId())).orElse(false);
++        if (!tenantMatch || (!allowed && user.isSupport()) || (user.isCustomer() && !ownCustomerCase)) {
++            throw new NotFoundException("Case not found");
++        }
++        if (!allowed) {
++            throw new ForbiddenException("Only the assignee or an admin can close a case");
++        }
++        if ("CLOSED".equals(supportCase.getStatus())) {
++            throw new ConflictException("Case is already closed");
++        }
++
++        supportCase.close();
++        comments.save(new CaseComment(supportCase.getId(), user.id(), resolution, false));
++        return CaseSummary.of(supportCase);
++    }
++}
+diff --git a/src/main/java/com/example/accounts/cases/CaseComment.java b/src/main/java/com/example/accounts/cases/CaseComment.java
+index d39170c..23710da 100644
+--- a/src/main/java/com/example/accounts/cases/CaseComment.java
++++ b/src/main/java/com/example/accounts/cases/CaseComment.java
+@@ -33,6 +33,17 @@ public class CaseComment {
+     @Column(nullable = false)
+     private Instant createdAt;
+ 
++    protected CaseComment() {
++    }
++
++    public CaseComment(String caseId, String author, String body, boolean internal) {
++        this.caseId = caseId;
++        this.author = author;
++        this.body = body;
++        this.internal = internal;
++        this.createdAt = Instant.now();
++    }
++
+     public Long getId() { return id; }
+     public String getCaseId() { return caseId; }
+     public String getAuthor() { return author; }
+diff --git a/src/main/java/com/example/accounts/cases/SupportCase.java b/src/main/java/com/example/accounts/cases/SupportCase.java
+index 5698e01..3ce26b9 100644
+--- a/src/main/java/com/example/accounts/cases/SupportCase.java
++++ b/src/main/java/com/example/accounts/cases/SupportCase.java
+@@ -60,4 +60,8 @@ public class SupportCase {
+     public String getStatus() { return status; }
+     public String getAssigneeUserId() { return assigneeUserId; }
+     public Instant getOpenedAt() { return openedAt; }
++
++    public void close() {
++        this.status = "CLOSED";
++    }
+ }

@@ -1,0 +1,12 @@
+You are working on accounts-service, the Spring Boot API in this repository (see README.md and AGENTS.md).
+
+Ticket: filter an account's transactions by date.
+
+The transaction list gets long, and customers and staff want to look at one date range.
+
+Add two optional query parameters to `GET /api/accounts/{accountId}/transactions`: `from` and `to`, ISO dates
+(`YYYY-MM-DD`). Both are inclusive and either can be used on its own; without them the endpoint behaves exactly as it
+does now. A value that isn't a valid date, or a `from` later than `to`, gets 400. The order, the response fields,
+the access rules and the scope the endpoint needs all stay as they are.
+
+Follow the existing conventions (README.md) and keep the existing behaviour and tests working.
