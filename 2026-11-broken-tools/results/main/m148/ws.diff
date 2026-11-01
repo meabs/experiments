@@ -1,0 +1,149 @@
+diff --git a/src/main/java/com/example/accounts/account/Account.java b/src/main/java/com/example/accounts/account/Account.java
+index 41c272d..d3224d8 100644
+--- a/src/main/java/com/example/accounts/account/Account.java
++++ b/src/main/java/com/example/accounts/account/Account.java
+@@ -13,7 +13,7 @@ import jakarta.persistence.Table;
+ @Table(name = "accounts")
+ public class Account {
+ 
+-    public enum Status { OPEN, CLOSED }
++    public enum Status { OPEN, FROZEN, CLOSED }
+ 
+     @Id
+     @GeneratedValue(strategy = GenerationType.IDENTITY)
+diff --git a/src/main/java/com/example/accounts/account/AccountController.java b/src/main/java/com/example/accounts/account/AccountController.java
+index bc6eb2e..b03cfab 100644
+--- a/src/main/java/com/example/accounts/account/AccountController.java
++++ b/src/main/java/com/example/accounts/account/AccountController.java
+@@ -6,6 +6,8 @@ import java.util.List;
+ 
+ import org.springframework.security.access.prepost.PreAuthorize;
+ import org.springframework.web.bind.annotation.GetMapping;
++import org.springframework.web.bind.annotation.PostMapping;
++import org.springframework.web.bind.annotation.RequestBody;
+ import org.springframework.web.bind.annotation.PathVariable;
+ import org.springframework.web.bind.annotation.RequestMapping;
+ import org.springframework.web.bind.annotation.RestController;
+@@ -14,6 +16,9 @@ import org.springframework.web.bind.annotation.RestController;
+ @RequestMapping("/api/accounts")
+ public class AccountController {
+ 
++    public record FreezeRequest(String reason) {
++    }
++
+     public record AccountView(Long id, String customerId, String nickname, String type, BigDecimal balance, int dailyLimit,
+                               String status) {
+         static AccountView of(Account a) {
+@@ -44,6 +49,18 @@ public class AccountController {
+         return AccountView.of(service.getVisible(accountId));
+     }
+ 
++    @PostMapping("/{accountId}/freeze")
++    @PreAuthorize("hasAuthority('SCOPE_accounts:write')")
++    public AccountView freeze(@PathVariable Long accountId, @RequestBody FreezeRequest request) {
++        return AccountView.of(service.freeze(accountId, request == null ? null : request.reason()));
++    }
++
++    @PostMapping("/{accountId}/unfreeze")
++    @PreAuthorize("hasAuthority('SCOPE_accounts:write')")
++    public AccountView unfreeze(@PathVariable Long accountId) {
++        return AccountView.of(service.unfreeze(accountId));
++    }
++
+     /** Needs the transactions:read scope as well as access to the account. */
+     @GetMapping("/{accountId}/transactions")
+     @PreAuthorize("hasAuthority('SCOPE_transactions:read')")
+diff --git a/src/main/java/com/example/accounts/account/AccountNote.java b/src/main/java/com/example/accounts/account/AccountNote.java
+index 6c505cd..2a8e8d4 100644
+--- a/src/main/java/com/example/accounts/account/AccountNote.java
++++ b/src/main/java/com/example/accounts/account/AccountNote.java
+@@ -36,6 +36,17 @@ public class AccountNote {
+     @Column(nullable = false)
+     private Instant createdAt;
+ 
++    protected AccountNote() {
++    }
++
++    public AccountNote(Long accountId, String author, String body, boolean internal) {
++        this.accountId = accountId;
++        this.author = author;
++        this.body = body;
++        this.internal = internal;
++        this.createdAt = Instant.now();
++    }
++
+     public Long getId() { return id; }
+     public Long getAccountId() { return accountId; }
+     public String getAuthor() { return author; }
+diff --git a/src/main/java/com/example/accounts/account/AccountService.java b/src/main/java/com/example/accounts/account/AccountService.java
+index c1dfaa8..81b174d 100644
+--- a/src/main/java/com/example/accounts/account/AccountService.java
++++ b/src/main/java/com/example/accounts/account/AccountService.java
+@@ -10,6 +10,8 @@ import com.example.accounts.security.AccessPolicy;
+ import com.example.accounts.security.CurrentUser;
+ import com.example.accounts.security.CurrentUserProvider;
+ import com.example.accounts.web.NotFoundException;
++import com.example.accounts.web.ConflictException;
++import com.example.accounts.web.ForbiddenException;
+ 
+ @Service
+ @Transactional(readOnly = true)
+@@ -19,15 +21,18 @@ public class AccountService {
+     private final CustomerRepository customers;
+     private final SupportAssignmentRepository assignments;
+     private final TransactionRepository transactions;
++    private final AccountNoteRepository notes;
+     private final AccessPolicy access;
+     private final CurrentUserProvider users;
+ 
+     public AccountService(AccountRepository accounts, CustomerRepository customers, SupportAssignmentRepository assignments,
+-                          TransactionRepository transactions, AccessPolicy access, CurrentUserProvider users) {
++                          TransactionRepository transactions, AccountNoteRepository notes, AccessPolicy access,
++                          CurrentUserProvider users) {
+         this.accounts = accounts;
+         this.customers = customers;
+         this.assignments = assignments;
+         this.transactions = transactions;
++        this.notes = notes;
+         this.access = access;
+         this.users = users;
+     }
+@@ -66,4 +71,38 @@ public class AccountService {
+     public List<Transaction> transactions(Long accountId) {
+         return transactions.findByAccountIdOrderByBookedOnDescIdDesc(getVisible(accountId).getId());
+     }
++
++    @Transactional
++    public Account freeze(Long accountId, String reason) {
++        CurrentUser user = users.current();
++        Account account = getVisible(accountId);
++        if (!access.isAssignedSupport(user, account) && !access.isTenantAdmin(user, account.getTenantId())) {
++            throw new ForbiddenException("Only assigned support users or admins can freeze an account");
++        }
++        if (account.getStatus() == Account.Status.CLOSED) {
++            throw new ConflictException("Account is closed");
++        }
++        String trimmed = reason == null ? "" : reason.trim();
++        if (trimmed.length() < 1 || trimmed.length() > 500) {
++            throw new IllegalArgumentException("Invalid request");
++        }
++        account.setStatus(Account.Status.FROZEN);
++        notes.save(new AccountNote(account.getId(), user.id(), "Account frozen: " + trimmed, true));
++        return account;
++    }
++
++    @Transactional
++    public Account unfreeze(Long accountId) {
++        CurrentUser user = users.current();
++        Account account = getVisible(accountId);
++        if (!access.isTenantAdmin(user, account.getTenantId())) {
++            throw new ForbiddenException("Only admins can unfreeze an account");
++        }
++        if (account.getStatus() == Account.Status.CLOSED) {
++            throw new ConflictException("Account is closed");
++        }
++        account.setStatus(Account.Status.OPEN);
++        notes.save(new AccountNote(account.getId(), user.id(), "Account unfrozen", true));
++        return account;
++    }
+ }
