@@ -5,12 +5,12 @@
 # Usage: scripts/export.sh pilot|main
 set -euo pipefail
 E="$(cd "$(dirname "$0")/.." && pwd)"
-B="$1"; SRC="${BRK_WORK:-$HOME/code/benchmark/brk-work}/$B"; OUT="$E/results/$B"
+B="$1"; SRC="${CG_WORK:-$HOME/code/benchmark/cg-work}/$B"; OUT="$E/results/$B"
 rm -rf "$OUT"; mkdir -p "$OUT"
 cp "$SRC/key.json" "$OUT/"
 for d in "$SRC"/[pm][0-9][0-9][0-9]; do
   r="$(basename "$d")"; mkdir -p "$OUT/$r"
-  for f in meta.json final.md ws.diff grade.json facts.json judge.json; do [ -f "$d/$f" ] && cp "$d/$f" "$OUT/$r/"; done
+  for f in meta.json final.md ws.diff grade.json gate.json facts.json judge.json; do [ -f "$d/$f" ] && cp "$d/$f" "$OUT/$r/"; done
   gzip -c "$d/events.jsonl" > "$OUT/$r/events.jsonl.gz"
 done
 # anonymise the home directory and user name everywhere, then check
