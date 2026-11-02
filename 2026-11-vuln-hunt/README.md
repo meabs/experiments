@@ -173,3 +173,75 @@ To be filled in when the harness is built.
   should be just a normal coding agent and harness, the intention is to test a coding agent vs a [specialist] agent",
   agreed to installing Strands and to the swarm arm ("Yes to both"), and asked: "can we cover oswap in it". Design
   written to cover all ten OWASP Top 10:2025 categories.
+- 2026-11-01, during the build, before the pilot (no run had been made):
+  - **Tier counts corrected:** the table above gives easy 3, medium 6, **hard 9, very hard 5** (I miscounted them as
+    10 and 4 in the text). The table, and the 14 hard and very-hard vulnerabilities used for H1 and H2, are unchanged.
+  - **V06 pins PyJWT 2.3.0** (CVE-2022-29217, algorithm confusion, fixed in 2.4.0). PyJWT 1.x doesn't run on the
+    machine's Python 3.14.
+  - **The app is about 1,200 lines,** not 1,500.
+  - **Codex's sandbox has network access,** because Codex reaches its model over it; web search is disabled. B and C
+    can only reach the local app through their HTTP tool.
+  - **B and C use Strands' Responses-API model** (`OpenAIResponsesModel`) on OpenRouter, with reasoning effort
+    medium, like Codex. Through the Chat Completions model, Strands drops the model's reasoning between turns (it
+    warned about this in a smoke test), which Codex doesn't.
+  - **The matching judge returns one more label,** "other_real", for real issues outside the key, so they aren't
+    counted as false alarms ([`src/judge.py`](src/judge.py)).
+- 2026-11-01, during the pilot, before the main run: **a fourth arm, A2 (Codex + checklist).** The user asked: "Is it
+  worth having an arm where the codex has the same kniwldge as strands", and said "Yes" to the proposal below.
+  - **A2** is Codex, set up exactly as A. Its prompt is B's system prompt (the checklist in
+    [`prompts/specialist.md`](prompts/specialist.md) plus the same line saying where the running app is), followed by
+    the same task. The harness starts a copy of the app for A2 as it does for B and C. The only wording difference is
+    how to reach it: "with curl" for Codex, "with the http_request tool" for Strands.
+  - **New hypothesis H4:** A2 finds more hard and very-hard vulnerabilities than A (the checklist's effect inside
+    the same harness). Same test, one-sided, and Holm now covers H1 to H4.
+  - **A2 against B** (the same instructions and model, Codex's harness against Strands') is reported as a
+    difference with a bootstrap interval, without a test.
+  - **Size:** 30 runs (A2 × 5 added). A2 gets one pilot run.
+- 2026-11-02, after the pilot of A, A2 and B and two failed pilots of C, before the main run. **Arm C becomes a
+  Strands Graph; the Swarm becomes arm D, reported descriptively.** The user chose this ("Graph + Swarm") from three
+  options I offered.
+  - **What went wrong with Strands' Swarm** (arm C as designed):
+    - Run 1: the recon agent called `list_files` in a loop for 315 model calls and never handed off. It ended on a
+      connection error, with no findings.
+    - Then, in tests: recon handed off to all five colleagues in one parallel step. Agents kept working after
+      handing off, because a Strands handoff only records the next agent and the last one wins. The order was
+      ignored: specialists went straight to the verifier, and the verifier sent work back to recon. Two of the four
+      specialists never ran. The verifier submitted three times, the last time an empty list.
+    - Fixes tried: one tool call per step (`parallel_tool_calls: false`, which OpenRouter's Responses route seemed to
+      ignore); a hook that ends an agent's turn after its first handoff and refuses a second (as OpenAI's Swarm
+      does); roles naming the next agent. Handoffs then happened one at a time, but the order still wasn't followed.
+  - **C, specialist team (Strands Graph,
+    [`prompts/team.md`](prompts/team.md)):** the same six roles. Recon runs first, the four specialists run in
+    parallel with recon's map, and the verifier runs once all four have finished, with their findings. The order is
+    fixed in code. A test run completed with 17 findings in about 3 minutes.
+  - **D, specialist swarm (Strands Swarm, [`prompts/swarm.md`](prompts/swarm.md)):** kept with the fixes above.
+    Roles name the next agent, and handoffs are one per turn. D has no hypothesis; it is reported descriptively,
+    including how often a run fails or skips specialists.
+  - **All Strands arms (B, C, D):**
+    - `submit_findings` accepts only the first call (this stopped D's empty overwrite).
+    - The conversation keeps the first message and a 300-message window (Strands' default is 40). This was added
+      while chasing the loop. It wasn't the cause, but it stops a long review from losing its task.
+    - Every tool call is logged.
+  - **H2 now reads:** the specialist team (C, Graph) finds more hard and very-hard vulnerabilities than the specialist
+    (B).
+  - **Size:** A, A2, B, C, D × 5 with Luna, plus B and C × 5 with Qwen = **35 runs**.
+- 2026-11-02, after the pilot, before the main run:
+  - **Pilot** (one run per arm with Luna; not part of the results). Planted vulnerabilities found (of 23), hard and
+    very hard found (of 14), findings, time and cost at list prices:
+
+    | Arm | Found | Hard + very hard | Findings | Time | Cost |
+    | --- | --- | --- | --- | --- | --- |
+    | A, Codex | 12 | 8 | 12 | 48 s | $0.018 |
+    | A2, Codex + checklist | 12 | 7 | 12 | 59 s | $0.019 |
+    | B, Strands specialist | 12 | 8 | 12 | 66 s | $0.013 |
+    | C, Strands team (Graph) | 17 | 11 | 18 | 119 s | $0.049 |
+    | D, Strands swarm | 8 | 5 | 8 | 225 s | $0.034 (2 of 4 specialists skipped) |
+
+    - **Ceiling:** no arm found more than 11 of the 14 hard and very-hard vulnerabilities, so none were changed.
+    - **No false alarms in the pilot:** every finding matched a planted vulnerability, and no decoy was flagged. H3
+      (precision) may therefore have little to measure; it stays as designed.
+    - **Judge:** I checked all 74 pilot labels and agreed with every main match. The judge also gave "also" credit
+      in 3 findings. These count only if the finding names the second vulnerability's cause; it made no difference
+      in the pilot, because those runs reported the second vulnerability separately.
+  - **10 runs per arm instead of 5,** because runs cost 1 to 5 cents. This was decided from the pilot's cost, not its
+    results. A, A2, B, C, D × 10 with Luna, plus B and C × 10 with Qwen = **70 runs**, under $5.
