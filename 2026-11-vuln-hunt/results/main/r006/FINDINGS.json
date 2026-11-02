@@ -1,0 +1,98 @@
+[
+ {
+  "file": "shopapi/auth.py",
+  "line": 48,
+  "category": "Authentication / Access control",
+  "title": "require_auth swallows authentication failures and executes the handler anyway",
+  "description": "The authentication decorator catches Exception around both authentication and abort(401), then always calls the wrapped handler. Consequently endpoints decorated with require_auth can execute without a bearer token; handlers that do not immediately dereference g.user are directly exposed, while others return errors instead of a clean 401.",
+  "evidence": "GET /orders/1 with no Authorization header returned HTTP 200 and the complete order, even though show_order is decorated with @require_auth. GET /giftcards/HFDEMO10 also returned the card balance without authentication. The failing abort is caught at lines 53-58 and the wrapped function is called unconditionally at line 58."
+ },
+ {
+  "file": "shopapi/orders.py",
+  "line": 46,
+  "category": "Access control",
+  "title": "Order details lack an ownership check",
+  "description": "show_order calls get_order directly rather than own_order. Because the broken authentication decorator also permits anonymous execution, any caller can enumerate order IDs and read another customer's order contents, payment totals, and refunds.",
+  "evidence": "GET /orders/1 without authentication returned the order belonging to the seeded customer, including items, paid_pence and refunds. The ownership check exists in own_order at lines 32-36 but is not used by show_order."
+ },
+ {
+  "file": "shopapi/admin.py",
+  "line": 52,
+  "category": "Access control",
+  "title": "Trailing-slash admin refund route bypasses the global staff check",
+  "description": "The global guard compares request.path for exact equality with registered admin rules. The refund rule allows both slash forms, but the registered rule is compared as /admin/refunds; a request to /admin/refunds/ therefore skips the guard and reaches the privileged refund handler.",
+  "evidence": "POST /admin/refunds/ without credentials with {\"order_id\":1,\"amount_pence\":1} returned HTTP 200 and {\"ok\":true,\"refunded_pence\":1}. The guard is in shopapi/__init__.py lines 36-41 and uses exact request.path membership; the route at admin.py:52 has strict_slashes=False."
+ },
+ {
+  "file": "shopapi/products.py",
+  "line": 40,
+  "category": "Injection",
+  "title": "Product search is vulnerable to SQL injection",
+  "description": "The q query parameter is concatenated directly into a SQL statement. An attacker can alter the WHERE clause and retrieve arbitrary product rows (and potentially use SQLite SQL injection primitives depending on the payload).",
+  "evidence": "GET /products/search?q=%27%20OR%201%3D1-- returned all six products. The query at lines 40-42 uses string concatenation rather than a bound parameter."
+ },
+ {
+  "file": "shopapi/basket.py",
+  "line": 20,
+  "category": "Integrity / Code execution",
+  "title": "The basket cookie is an unauthenticated pickle and permits arbitrary code execution",
+  "description": "The server deserializes a client-controlled, base64-encoded cookie with pickle.loads. The cookie has no signature or encryption, so an attacker can construct a pickle whose deserialization executes attacker-chosen Python code in the web process. Catching exceptions does not make pickle deserialization safe.",
+  "evidence": "read_basket at lines 18-23 directly passes request.cookies['basket'] to pickle.loads; with_basket at lines 26-29 gives clients the serialized format but does not sign it. /basket is publicly reachable, so an attacker can send a crafted basket cookie before making the request."
+ },
+ {
+  "file": "shopapi/auth.py",
+  "line": 100,
+  "category": "Authentication",
+  "title": "Token refresh accepts unsigned attacker-controlled JWT claims",
+  "description": "The refresh endpoint decodes the supplied JWT with verify_signature=False, obtains only the subject claim, and issues a new signed session token for that user. A caller can therefore submit an unsigned token naming any existing user and obtain a valid session as that user.",
+  "evidence": "POST /auth/refresh with the unsigned token eyJhbGciOiJub25lIn0.eyJzdWIiOjF9. returned HTTP 200 and a newly signed token for user id 1. The implementation explicitly disables signature verification at auth.py:101."
+ },
+ {
+  "file": "shopapi/payments.py",
+  "line": 37,
+  "category": "Business logic / Error handling",
+  "title": "Payment status timeouts fail open and mark orders as paid",
+  "description": "When the payment provider times out, the code sets status to paid instead of leaving the order awaiting payment or retrying. A provider/network outage can therefore turn an unconfirmed order into a processing order and enable fulfillment or subsequent refund flows without payment confirmation.",
+  "evidence": "The Timeout handler at lines 39-42 assigns status = 'paid'; lines 43-45 then mark the order processing and set paid_pence = total_pence. The comment explicitly says reconciliation happens later, but no compensating state prevents fulfillment during that interval."
+ },
+ {
+  "file": "shopapi/payments.py",
+  "line": 53,
+  "category": "Integrity / Payments",
+  "title": "Payment webhook signature does not cover the event contents",
+  "description": "The HMAC is calculated only over order_id. Anyone who obtains or reuses a valid signature for an order can change status and amount_pence without invalidating it, and the handler does not verify that the paid amount equals the order total. A signed event can therefore mark an order paid for an arbitrary amount, including zero.",
+  "evidence": "webhook_signature at lines 53-55 signs only str(order_id), while payment_webhook trusts event status and int(event.amount_pence) at lines 69-73. The amount is written directly to paid_pence and is never compared with order.total_pence."
+ },
+ {
+  "file": "shopapi/products.py",
+  "line": 90,
+  "category": "Injection / Cross-site scripting",
+  "title": "Review bodies are rendered as trusted HTML",
+  "description": "Authenticated users can submit arbitrary review body text, which is stored without sanitization. Product pages render review bodies with the Jinja safe filter, allowing stored HTML/JavaScript to execute for every visitor viewing the product page.",
+  "evidence": "add_review stores the submitted body unchanged at products.py:90-91, and templates/product.html:13 renders {{ r.body|safe }}. A review body such as <img src=x onerror=alert(1)> would be persisted and emitted as active markup."
+ },
+ {
+  "file": "config.py",
+  "line": 3,
+  "category": "Cryptography / Configuration",
+  "title": "Production JWT signing key is hardcoded and predictable",
+  "description": "SECRET_KEY is a literal repository value and is used to sign and verify all HS256 bearer tokens. Anyone who obtains the source or this deployed configuration can forge tokens for arbitrary user IDs and roles, including staff. The webhook secret also has a permissive hardcoded default at line 8.",
+  "evidence": "config.py:3 defines SECRET_KEY = \"hf-shop-2f8a1c9e7b4d\"; auth.py:27 and auth.py:42 use it for JWT signing and verification. The value is not required to come from an environment/secret manager."
+ },
+ {
+  "file": "shopapi/auth.py",
+  "line": 15,
+  "category": "Cryptography",
+  "title": "Passwords are stored as unsalted fast SHA-256 hashes",
+  "description": "Password hashes are plain SHA-256 digests with no salt or work factor. A database compromise permits efficient offline cracking, including immediate reuse of the same digest for users sharing a password. Passwords should use a memory- or CPU-hard password hashing scheme such as Argon2id, scrypt, or bcrypt.",
+  "evidence": "hash_password is hashlib.sha256(password.encode()).hexdigest() at lines 15-16, and that value is stored directly during registration and reset at lines 77 and 158-159."
+ },
+ {
+  "file": "shopapi/__init__.py",
+  "line": 29,
+  "category": "Logging",
+  "title": "Request logging records credentials and other sensitive request bodies",
+  "description": "Every POST, PUT, and PATCH request logs up to 2,000 characters of the raw body. This includes login passwords, password-reset codes and replacement passwords, bearer-adjacent account data, gift-card codes, and payment/order data, creating sensitive-data exposure in application logs.",
+  "evidence": "The before_request hook at lines 29-33 calls request.get_data(as_text=True) and logs it verbatim. /auth/login and /auth/reset/confirm send passwords in JSON, so those secrets are captured by this logger."
+ }
+]

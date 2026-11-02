@@ -1,0 +1,106 @@
+[
+ {
+  "file": "shopapi/auth.py",
+  "line": 48,
+  "category": "authentication",
+  "title": "Authentication decorator fails open when abort raises",
+  "description": "require_auth catches every Exception, including the abort(401) it raises for missing or invalid credentials, and then calls the protected view anyway with g.user set to None. This makes protected endpoints execute without authentication; endpoints that do not dereference g.user can disclose or modify data, while others return an unintended 500.",
+  "evidence": "The except block at lines 55-58 suppresses the authentication failure. GET /orders/1 with no Authorization header returned HTTP 200 and the complete order belonging to user 1. GET /giftcards/HFDEMO10 with no credentials also returned HTTP 200 and the card balance."
+ },
+ {
+  "file": "shopapi/orders.py",
+  "line": 46,
+  "category": "access control",
+  "title": "Order detail endpoint exposes any order",
+  "description": "show_order calls get_order rather than own_order, so it does not verify that the authenticated requester owns the requested order. Combined with the fail-open decorator this is directly unauthenticated, and even with a valid account it is an IDOR across customers.",
+  "evidence": "GET /orders/1 without credentials returned HTTP 200 with order 1's items, total, payment amount, and delivery data. The route uses get_order(order_id) at line 49, whereas the ownership-checking helper is own_order()."
+ },
+ {
+  "file": "shopapi/admin.py",
+  "line": 52,
+  "category": "access control",
+  "title": "Trailing-slash admin refund route bypasses global staff check",
+  "description": "The application protects admin routes by comparing request.path to the set of registered rule strings. The refund route explicitly accepts both slash forms (strict_slashes=False), but only the canonical rule is in admin_paths. A request to the trailing-slash variant therefore skips staff_only_admin and reaches the privileged refund operation without authentication.",
+  "evidence": "POST /admin/refunds/ with no Authorization header and JSON {\"order_id\":3,\"amount_pence\":1} returned HTTP 200 {\"ok\":true,\"refunded_pence\":1}. The route is declared at admin.py:52 with strict_slashes=False, while the global check in shopapi/__init__.py:36-41 compares exact request.path values."
+ },
+ {
+  "file": "shopapi/auth.py",
+  "line": 100,
+  "category": "authentication",
+  "title": "Token refresh accepts unsigned attacker-controlled JWT claims",
+  "description": "The refresh endpoint decodes the supplied JWT with signature verification disabled and only checks that the claimed subject maps to a user. Anyone can construct an unsigned token naming any existing user and obtain a valid signed session token for that user, including a staff account.",
+  "evidence": "auth.py:101 uses jwt.decode(token, options={\"verify_signature\": False}), then loads claims.sub and issues a new token. POST /auth/refresh with an unsigned JWT containing {\"sub\":1} returned HTTP 200 and a fresh HS256 token without any prior authentication."
+ },
+ {
+  "file": "config.py",
+  "line": 3,
+  "category": "cryptography",
+  "title": "JWT signing key is hardcoded in source",
+  "description": "SECRET_KEY is a fixed, repository-visible string. Anyone who obtains the source or deployment package can forge HS256 access tokens, including tokens for staff users (and the refresh endpoint independently worsens this). The key should be supplied from a protected deployment secret and rotated.",
+  "evidence": "config.py:3 sets SECRET_KEY = \"hf-shop-2f8a1c9e7b4d\" with no environment or secret-manager lookup. make_token and user_from_request use this key for all bearer tokens."
+ },
+ {
+  "file": "shopapi/__init__.py",
+  "line": 44,
+  "category": "configuration",
+  "title": "CORS reflects arbitrary origins while allowing credentials",
+  "description": "Every request Origin is copied into Access-Control-Allow-Origin and credentials are enabled. A malicious web page can make credentialed cross-origin requests to this API; this is especially dangerous if browser-managed credentials are later introduced and is not a valid restricted CORS policy.",
+  "evidence": "GET /health with Origin: https://evil.example returned Access-Control-Allow-Origin: https://evil.example and Access-Control-Allow-Credentials: true. The code performs unconditional reflection at lines 45-50 and config.py:12 enables credentials."
+ },
+ {
+  "file": "shopapi/products.py",
+  "line": 40,
+  "category": "injection",
+  "title": "Product search is SQL injectable",
+  "description": "The search term is concatenated directly into a SQL LIKE expression instead of being passed as a parameter. An attacker can alter the WHERE clause, extract information through SQL behavior, or cause query errors.",
+  "evidence": "products.py:40-42 builds SQL using q directly. GET /products/search?q=%27%20OR%201%3D1%20-- returned all six products rather than only matching products, demonstrating WHERE-clause injection."
+ },
+ {
+  "file": "shopapi/admin.py",
+  "line": 74,
+  "category": "injection",
+  "title": "Customer display names reach an admin SQL query unescaped",
+  "description": "The moderation report interpolates customer.display_name into a SQL string. A customer can set their own display name through the account endpoint, then a staff member viewing the report causes that stored value to be interpreted as SQL.",
+  "evidence": "admin.py:80 constructs f\"WHERE r.author_name = '{customer['display_name']}' ORDER BY...\". display_name is user-controlled via auth.py:119-125 and is not SQL-escaped or parameterized."
+ },
+ {
+  "file": "shopapi/templates/product.html",
+  "line": 13,
+  "category": "injection",
+  "title": "Review bodies are stored and rendered as unsafe HTML",
+  "description": "Review text is accepted from authenticated users and stored, but the template renders it with |safe. A reviewer can persist arbitrary HTML/JavaScript in product pages, causing stored XSS for every visitor and potentially staff users.",
+  "evidence": "products.py:83-91 inserts the supplied body without sanitization; product.html:13 renders r.body|safe. The review limit is only a length check and does not remove markup or scripts."
+ },
+ {
+  "file": "shopapi/payments.py",
+  "line": 39,
+  "category": "business logic",
+  "title": "Payment status timeout fails open to paid",
+  "description": "When the payment provider times out, the endpoint sets status = \"paid\" and transitions the order to processing instead of leaving it awaiting payment. A provider outage or induced timeout therefore permits fulfillment without confirmed payment.",
+  "evidence": "payments.py:39-42 catches requests.Timeout and assigns status = \"paid\"; lines 43-46 then mark the order processing and paid_pence equal to total_pence."
+ },
+ {
+  "file": "shopapi/payments.py",
+  "line": 69,
+  "category": "integrity",
+  "title": "Payment webhook trusts attacker-supplied amount",
+  "description": "The webhook signature covers only the order_id, not the event status or amount. Anyone able to produce/replay a valid order-id signature can submit a paid event with an arbitrary amount, and the server stores that amount as paid_pence without checking it against the order total or provider response.",
+  "evidence": "webhook_signature() at lines 53-55 signs only str(order_id). payment_webhook at lines 69-71 accepts event.amount_pence via int() and writes it directly to paid_pence. The test request shape in tests/test_shop.py:103-104 demonstrates that amount is supplied independently from the signature."
+ },
+ {
+  "file": "shopapi/auth.py",
+  "line": 135,
+  "category": "authentication",
+  "title": "Password reset codes use predictable non-cryptographic randomness without throttling",
+  "description": "Reset codes are generated with random.random(), which is not suitable for security tokens, and the confirmation endpoint has no attempt limit or lockout. An attacker can repeatedly guess the eight-digit code during its 30-minute validity window, while a predictable PRNG state can further reduce the search space.",
+  "evidence": "auth.py:135 generates the code from random.random() rather than secrets/system randomness; reset_confirm compares guesses at lines 149-153 and has no rate-limit or attempt counter."
+ },
+ {
+  "file": "shopapi/__init__.py",
+  "line": 30,
+  "category": "logging",
+  "title": "Request logging records sensitive POST bodies",
+  "description": "The request hook logs up to 2,000 characters of every POST/PUT/PATCH body. This includes login passwords, password-reset codes and new passwords, bearer-like secrets, payment data if added to requests, and personal information, exposing them to application log readers and retained log systems.",
+  "evidence": "shopapi/__init__.py:30-31 calls request.get_data(as_text=True) and logs it for every mutating request. The login and reset endpoints accept passwords/codes in JSON bodies at auth.py:84-93 and 129-159."
+ }
+]

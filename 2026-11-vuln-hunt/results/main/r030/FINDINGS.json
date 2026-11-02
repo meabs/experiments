@@ -1,0 +1,138 @@
+[
+ {
+  "file": "shopapi/auth.py",
+  "line": 55,
+  "category": "Authentication",
+  "title": "@require_auth decorator silently bypasses authentication due to broad except Exception handler",
+  "description": "The require_auth wrapper (lines 48-59) calls abort(401) when user_from_request returns None, but that HTTPException is caught by the bare 'except Exception' block on line 55. The handler logs the error, sets g.user = None, and then PROCEEDS TO EXECUTE THE FUNCTION anyway (line 58: return f(*args, **kwargs)). This means every endpoint decorated with @require_auth is accessible without authentication. All authenticated operations \u2014 reading other users' orders, viewing giftcard balances, adding items to basket, posting reviews, redeeming gift cards \u2014 are fully unauthenticated.",
+  "evidence": "GET /orders/1 without Authorization header returned HTTP 200 with full order details. GET /orders/2 returned another user's order. POST /basket/items {'sku': 'CARAFE', 'qty': 1} without auth returned HTTP 200 and added item."
+ },
+ {
+  "file": "shopapi/auth.py",
+  "line": 101,
+  "category": "Authentication",
+  "title": "Token refresh endpoint accepts forged JWTs (signature verification disabled)",
+  "description": "The /auth/refresh endpoint decodes the provided token with verify_signature=False (line 101). Any attacker can craft any JWT payload specifying arbitrary 'sub' (user ID) and 'role' claims, and the endpoint will create a fresh, properly signed token for that identity. This allows complete auth bypass \u2014 an unauthenticated attacker can impersonate any user including staff. Even though the broader @require_auth bug exposes all routes, fixing that alone would leave this root cause exploitable.",
+  "evidence": "POST /auth/refresh with forged JWT {sub:3, role:'staff'} returned HTTP 200 and a new valid, properly signed token. Using that token, GET /admin/users returned the full user list, confirming staff-level access was obtained."
+ },
+ {
+  "file": "shopapi/products.py",
+  "line": 41,
+  "category": "Injection",
+  "title": "SQL injection in product search",
+  "description": "The /products/search endpoint concatenates the untrusted 'q' query parameter directly into SQL LIKE clauses on line 41, providing no parameterization or escaping. An attacker can inject arbitrary SQL to read, modify, or delete any data from the database.",
+  "evidence": "GET /products/search?q='%20OR%201%3D1-- returned all 6 products instead of filtered results. GET /products/search?q='%20UNION%20SELECT%20id,email,password_hash,1,1,1%20FROM%20users-- triggered HTTP 500, confirming raw SQL error propagation."
+ },
+ {
+  "file": "shopapi/admin.py",
+  "line": 80,
+  "category": "Injection",
+  "title": "SQL injection in admin reviews report via interpolated display_name",
+  "description": "The /admin/reports/reviews endpoint uses Python f-string interpolation to embed customer['display_name'] directly into the SQL WHERE clause on line 80. While customer_id is safely parameterized, the displayed name extracted from the database is then interpolated unsafely. Since the broader @require_auth bug exposes admin routes to unauthenticated attackers, and since display_name is user-controllable via registration (auth.py line 77) and update_account (auth.py line 124), an attacker can store a SQL-injection payload as their display name and trigger injection against the admin API.",
+  "evidence": "Customer with id=11 had display_name \"' UNION SELECT 1,'test',password_hash,'x','x' FROM users--\". GET /admin/reports/reviews?customer_id=11 returned rows containing password hashes from the users table instead of legitimate reviews for that user."
+ },
+ {
+  "file": "shopapi/templates/product.html",
+  "line": 13,
+  "category": "Injection",
+  "title": "Stored XSS via review bodies rendered unsanitized with |safe filter",
+  "description": "Review bodies are stored as-is and rendered with |safe filter on line 13 of the template, bypassing Jinja2's auto-escaping. An attacker can post a review body containing HTML/JavaScript (e.g., <img src=x onerror=alert(document.cookie)>), which executes in any viewer's browser when viewing the product page. Additionally, product descriptions use |safe on line 8 (though bleach.clean sanitizes markdown first, the review body has no sanitization). Display names ARE auto-escaped by Jinja2, but the review body is not.",
+  "evidence": "Multiple reviews with <script>alert(1)</script> and <img src=x onerror=alert(document.cookie)> bodies visible in GET /p/MUG-SPECK response HTML under class='review-body' divs, confirming unsanitized rendering."
+ },
+ {
+  "file": "shopapi/images.py",
+  "line": 50,
+  "category": "Injection",
+  "title": "Server-Side Request Forgery via HTTP redirect following in image import",
+  "description": "check_url validates that the initial URL hostname is in IMAGE_HOSTS and resolves to a public IP (lines 32-35), but requests.get(url, timeout=10, stream=True) on line 50 follows HTTP redirects automatically (the default behavior of the requests library). An attacker supplying a URL from an approved host (e.g., cdn.hartleyfinch.co.uk/hijack.png) that issues a 3xx redirect to an internal/private address (e.g., 169.254.169.254 for cloud metadata, or 127.0.0.1 for local services) bypasses all validation on the final destination.",
+  "evidence": "Line 32 checks u.hostname against IMAGE_HOSTS; line 50: requests.get(url, timeout=10, stream=True) follows redirects to any destination without re-validation."
+ },
+ {
+  "file": "shopapi/basket.py",
+  "line": 20,
+  "category": "Integrity",
+  "title": "User-controlled pickle deserialization in basket cookie",
+  "description": "Basket cookies are base64-encoded Python pickle objects. Line 20 calls pickle.loads(base64.urlsafe_b64decode(raw)) where 'raw' comes entirely from request.cookies.get('basket'), which is set by the client. While exceptions are caught and return an empty basket, pickle deserialization of untrusted data is a known attack vector that can enable remote code execution through crafted opcodes targeting the application's dependencies. The exception handling may not catch all exploit scenarios.",
+  "evidence": "Line 20: pickle.loads(base64.urlsafe_b64decode(raw)) where raw originates from request.cookies.get(COOKIE), controlled entirely by the user."
+ },
+ {
+  "file": "shopapi/payments.py",
+  "line": 42,
+  "category": "Design and business logic",
+  "title": "Payment confirmation treats provider timeout as success (fail-open)",
+  "description": "When the payment provider call times out in confirm_payment (line 39), the handler defaults status to 'paid' (line 42) and proceeds to mark the order as 'processing', advancing the shipment pipeline. If network conditions cause frequent timeouts, or if an attacker deliberately causes the provider to time out, customers receive goods without paying. The comment explicitly acknowledges 'Reconciliation runs overnight', leaving a window where unpaid orders ship.",
+  "evidence": "Lines 39-42: except requests.Timeout \u2192 current_app.logger.warning(...) \u2192 status = 'paid', then db.execute(\"UPDATE orders SET status = 'processing', paid_pence = total_pence\"). Orders advance to shipping without verified payment."
+ },
+ {
+  "file": "shopapi/__init__.py",
+  "line": 47,
+  "category": "Configuration",
+  "title": "CORS reflects any Origin with Access-Control-Allow-Credentials enabled",
+  "description": "The after_request CORS hook sets Access-Control-Allow-Origin to whatever the client sends as the Origin header (line 47). When CORS_ALLOW_CREDENTIALS is True (config.py line 12), it also sets Access-Control-Allow-Credentials: true (line 50). Combined, this allows any malicious website to make authenticated cross-origin requests on behalf of logged-in users, defeating CSRF protections entirely. The safe approach would be a fixed whitelist of allowed origins.",
+  "evidence": "GET /health with Origin: https://evil.com returned Access-Control-Allow-Origin: https://evil.com AND Access-Control-Allow-Credentials: true, confirming reflected origin with credentials enabled."
+ },
+ {
+  "file": "run.py",
+  "line": 6,
+  "category": "Configuration",
+  "title": "Flask debug=True enabled in entry point",
+  "description": "The run script starts Flask with debug=True (line 6). In production exposure, this enables the interactive Werkzeug debugger traceback pages, which provide an inline Python console accessible through error pages, enabling remote code execution via crafted URLs that trigger exceptions. While bound to 127.0.0.1, accidental network exposure would allow full RCE.",
+  "evidence": "run.py line 6: app.run(host=\"127.0.0.1\", port=5000, debug=True)"
+ },
+ {
+  "file": "config.py",
+  "line": 3,
+  "category": "Cryptography",
+  "title": "Hardcoded JWT signing key in source code",
+  "description": "SECRET_KEY is hardcoded as 'hf-shop-2f8a1c9e7b4d' (line 3). Anyone with source code access can forge valid JWT tokens for any user identity, completely undermining session integrity. This severely compounds the /auth/refresh vulnerability and means leaking this single file breaks all authentication.",
+  "evidence": "config.py line 3: SECRET_KEY = \"hf-shop-2f8a1c9e7b4d\""
+ },
+ {
+  "file": "shopapi/auth.py",
+  "line": 16,
+  "category": "Cryptography",
+  "title": "Passwords hashed with saltless SHA-256",
+  "description": "hash_password on line 16 uses plain hashlib.sha256() with no salt and zero iterations. Identical passwords across different users produce identical hashes, enabling rainbow table attacks. A single leaked database reveals all passwords. bcrypt, argon2id, or PBKDF2 with per-user random salt and \u2265100k iterations should be used instead.",
+  "evidence": "Line 16: return hashlib.sha256(password.encode()).hexdigest() \u2014 single-pass SHA-256, no salt, no iterations."
+ },
+ {
+  "file": "shopapi/auth.py",
+  "line": 135,
+  "category": "Cryptography",
+  "title": "Password reset tokens use non-cryptographic randomness",
+  "description": "Reset tokens are generated as '%08d' % int(random.random() * 10**8) on line 135, producing only 8 decimal digits from Python's Mersenne Twister PRNG (~26.6 bits of entropy). This is trivially brute-forceable (only 10^8 possible values, and many fewer unique values given random.random()'s precision). An attacker trying codes sequentially could recover any reset token in seconds.",
+  "evidence": "Line 135: token = '%08d' % int(random.random() * 10**8) \u2014 only 8 digits from non-crypto random module (secrets.token_hex recommended instead)."
+ },
+ {
+  "file": "shopapi/auth.py",
+  "line": 90,
+  "category": "Authentication",
+  "title": "Account enumeration via distinguishable login error messages",
+  "description": "The login endpoint returns 'no account with that email' (line 90) when the user doesn't exist, but 'wrong password' (line 92) when the user exists but credentials don't match. Attackers can enumerate valid email addresses in the system by observing these different error responses.",
+  "evidence": "POST /auth/login with nonexistent@mail.test \u2192 {\"error\":\"no account with that email\"}. POST /auth/login with priya.shah@mail.test + wrong password \u2192 {\"error\":\"wrong password\"}."
+ },
+ {
+  "file": "shopapi/admin.py",
+  "line": 44,
+  "category": "Access Control",
+  "title": "Staff can issue gift cards to themselves",
+  "description": "The /admin/giftcards endpoint allows a staff member to specify an arbitrary owner_id in the JSON body (line 45). Since owner_id defaults to null if not provided, a staff member can self-issue high-value gift cards (up to \u00a3500 per call, line 40). While the audit log records this action (line 46), there is no prevention against abuse. Staff can accumulate significant value by repeatedly issuing gift cards to themselves.",
+  "evidence": "POST /admin/giftcards with {\"amount_pence\": 50000, \"owner_id\": 3} (where user 3 is the calling staff member) returned HTTP 201 with code=HFDDDB5D497C and balance_pence=50000."
+ },
+ {
+  "file": "shopapi/__init__.py",
+  "line": 31,
+  "category": "Logging and alerting",
+  "title": "Request body content logged verbatim including sensitive data",
+  "description": "The log_request before_request hook writes the full request body (first 2000 characters) to the log for POST/PUT/PATCH requests (line 31). This captures password fields during registration and login, personal data from form submissions, and other sensitive information in plaintext logs, violating data minimization principles and privacy regulations. Additionally, failed login attempts and other security-relevant events are not explicitly monitored or alerted.",
+  "evidence": "Line 31: log.info(\"%s %s %s\", request.method, request.path, request.get_data(as_text=True)[:2000]) \u2014 logs all POST/PUT/PATCH request bodies verbatim."
+ },
+ {
+  "file": "requirements.txt",
+  "line": 1,
+  "category": "Dependencies and build",
+  "title": "Internal PyPI index without hash pinning creates supply chain risk",
+  "description": "The primary package index (line 1) points to https://pypi.hartleyfinch.internal/simple, with pypi.org/simple only as extra-index-url. No --require-hashes directive is present. If the internal index is compromised, MITMed, or its TLS terminated insecurely, an attacker could substitute any dependency with a malicious version. Additionally, while direct dependencies are pinned by version, transitive dependencies are not pinned or checksummed. The editable install in requirements-dev.txt (-e packages/hf_payments) also masks potential code changes in local packages.",
+  "evidence": "requirements.txt line 1: --index-url https://pypi.hartleyfinch.internal/simple with no --require-hashes. Transitive dependencies unpinned."
+ }
+]

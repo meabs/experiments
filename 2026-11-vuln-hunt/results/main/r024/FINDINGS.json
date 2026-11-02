@@ -1,0 +1,106 @@
+[
+ {
+  "file": "shopapi/auth.py",
+  "line": 48,
+  "category": "Authentication",
+  "title": "Authentication decorator fails open after catching its own 401",
+  "description": "require_auth catches Exception around abort(401), clears g.user, and then calls the protected view instead of re-raising or returning an error. Consequently every endpoint using this decorator can be reached without a valid bearer token; views that do not dereference g.user execute as an anonymous caller, while others may produce a server error.",
+  "evidence": "GET /orders/1 with no Authorization header returned HTTP 200 and the order contents. The failing path is require_auth -> abort(401) -> broad except -> f(*args, **kwargs), and orders.show_order calls get_order() without an ownership check."
+ },
+ {
+  "file": "shopapi/orders.py",
+  "line": 46,
+  "category": "Access control",
+  "title": "Order detail endpoint does not enforce ownership",
+  "description": "show_order uses get_order rather than own_order, so once the decorator issue is fixed (and also for any authenticated user), any user who can guess an order ID can read another customer's order, including item, payment and refund information.",
+  "evidence": "The route calls order_json(get_order(order_id)); only cancel_items and return_items call own_order. GET /orders/1 without credentials returned the complete order, demonstrating the current unauthenticated exposure as well."
+ },
+ {
+  "file": "shopapi/auth.py",
+  "line": 96,
+  "category": "Authentication",
+  "title": "Token refresh accepts unsigned attacker-controlled JWT claims",
+  "description": "The refresh endpoint decodes the supplied token with verify_signature=False and uses its sub claim to select a live account, without validating signature, issuer, audience, or the original token's validity. Anyone can construct a token containing a victim's user ID and receive a valid signed session token for that account.",
+  "evidence": "POST /auth/refresh with an unsigned token containing sub=1 returned HTTP 200 and a newly signed bearer token for user 1. Code path: jwt.decode(..., options={\"verify_signature\": False}) -> load_user(claims.get(\"sub\")) -> make_token(user)."
+ },
+ {
+  "file": "shopapi/__init__.py",
+  "line": 36,
+  "category": "Access control",
+  "title": "Admin path authorization is bypassable on the trailing-slash refund route",
+  "description": "The global staff check compares request.path to the set of exact URL-map rules. The refund route permits both slash forms (strict_slashes=False), but only /admin/refunds is in admin_paths; /admin/refunds/ skips the check and executes the staff-only refund operation.",
+  "evidence": "POST /admin/refunds/ with {\"order_id\":1,\"amount_pence\":1} and no Authorization header returned HTTP 200 {\"ok\":true,...} and created a refund. The route is shopapi/admin.py:52 and the exact-path check is shopapi/__init__.py:36-41."
+ },
+ {
+  "file": "shopapi/products.py",
+  "line": 40,
+  "category": "Injection",
+  "title": "Product search is vulnerable to SQL injection",
+  "description": "The q query parameter is concatenated directly into a SQL LIKE expression. An attacker can alter the WHERE clause, extract or manipulate query behavior, and potentially cause database errors.",
+  "evidence": "The query is built as \"... WHERE name LIKE '%\" + q + \"%' OR sku LIKE '%\" + q + \"%'\". GET /products/search?q=%27%20OR%201=1-- returned all six products, confirming predicate injection."
+ },
+ {
+  "file": "shopapi/admin.py",
+  "line": 77,
+  "category": "Injection",
+  "title": "Admin review report concatenates display names into SQL",
+  "description": "A customer's display_name is inserted into a SQL string without parameterization. Since users can set their own display name, a customer can store SQL metacharacters and trigger SQL injection when staff later runs the review report for that customer (second-order SQL injection).",
+  "evidence": "update_account accepts and stores display_name at shopapi/auth.py:119-125; reviews_by_customer then builds f\"WHERE r.author_name = '{customer['display_name']}' ...\" at admin.py:77-80. Use a bound parameter for the name comparison."
+ },
+ {
+  "file": "shopapi/basket.py",
+  "line": 20,
+  "category": "Integrity / Code execution",
+  "title": "Basket cookie deserializes attacker-controlled pickle data",
+  "description": "The basket cookie is entirely client-controlled and is passed to pickle.loads without a signature or encryption. Pickle deserialization can execute arbitrary Python code in the application process before the request is handled. Basket contents should use a safe format such as JSON and be authenticated, or be stored server-side.",
+  "evidence": "read_basket obtains request.cookies['basket'], base64-decodes it, and calls pickle.loads at lines 15-23; with_basket writes the unsigned pickle at lines 26-29. No secret or MAC is involved."
+ },
+ {
+  "file": "shopapi/auth.py",
+  "line": 15,
+  "category": "Cryptography",
+  "title": "Passwords are stored as unsalted SHA-256 hashes",
+  "description": "hash_password uses a fast, unsalted SHA-256 digest rather than a password hashing function such as Argon2id, scrypt, or bcrypt. A database compromise therefore enables efficient offline dictionary and brute-force recovery, especially given the documented demo password reuse.",
+  "evidence": "hash_password returns hashlib.sha256(password.encode()).hexdigest() at lines 15-16, and registration stores that value directly at line 77."
+ },
+ {
+  "file": "shopapi/auth.py",
+  "line": 135,
+  "category": "Authentication",
+  "title": "Password reset codes are predictable and lack attempt limiting",
+  "description": "Reset codes are generated with non-cryptographic random.random() and contain only eight decimal digits. Confirmation has no attempt counter, lockout, or rate limit, so attackers can brute-force a live code during its 30-minute lifetime; random.random is also not appropriate for security tokens.",
+  "evidence": "Codes are generated with int(random.random() * 10**8) at line 135 and compared directly at line 153. There is no per-account or per-IP throttling in reset_request or reset_confirm."
+ },
+ {
+  "file": "shopapi/payments.py",
+  "line": 37,
+  "category": "Business logic / Error handling",
+  "title": "Payment status timeout fails open as paid",
+  "description": "When the payment provider times out, confirm_payment deliberately sets status='paid' and transitions the order to processing. A provider outage or induced timeout therefore allows an order to be fulfilled without confirmed payment.",
+  "evidence": "The requests.Timeout handler at lines 39-42 assigns status = \"paid\"; lines 43-46 then update the order to processing and set paid_pence=total_pence. The timeout should leave the order awaiting payment or mark it pending for reconciliation."
+ },
+ {
+  "file": "shopapi/__init__.py",
+  "line": 44,
+  "category": "Configuration",
+  "title": "CORS reflects arbitrary origins while allowing credentials",
+  "description": "For every request with an Origin header, the application reflects that origin and sends Access-Control-Allow-Credentials: true, without an allowlist. This permits arbitrary websites to make credentialed cross-origin requests and read responses when a browser has applicable credentials.",
+  "evidence": "The after_request hook assigns Access-Control-Allow-Origin directly from request.headers['Origin'] at lines 45-49. GET /health with Origin: https://evil.example returned Access-Control-Allow-Origin: https://evil.example and Access-Control-Allow-Credentials: true."
+ },
+ {
+  "file": "run.py",
+  "line": 6,
+  "category": "Configuration",
+  "title": "Application is started with Flask debug mode enabled",
+  "description": "The executable entry point calls app.run(debug=True). If this script is used in a reachable deployment, unhandled exceptions expose the interactive Werkzeug debugger and potentially arbitrary code execution; debug mode also exposes verbose diagnostics.",
+  "evidence": "run.py line 6 passes debug=True unconditionally. A production entry point should use a production WSGI server and never enable debug based on this hardcoded setting."
+ },
+ {
+  "file": "config.py",
+  "line": 3,
+  "category": "Cryptography / Configuration",
+  "title": "JWT signing key is hardcoded in source",
+  "description": "SECRET_KEY is a fixed source-controlled value. Anyone obtaining the repository or a deployed copy can forge HS256 bearer tokens for arbitrary users and roles, including staff, until the key is rotated.",
+  "evidence": "config.py line 3 sets SECRET_KEY = \"hf-shop-2f8a1c9e7b4d\"; auth.py:27 uses it to sign JWTs and auth.py:42 uses it to verify them."
+ }
+]

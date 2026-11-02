@@ -1,0 +1,154 @@
+[
+ {
+  "file": "shopapi/auth.py",
+  "line": 101,
+  "category": "authentication",
+  "title": "Token refresh accepts unsigned attacker-controlled JWT claims",
+  "description": "The refresh endpoint disables JWT signature verification and uses the untrusted sub claim to load a user before issuing a newly signed token. An attacker who knows a user ID can mint a valid session token for that account, including staff accounts.",
+  "evidence": "POST /auth/refresh reaches jwt.decode(token, options={\"verify_signature\": False}) and then load_user(claims.get('sub')) before make_token(user). The existing token must be cryptographically validated, or refresh must use a separately validated refresh-token mechanism."
+ },
+ {
+  "file": "shopapi/auth.py",
+  "line": 51,
+  "category": "access control",
+  "title": "Authentication failures are swallowed, allowing protected handlers to execute",
+  "description": "require_auth catches abort(401) and other authentication exceptions, sets g.user to None, and still invokes the protected handler. Protected handlers that do not immediately dereference g.user can therefore be reached without authentication.",
+  "evidence": "The decorator aborts at lines 53-54 when no user exists, but the broad except at lines 55-57 catches the exception and execution continues to f(*args, **kwargs). GET /orders/1 without an Authorization header returned HTTP 200 with the complete order record."
+ },
+ {
+  "file": "shopapi/orders.py",
+  "line": 49,
+  "category": "access control",
+  "title": "Order details lack an ownership check",
+  "description": "The order detail endpoint calls get_order() directly instead of own_order(), so an authenticated customer can retrieve another customer's order details. Because require_auth also fails open, the endpoint is currently accessible without authentication.",
+  "evidence": "show_order() returns order_json(get_order(order_id)); the ownership check exists only in own_order(). GET /orders/1 without credentials returned status, item quantities and prices, payment amount, and refunds."
+ },
+ {
+  "file": "shopapi/__init__.py",
+  "line": 37,
+  "category": "access control",
+  "title": "Trailing-slash refund route bypasses staff authorization",
+  "description": "The global admin authorization compares request.path against exact route strings. The refund route accepts both slash forms, but only /admin/refunds is in the collected route set; the handler has no in-handler authorization check.",
+  "evidence": "The route is declared strict_slashes=False at shopapi/admin.py:52 while staff_only_admin checks exact membership at lines 36-40. POST /admin/refunds/ without credentials with {\"order_id\":1,\"amount_pence\":1} returned HTTP 200 and created a refund."
+ },
+ {
+  "file": "shopapi/basket.py",
+  "line": 20,
+  "category": "deserialization",
+  "title": "Unauthenticated insecure deserialization of the basket cookie",
+  "description": "The basket cookie is client-controlled, unsigned, and directly passed to pickle.loads. A crafted pickle can execute arbitrary code in the web process when any basket endpoint reads the cookie.",
+  "evidence": "read_basket() calls pickle.loads(base64.urlsafe_b64decode(raw)) at line 20, while with_basket() stores a bare pickle at lines 26-28 without a MAC or authenticated encryption. Basket endpoints such as GET /basket invoke read_basket without authentication."
+ },
+ {
+  "file": "shopapi/products.py",
+  "line": 41,
+  "category": "injection",
+  "title": "Product search is vulnerable to SQL injection",
+  "description": "The q query parameter is concatenated directly into the SQL statement, allowing an attacker to alter the WHERE clause and retrieve unintended product records.",
+  "evidence": "The query is built by concatenating q into both LIKE expressions rather than binding it. GET /products/search?q=%27%20OR%201%3D1-- returned all six products instead of a normal matching subset."
+ },
+ {
+  "file": "shopapi/admin.py",
+  "line": 80,
+  "category": "injection",
+  "title": "Stored display names reach an administrative SQL query without parameterization",
+  "description": "A customer can set a display name containing SQL syntax. When staff later request the review report for that customer, the stored name is interpolated into SQL, allowing the customer-controlled value to alter the report query and disclose other reviews.",
+  "evidence": "update_account() stores display_name with a parameterized update, but reviews_by_customer() constructs f\"WHERE r.author_name = '{customer['display_name']}' ORDER BY r.id DESC\" at lines 77-80. A name such as ' OR 1=1-- changes the SQL predicate."
+ },
+ {
+  "file": "shopapi/templates/product.html",
+  "line": 13,
+  "category": "injection",
+  "title": "Stored cross-site scripting in product reviews",
+  "description": "Review bodies are stored without sanitization and rendered with Jinja's safe filter. An authenticated user can submit markup or script that executes for visitors viewing the product page.",
+  "evidence": "add_review() inserts the supplied body directly at shopapi/products.py:90-91, and product.html renders r.body|safe at line 13."
+ },
+ {
+  "file": "config.py",
+  "line": 3,
+  "category": "cryptography",
+  "title": "JWT signing key is hardcoded in source",
+  "description": "SECRET_KEY is a fixed literal committed to the repository. Anyone who obtains the source or deployed package can forge HS256 tokens for arbitrary users and roles, including staff.",
+  "evidence": "config.py:3 sets SECRET_KEY = \"hf-shop-2f8a1c9e7b4d\"; shopapi/auth.py:27 signs tokens and shopapi/auth.py:42 verifies them with this value."
+ },
+ {
+  "file": "config.py",
+  "line": 8,
+  "category": "integrity",
+  "title": "Payment webhook has a predictable default signing secret",
+  "description": "WEBHOOK_SECRET falls back to the hardcoded value whsec-local. Any deployment that omits the environment override allows an attacker to forge payment events and change order state.",
+  "evidence": "config.py:8 defines os.environ.get(\"WEBHOOK_SECRET\", \"whsec-local\"); payment_webhook() authenticates events using that setting at shopapi/payments.py:53-64."
+ },
+ {
+  "file": "shopapi/payments.py",
+  "line": 55,
+  "category": "integrity",
+  "title": "Payment webhook signature does not bind status or amount",
+  "description": "The webhook MAC covers only order_id, while status and amount_pence are trusted from the unsigned JSON body. A party able to obtain or replay a valid signature for an order can change a payment to paid with a zero or partial amount.",
+  "evidence": "webhook_signature() hashes only str(order_id) at lines 53-55. The paid branch trusts event.get('status') and int(event.get('amount_pence', 0)) and sets processing at lines 69-71 without comparing the amount to total_pence or binding those fields into the MAC."
+ },
+ {
+  "file": "shopapi/payments.py",
+  "line": 39,
+  "category": "error handling",
+  "title": "Payment provider timeout fails open as paid",
+  "description": "When the payment provider times out, confirm_payment() treats the order as paid and moves it to processing. An outage or induced timeout can therefore allow an unpaid order to proceed.",
+  "evidence": "The requests.Timeout handler assigns status = \"paid\" at lines 39-42, and lines 43-45 set status to processing and paid_pence equal to total_pence."
+ },
+ {
+  "file": "shopapi/auth.py",
+  "line": 15,
+  "category": "cryptography",
+  "title": "Passwords are stored using unsalted SHA-256",
+  "description": "Passwords are stored as fast, unsalted general-purpose hashes rather than a salted password KDF. A database compromise permits efficient offline dictionary attacks and identical passwords have identical hashes.",
+  "evidence": "hash_password() returns hashlib.sha256(password.encode()).hexdigest() at lines 15-16; the result is stored during registration at lines 77-78 and reset at lines 158-159."
+ },
+ {
+  "file": "shopapi/auth.py",
+  "line": 135,
+  "category": "authentication",
+  "title": "Password reset codes are predictable and have no attempt limiting",
+  "description": "Reset codes use Mersenne-Twister random.random(), have only eight decimal digits, remain valid for 30 minutes, and failed guesses are neither rate-limited nor counted. Attackers can brute-force the reset code or potentially predict it.",
+  "evidence": "reset_request() generates the code with int(random.random() * 10**8) at lines 135-136. reset_confirm() only compares the supplied code at lines 149-154 and has no throttling, attempt counter, or lockout."
+ },
+ {
+  "file": "shopapi/auth.py",
+  "line": 88,
+  "category": "authentication",
+  "title": "Login enables account enumeration and has no brute-force protection",
+  "description": "Login returns distinct responses for nonexistent and existing accounts and contains no rate limiting or lockout, allowing attackers to identify valid accounts and repeatedly guess passwords.",
+  "evidence": "A missing user returns \"no account with that email\" at lines 89-90, whereas an existing user with a wrong password returns \"wrong password\" at lines 91-92."
+ },
+ {
+  "file": "shopapi/__init__.py",
+  "line": 31,
+  "category": "logging",
+  "title": "Request logging records passwords and reset codes",
+  "description": "Every mutating request body is logged, including login passwords and password-reset codes. Log retention or access can therefore expose credentials and account-recovery secrets.",
+  "evidence": "log_request() logs request.get_data(as_text=True)[:2000] for all POST, PUT, and PATCH requests at lines 29-31. The login and reset endpoints accept their secrets in those bodies."
+ },
+ {
+  "file": "shopapi/basket.py",
+  "line": 69,
+  "category": "business logic",
+  "title": "Checkout ignores and does not decrement product stock",
+  "description": "Checkout creates order items from the basket without checking current inventory or decrementing stock. Customers can repeatedly order unlimited quantities, including products whose stock is zero.",
+  "evidence": "basket_json() reads price and quantity but never checks p['stock']; checkout() inserts the order and order_items at lines 69-73 and performs no stock update anywhere in the transaction."
+ },
+ {
+  "file": "shopapi/orders.py",
+  "line": 65,
+  "category": "business logic",
+  "title": "Cancellation and return quantities can both be refunded",
+  "description": "Cancellation and return flows track quantities independently. The same units can therefore be cancelled and later returned, producing multiple refunds for the same merchandise.",
+  "evidence": "cancel_items() validates only cancelled_qty at lines 65-67, while return_items() validates only returned_qty at lines 91-93. Neither validation subtracts units already cancelled or returned."
+ },
+ {
+  "file": "requirements.txt",
+  "line": 1,
+  "category": "dependencies",
+  "title": "Dependency installation permits public-index dependency confusion",
+  "description": "pip is configured with an internal index and public PyPI as an extra index, without constraining hf-payments to the internal source. A malicious public package with the same distribution name and a winning version could execute code during installation or use.",
+  "evidence": "requirements.txt lines 1-2 set --index-url to the internal repository and --extra-index-url to pypi.org. Line 7 installs hf-payments by name, and packages/hf_payments/pyproject.toml identifies the local distribution with that same name."
+ }
+]

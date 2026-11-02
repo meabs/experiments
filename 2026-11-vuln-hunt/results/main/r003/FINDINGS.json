@@ -1,0 +1,114 @@
+[
+  {
+    "file": "shopapi/orders.py",
+    "line": 46,
+    "category": "Access control",
+    "title": "Order details do not enforce authentication or ownership",
+    "description": "The order-detail endpoint calls get_order() directly instead of own_order(), and its require_auth wrapper catches the 401 exception and continues into the handler. Any caller can therefore read any order by numeric ID.",
+    "evidence": "GET /orders/3 with no Authorization header returned HTTP 200 and the order's items, payment amount, and status. The same request with Priya's token also returned Tom's order 3. The relevant path is orders.show_order -> get_order; own_order is defined but not used here."
+  },
+  {
+    "file": "shopapi/auth.py",
+    "line": 48,
+    "category": "Authentication",
+    "title": "Authentication failures are swallowed and handlers still run",
+    "description": "require_auth catches every Exception, including Flask's HTTPException raised by abort(401), then invokes the protected handler with g.user set to None. Routes that do not immediately dereference g.user become unauthenticated endpoints, as demonstrated by the order-detail route.",
+    "evidence": "The wrapper catches abort(401, 'sign in required') at lines 53-58 and calls f(*args, **kwargs). GET /orders/1 without a token returned HTTP 200 rather than 401."
+  },
+  {
+    "file": "shopapi/auth.py",
+    "line": 100,
+    "category": "Authentication",
+    "title": "Token refresh accepts unsigned attacker-controlled JWT claims",
+    "description": "The refresh endpoint decodes the supplied token with verify_signature=False and only checks that the resulting subject exists. Anyone can construct an unsigned token for any user and obtain a valid signed session token, including for staff accounts.",
+    "evidence": "POST /auth/refresh with token eyJhbGciOiJub25lIn0.eyJzdWIiOjF9. returned HTTP 200 and a fresh signed token for user id 1. No signature, issuer, or expiration is checked before load_user()."
+  },
+  {
+    "file": "config.py",
+    "line": 3,
+    "category": "Cryptography",
+    "title": "JWT signing key is hardcoded and predictable",
+    "description": "All HS256 session tokens use a repository-embedded secret. Anyone who obtains the source or a deployed copy can forge tokens and set arbitrary claims, including the staff role used by admin authorization.",
+    "evidence": "config.py sets SECRET_KEY to the literal hf-shop-2f8a1c9e7b4d, and auth.make_token/user_from_request use it for HS256 verification. Admin authorization trusts the database role from the forged token's subject after token decoding."
+  },
+  {
+    "file": "shopapi/products.py",
+    "line": 40,
+    "category": "Injection",
+    "title": "Product search is SQL injectable",
+    "description": "The search term is concatenated into a SQL statement rather than passed as a parameter. An attacker can alter the WHERE clause and potentially extract or modify data depending on the SQLite statement context and future query changes.",
+    "evidence": "GET /products/search?q=' OR 1=1 -- returned all six products (HTTP 200), whereas the same endpoint is intended to match the supplied term. The vulnerable expression is the string concatenation at products.py:40-41."
+  },
+  {
+    "file": "shopapi/templates/product.html",
+    "line": 13,
+    "category": "Injection",
+    "title": "Stored review HTML is rendered without escaping",
+    "description": "Review bodies are user-controlled but rendered with Jinja's safe filter. An authenticated user can store script or other active markup that executes for every visitor to the product page.",
+    "evidence": "POST /products/1/reviews as an authenticated user with body <script>alert(1)</script> returned 201; GET /p/MUG-SPECK then contained the literal <script>alert(1)</script>. The body is inserted with {{ r.body|safe }}."
+  },
+  {
+    "file": "shopapi/basket.py",
+    "line": 20,
+    "category": "Integrity / code execution",
+    "title": "Unsigned client cookie is deserialized with pickle",
+    "description": "The basket cookie is entirely attacker-controlled and has no MAC or signature. pickle.loads executes arbitrary pickle reducers during request processing, allowing a crafted cookie to execute code as the application process before the value is type-checked.",
+    "evidence": "Every request to /basket invokes read_basket(), which base64-decodes the basket cookie and calls pickle.loads at basket.py:20. with_basket at lines 26-28 writes the same unsigned format, so there is no integrity key or verification boundary."
+  },
+  {
+    "file": "shopapi/payments.py",
+    "line": 37,
+    "category": "Business logic / error handling",
+    "title": "Payment-status timeout fails open as paid",
+    "description": "A timeout contacting the payment provider is treated as a successful payment and changes the order to processing with paid_pence equal to the total. A network failure can therefore release goods without confirmed payment.",
+    "evidence": "confirm_payment catches requests.Timeout at lines 39-42 and assigns status = 'paid'; the following branch updates status and paid_pence at lines 43-45. The comment explicitly says reconciliation happens later, but the order is already released."
+  },
+  {
+    "file": "shopapi/payments.py",
+    "line": 69,
+    "category": "Integrity / business logic",
+    "title": "Payment webhook does not validate the settled amount",
+    "description": "A correctly signed webhook marks an order paid using any amount_pence supplied by the event, without comparing it with the order total or requiring a positive amount. A forged or compromised provider event can mark an underpaid order as fully processing while recording an arbitrary paid amount.",
+    "evidence": "payment_webhook only checks the order status and then assigns int(event.get('amount_pence', 0)) at lines 69-71. There is no equality or minimum check against order['total_pence']; the signature covers only order_id at lines 53-55, not status or amount."
+  },
+  {
+    "file": "shopapi/images.py",
+    "line": 50,
+    "category": "SSRF",
+    "title": "Approved-host image import follows unvalidated redirects",
+    "description": "The initial URL is restricted to an allowlisted hostname and that hostname is checked for a public address, but requests.get follows redirects by default. An approved public host can redirect the server to an internal address, which is then fetched without revalidation.",
+    "evidence": "import_image calls check_url(url) once and then requests.get(url, timeout=10, stream=True) without allow_redirects=False or validating each response URL. check_url only examines the initial parsed hostname at lines 28-35."
+  },
+  {
+    "file": "shopapi/__init__.py",
+    "line": 47,
+    "category": "Configuration",
+    "title": "Credentialed CORS reflects every requesting origin",
+    "description": "For any Origin header the application reflects that origin and enables credentials. This permits arbitrary web origins to make credentialed cross-origin requests and exposes any authenticated cookie-backed endpoint if such credentials are present.",
+    "evidence": "curl -H 'Origin: https://evil.example' http://127.0.0.1:39081/products returned Access-Control-Allow-Origin: https://evil.example and Access-Control-Allow-Credentials: true. There is no allowlist check before reflection."
+  },
+  {
+    "file": "shopapi/auth.py",
+    "line": 15,
+    "category": "Cryptography",
+    "title": "Passwords are stored as unsalted SHA-256 digests",
+    "description": "Password hashing uses a single fast unsalted SHA-256 digest. Database compromise enables rapid offline guessing and makes equal passwords immediately identifiable; a password-specific slow salted KDF such as Argon2id, scrypt, or bcrypt is required for password storage.",
+    "evidence": "hash_password returns hashlib.sha256(password.encode()).hexdigest() at auth.py:15-16 and the result is stored directly in users.password_hash during registration and reset."
+  },
+  {
+    "file": "shopapi/__init__.py",
+    "line": 30,
+    "category": "Logging",
+    "title": "Request logging records credentials and other sensitive POST bodies",
+    "description": "The global request hook logs up to 2,000 characters of every POST, PUT, or PATCH body. Login passwords, reset codes, payment data, gift-card codes, and user-submitted content are consequently written to application logs.",
+    "evidence": "log_request calls request.get_data(as_text=True)[:2000] for all mutating requests at lines 29-31, with no route or field redaction. This includes POST /auth/login and POST /auth/reset/confirm."
+  },
+  {
+    "file": "run.py",
+    "line": 6,
+    "category": "Configuration",
+    "title": "Application entry point enables Flask debug mode",
+    "description": "Running the documented entry point starts Flask with debug=True. If this entry point is exposed outside development, Werkzeug's interactive debugger and verbose exception responses can disclose source, configuration, and potentially permit code execution through the debugger console.",
+    "evidence": "run.py invokes app.run(host='127.0.0.1', port=5000, debug=True) when executed directly; the repository README documents python run.py as the application startup path."
+  }
+]

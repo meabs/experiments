@@ -245,3 +245,12 @@ To be filled in when the harness is built.
       in the pilot, because those runs reported the second vulnerability separately.
   - **10 runs per arm instead of 5,** because runs cost 1 to 5 cents. This was decided from the pilot's cost, not its
     results. A, A2, B, C, D × 10 with Luna, plus B and C × 10 with Qwen = **70 runs**, under $5.
+- 2026-11-02, after the main run (nothing in the arms, measures or hypotheses changed):
+  - **Runs without findings count as finding nothing.** The design didn't say how to treat a crashed run. Four of
+    the ten Graph team runs with Qwen crashed, and one Swarm run ended without submitting. I counted them as zero,
+    because that is what a user would get, and report the numbers without them in
+    [`results/checks.md`](results/checks.md). No Luna run in a hypothesis crashed.
+  - **Scripts written or committed after the design push:** `src/batch.py` (the main-run driver) was written before
+    the main run but not committed with the design. `src/analyse.py` (tables and tests, as described above),
+    `src/export.py` and `results/overrides.json` (my hand labels) were written during and after the run. The run log
+    showed each run's number of findings while I wrote `analyse.py`, not which vulnerabilities they matched.

@@ -1,0 +1,90 @@
+[
+ {
+  "file": "shopapi/orders.py",
+  "line": 46,
+  "category": "Access control",
+  "title": "Order detail endpoint does not enforce ownership",
+  "description": "The order detail handler uses get_order() rather than own_order(), so any authenticated user can retrieve another customer's order, including its items, payment totals, delivery date, and refunds. In addition, require_auth swallows its own 401 abort (shopapi/auth.py:48-59), so this endpoint is reachable without a valid bearer token and the handler still returns the requested order.",
+  "evidence": "GET /orders/1 with no Authorization header returned HTTP 200 and the complete order (items, paid_pence, delivered_on and refunds). A valid customer token for a different account also returned order 1. The path is shopapi.orders.show_order -> get_order, with no customer_id predicate."
+ },
+ {
+  "file": "shopapi/auth.py",
+  "line": 48,
+  "category": "Authentication",
+  "title": "Authentication decorator fails open after authentication errors",
+  "description": "require_auth catches all exceptions, including the abort(401) it raises when there is no user, logs the exception, sets g.user to None, and then calls the protected view anyway. This turns missing or malformed credentials into execution of protected handlers instead of stopping the request. It directly enables the order IDOR described above and causes other protected endpoints to reach application logic with no identity.",
+  "evidence": "GET /orders/1 with no Authorization header returned 200 rather than 401. The control flow in require_auth catches abort(401, 'sign in required') and returns f(*args, **kwargs)."
+ },
+ {
+  "file": "shopapi/products.py",
+  "line": 40,
+  "category": "Injection",
+  "title": "Product search is vulnerable to SQL injection",
+  "description": "The search term is concatenated directly into a SQL LIKE expression. An attacker can alter the query with quotes, comments, UNION clauses, or other SQLite syntax. The search is public and the underlying SELECT exposes all product-table columns, so a crafted UNION can be used to turn returned product fields into data from other tables.",
+  "evidence": "GET /products/search?q=' OR 1=1 -- was accepted with HTTP 200 and returned the catalogue; UNION-style probes such as GET /products/search?q=' UNION SELECT 1,'LEAK','X',1,1,'Y' -- caused an SQL/application error (HTTP 500), demonstrating that input is being parsed as SQL rather than treated as data."
+ },
+ {
+  "file": "shopapi/basket.py",
+  "line": 20,
+  "category": "Integrity",
+  "title": "Client-controlled basket is deserialized with pickle",
+  "description": "The basket cookie is entirely client-controlled and is passed to pickle.loads without a signature, encryption, or a safe restricted unpickler. Python pickle deserialization executes attacker-controlled reduce/callable payloads before the type check. Any remote client can send a crafted basket cookie and obtain code execution in the application process.",
+  "evidence": "read_basket reads request.cookies['basket'], base64-decodes it, and calls pickle.loads at line 20; with_basket writes the same unsigned format at lines 26-29. There is no MAC or server-side session binding."
+ },
+ {
+  "file": "shopapi/payments.py",
+  "line": 39,
+  "category": "Business logic",
+  "title": "Payment-status timeout fails open as paid",
+  "description": "If the payment provider times out, confirm_payment explicitly sets status='paid' and proceeds to processing. A requester can repeatedly invoke confirmation during provider/network unavailability and receive goods without a verified payment. Timeout, connection, and provider errors should leave the order unpaid or pending and be reconciled separately.",
+  "evidence": "In confirm_payment, requests.Timeout is caught at lines 39-42 and replaced with status = 'paid'; lines 43-46 then set the order to processing and paid_pence to total_pence without a provider response."
+ },
+ {
+  "file": "shopapi/payments.py",
+  "line": 69,
+  "category": "Integrity",
+  "title": "Payment webhook trusts an attacker-controlled payment amount",
+  "description": "The webhook signature authenticates only the order_id, not the event body or amount. Once an attacker obtains or guesses the configured webhook secret, they can submit a signed paid event for any order with amount_pence=0 or an arbitrary amount, and the server records that amount as paid without comparing it with the order total or provider payment record.",
+  "evidence": "webhook_signature signs only str(order_id) (lines 53-55). payment_webhook then accepts event status and int(event.get('amount_pence', 0)) at lines 69-71, with no amount/order-total or payment-provider verification. The default secret is also predictable (config.py:8)."
+ },
+ {
+  "file": "shopapi/products.py",
+  "line": 90,
+  "category": "Injection",
+  "title": "Stored review content is rendered as raw HTML",
+  "description": "Authenticated users can submit arbitrary review body text, which is stored without sanitization. Product pages render r.body with the Jinja safe filter, so an attacker can store markup/script content that executes in every visitor's browser. This is persistent XSS on a public product page.",
+  "evidence": "add_review inserts the submitted body directly at products.py:90, while templates/product.html:13 renders {{ r.body|safe }}. Unlike product descriptions, review bodies are never passed through bleach."
+ },
+ {
+  "file": "shopapi/auth.py",
+  "line": 15,
+  "category": "Cryptography",
+  "title": "Passwords are stored as unsalted SHA-256 hashes",
+  "description": "hash_password uses a single fast unsalted SHA-256 digest. A database disclosure therefore permits efficient dictionary/rainbow-table cracking, especially because the application documents and seeds predictable demo passwords. Passwords should use a memory-hard password KDF such as Argon2id, scrypt, or bcrypt with a unique salt.",
+  "evidence": "shopapi.auth.hash_password is hashlib.sha256(password.encode()).hexdigest() at lines 15-16; no salt or work factor is stored. scripts/seed.py:32 hashes the shared demo password the same way."
+ },
+ {
+  "file": "config.py",
+  "line": 3,
+  "category": "Cryptography",
+  "title": "JWT signing secret is hardcoded and predictable",
+  "description": "The production configuration contains a literal SECRET_KEY. Anyone with repository/source access, logs, or a leaked deployment artifact can forge HS256 bearer tokens, including tokens with the staff role, and access administrative functions. Secrets must be supplied by deployment secret management and rotated.",
+  "evidence": "config.py:3 sets SECRET_KEY = 'hf-shop-2f8a1c9e7b4d'; auth.py:27 and :42 use it for all JWT signing and verification. The same configuration also supplies a default webhook secret at config.py:8."
+ },
+ {
+  "file": "shopapi/__init__.py",
+  "line": 44,
+  "category": "Configuration",
+  "title": "CORS reflects arbitrary origins while allowing credentials",
+  "description": "For every request carrying an Origin header, the server copies that unvalidated origin into Access-Control-Allow-Origin and enables Access-Control-Allow-Credentials. This permits arbitrary websites to make credentialed cross-origin requests and read responses. CORS should use a strict allowlist and credentials should be disabled unless required.",
+  "evidence": "The after_request hook assigns resp.headers['Access-Control-Allow-Origin'] = origin for any supplied origin and adds Allow-Credentials when configured. A request GET /products with Origin: https://evil.example returned Access-Control-Allow-Origin: https://evil.example and Access-Control-Allow-Credentials: true."
+ },
+ {
+  "file": "shopapi/auth.py",
+  "line": 129,
+  "category": "Authentication",
+  "title": "Password reset codes are weak and have no attempt throttling",
+  "description": "Reset codes are generated with the non-cryptographic global PRNG and contain only eight decimal digits. The confirmation endpoint has no rate limit, attempt counter, lockout, or token hashing. An attacker who can target an account can make unlimited online guesses during the 30-minute validity window; use cryptographic random tokens and enforce attempts/rate limits.",
+  "evidence": "reset_request generates the code with random.random() at auth.py:135 and stores it directly; reset_confirm compares the submitted value at lines 149-153 and has no throttling or failed-attempt state."
+ }
+]
