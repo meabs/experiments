@@ -97,4 +97,12 @@ less. A model either clears it or doesn't; the leaderboard shows how far each is
 
 ## Amendment log
 
-(none yet)
+- 2026-11-02, after qwen3-coder's pilot and before any main run: **`qwen3-coder:30b` is dropped from the main run.**
+  Its 8 pilot runs all failed. Every run ended with the model's next tool call written as text in its own format
+  (`<tool_call>`, `<function=exec_command>`), which Ollama 0.40.5's Responses endpoint didn't turn into a tool call, so
+  Codex took the text as the final answer and stopped. Edits it tried with `apply_patch` failed, because the local
+  catalog turns that tool off. It did edit files in 2 of the 8 runs, so the design's drop rule ("no edit in all 8
+  pilot runs") doesn't strictly apply. Codex 0.157 no longer accepts the chat wire API, the only alternative route
+  (checked: it exits with an error). Offered: report it as is, or upgrade Ollama to 0.40.13 (its notes don't mention a
+  fix) and rerun its pilot. The user chose: "A". The report says it couldn't drive Codex through Ollama 0.40.5, an
+  integration result rather than a measure of its coding. Main run: 4 models, 96 runs; Holm over H2–H4.
