@@ -126,3 +126,20 @@ YouTube Short in the cast-and-board format (user, 2026-11-03: "for each one make
     pages now run off the right edge visibly.
   - **Counts:** 12 defects on 26 screenshots and 8 decoys on 28 screenshots (the design estimated about 26 and 20),
     plus the 10 clean screens: 64 screenshots.
+- 2026-11-03, after the pilot and before the main run (pilot answers kept in `pilot/` and `pilot2/`, not analysed):
+  - **The clean baseline had flaws of my making, which the checkers rightly flagged:** no store logo, plain coloured
+    squares for product pictures, a blank payment box (Stripe can't load offline), and a cart badge emptied by the
+    app's reload of my partial saved state. Fixed: a logo, six FLUX product photos, a "Card number / MM / YY / CVC"
+    stand-in for the Stripe field, the cart cookie dropped, and product ratings set to 0 (they showed 4 stars with 0
+    reviews). The storefront's own quirks stay (greyed Grand Total, "HOME /" breadcrumb, empty sidebar, cart badge at 0):
+    they are what a reviewer faces on this app.
+  - **Mobile screenshots are 390×1560** (a phone's width, tall enough for most of the page; Jev's limit is 1568), and
+    **cart and checkout are shot at desktop only**: on a phone their total and Place your order button sit below even
+    1560 pixels, so every checker reported them missing on the clean page. Screenshots: 8 clean, 22 defect, 24 decoy
+    (54 in all).
+  - **Checkout's header assertion** no longer asks for the cart icon: this storefront hides it on checkout by design, so
+    the assertion was wrong for that screen (seen on the clean page only, not on any defect).
+  - **Right reason** is judged against each defect's `covered_by` assertions in `variants/variants.json`, fixed now.
+  - **Models:** hosted `google/gemini-4-argon` and `openai/gpt-6.1-terra` through OpenRouter; local `qwen3-vl:8b`
+    (Ollama 0.40.5). Jev: `jev-latest` (1.14.0).
+

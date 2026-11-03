@@ -7,8 +7,13 @@ blocked, so the page's Google Maps and Stripe scripts never load). Needs app/moc
 import os, subprocess, sys
 
 PAGES = {'home': '/', 'category': '/category/1', 'product': '/product/1', 'cart': '/cart', 'checkout': '/checkout'}
-VIEWPORTS = {'desktop': '1280,1500', 'mobile': '390,844'}
+VIEWPORTS = {'desktop': '1280,1500', 'mobile': '390,1560'}  # mobile: a phone's width, tall enough for the whole screen (Jev's limit is 1568)
 BLOCK = '--host-resolver-rules=MAP * ~NOTFOUND, EXCLUDE 127.0.0.1, EXCLUDE localhost'
+
+
+def viewports(page, wanted=VIEWPORTS):
+    # the cart and checkout run far below a phone's screen (total, Place your order), so they're shot at desktop only
+    return [vp for vp in wanted if not (vp == 'mobile' and page in ('cart', 'checkout'))]
 
 
 def shoot(out, page, vp):
@@ -34,7 +39,7 @@ def variants(out):
             d = os.path.join(out, v['id'])
             os.makedirs(d, exist_ok=True)
             for page in v['screens']:
-                for vp in v['viewports']:
+                for vp in viewports(page, v['viewports']):
                     print(shoot(d, page, vp))
     finally:
         open(STATE, 'w').write('')
@@ -47,5 +52,5 @@ if __name__ == '__main__':
     out = sys.argv[1]
     os.makedirs(out, exist_ok=True)
     for page in sys.argv[2:] or PAGES:
-        for vp in VIEWPORTS:
+        for vp in viewports(page):
             print(shoot(out, page, vp))

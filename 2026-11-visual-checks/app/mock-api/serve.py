@@ -11,10 +11,13 @@ BUILD = os.path.abspath(sys.argv[1])
 LOG = open(sys.argv[2] if len(sys.argv) > 2 else os.devnull, 'a')
 
 
+# the payment box is Stripe's card field, which can't load offline: draw a stand-in so the clean page doesn't look broken
+BASE_CSS = ('<style>.card-info>div:empty::before{content:"Card number                         MM / YY     CVC";'
+            'display:block;color:#9a9a9a;font:15px Arial;white-space:pre}</style>')
 SEED = ('<script>if(!localStorage.getItem("redux_localstorage_simple"))localStorage.setItem("redux_localstorage_simple",'
         'JSON.stringify({'
         'productData:{products:[],productid:1,categoryid:""},'
-        'cartData:{cartItems:{},cartID:"VC-CART-1",cartCount:0,orderID:""}}));</script>')
+        'cartData:{cartItems:{},cartID:"VC-CART-1",cartCount:4,orderID:""}}));</script>')
 
 
 VARIANTS = os.path.join(HERE, '..', '..', 'variants', 'variants.json')
@@ -66,7 +69,7 @@ class App(SimpleHTTPRequestHandler):
         if not os.path.exists(path) or self.path.split('?')[0] in ('/', '/index.html'):
             # the page: index.html with the state seed first, so a fresh browser opens with product 1 and the fixture
             # cart selected (the storefront keeps both in saved app state, normally set by clicking through)
-            html = open(os.path.join(BUILD, 'index.html'), encoding='utf-8').read().replace('<head>', '<head>' + SEED, 1)
+            html = open(os.path.join(BUILD, 'index.html'), encoding='utf-8').read().replace('<head>', '<head>' + SEED + BASE_CSS, 1)
             v = variant()
             if v and v['css']:
                 html = html.replace('</head>', '<style>' + v['css'] + '</style></head>', 1)
@@ -83,7 +86,6 @@ class App(SimpleHTTPRequestHandler):
 
     def end_headers(self):
         # every visit starts with the same cart (the storefront reads its id from this cookie)
-        self.send_header('Set-Cookie', 'DEFAULT_shopizer_cart=VC-CART-1; Path=/')
         self.send_header('Set-Cookie', 'CookieConsent=true; Path=/')
         super().end_headers()
 
