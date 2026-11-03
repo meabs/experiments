@@ -28,6 +28,10 @@ def post(url, body, headers, timeout=300):
             if e.code in (429, 500, 502, 503, 504) and attempt < 3:
                 time.sleep(5 * (attempt + 1)); continue
             raise RuntimeError(f'{e.code}: {e.read()[:300]!r}')
+        except (ConnectionError, urllib.error.URLError):  # a dropped connection is retried, as an HTTP 5xx is
+            if attempt < 3:
+                time.sleep(5 * (attempt + 1)); continue
+            raise
 
 
 def ask(checker, path):

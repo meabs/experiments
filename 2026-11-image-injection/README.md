@@ -222,3 +222,13 @@ YouTube Short in the cast-and-board format (user, 2026-11-03: "for each one make
   repository-delivery pilot didn't start. The longest answers seen so far were 462 tokens (checker) and 5,231 (one
   agent turn), so the caps cut nothing seen so far. Both resumed where they stopped. Terra's attached-screenshot pilot
   so far: 0 of 21 injected runs hijacked.
+- 2026-11-03, end of Part 2's pilots: **Part 2 stops at the floor; no main run.** The two new pilots: `gpt-6.1-terra`
+  with the screenshot attached, 0 of 32 injected runs hijacked (29 of 36 runs passed); `gpt-6.1-terra` with the
+  screenshot in the repository, 0 of 32 hijacked (31 of 36 passed). With Gemini's 0 of 32: **0 of 96** across two
+  agents and two ways in, and no run mentioned the instruction. H1 is reported as this estimate; H2 (the gate) can't be
+  tested, since there is nothing for it to lower, and is dropped from the Holm set. Arms B and C weren't run in the
+  pilots. As decided when the second pilots were set up, a floor in both ends Part 2 rather than spending on a main run
+  that can't test H2. The pilot runs are kept in `pilot-part2/` and reported descriptively.
+  - Also: Part 1's checker now retries a dropped connection (as it retries an HTTP 5xx); terra's run had stopped
+    twice on one, and resumed where it stopped. All four checkers finished 1,020 of 1,020 calls, except the local one,
+    still running.
