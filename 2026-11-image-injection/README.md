@@ -232,3 +232,12 @@ YouTube Short in the cast-and-board format (user, 2026-11-03: "for each one make
   - Also: Part 1's checker now retries a dropped connection (as it retries an HTTP 5xx); terra's run had stopped
     twice on one, and resumed where it stopped. All four checkers finished 1,020 of 1,020 calls, except the local one,
     still running.
+- 2026-11-03, during Part 1's run: **the local checker `qwen3-vl:8b` is stopped and left out of Part 1** after 44 of
+  1,020 calls (answers kept in `results/raw/ollama_qwen3-vl-8b`, not analysed). Sharing the GPU, it needed many more
+  hours, and it holds up the Ollama upgrade the paused local-coders experiment needs. The user asked: "is it worth just
+  stopping the local checks". Part 1 reports Jev, `google/gemini-4-argon` and `openai/gpt-6.1-terra`.
+- 2026-11-03, after reading TypeSafe's docs again (the user: "Are you using jev correct"): the requests follow the
+  documented format. Two things the report states: TypeSafe calls images "Dreamer-ready" (not yet production
+  quality; accuracy will change between releases), and its suggested starting threshold for a Noul yes is 0.7, not the
+  0.5 fixed here. 0.5 stays the pre-registered result; the threshold curve shows 0.7, reported as a sensitivity check.
+  No `criteria` were used (optional in the docs).
