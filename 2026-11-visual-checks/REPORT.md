@@ -89,9 +89,35 @@ Fixed before any run:
 | Unreadable contrast (1) | 1 | 1 | 1 | **0** |
 | Every other defect (12) | 12 | 12 | 12 | 11 |
 
-**Cost:** Gemini's assertions cost $0.58 for all 162 calls (about $0.003 a screenshot), gpt-6.1-terra's $0.24. Jev
-used about 5,500 tokens per desktop screenshot request (2,100 for mobile) and answered in under half a second. The
-local model was free but took 9–15 seconds a call, and 9 of its 162 review calls gave no answer within 10 minutes.
+**Cost and speed** (one call per screenshot, as a CI gate would make; this run made 3 per screenshot):
+
+| Checker | Cost per screenshot (lower is better) | Per 10,000 screenshots | Median seconds per call (lower is better) | Defects caught, of 22 | False alarms, of 24 harmless changes |
+| --- | --- | --- | --- | --- | --- |
+| Pixel diff | $0 | $0 | under 0.1 | 13 | 16 |
+| **Jev, assertions** | **$0.00017** | **$1.69** | **0.4** | 19 | **0** |
+| Jev, open question | $0.00016 | $1.61 | 0.4 | 22 | 22 |
+| gpt-6.1-terra, assertions | $0.0015 | $14.78 | 4.1 | 22 | 10 |
+| gpt-6.1-terra, review | $0.0016 | $15.92 | 4.8 | 21 | 13 |
+| Gemini, assertions | $0.0036 | $35.71 | 4.9 | 22 | **0** |
+| Gemini, review | $0.0040 | $40.20 | 5.8 | 21 | 12 |
+| qwen3-vl:8b (local), assertions | $0 in API fees | $0, about 33 GPU-hours | 8.9 | 11 | **0** |
+| qwen3-vl:8b (local), review | $0 in API fees | $0, about 150 GPU-hours | 15.1 | 7 | **0** |
+
+- **How it was worked out:** OpenRouter's billed cost per call, as reported in each response. Jev from its input tokens at
+  TypeSafe's list price for `jev-1.14.0`, $0.042 per million input tokens, output free (TypeSafe's models page,
+  3 November 2026); I didn't see a per-call bill. Jev used about 5,500 input tokens for a desktop screenshot with its
+  questions, 2,100 for a mobile one; a vision model about 1,300–1,800. Jev reads more tokens and still costs about a
+  twentieth as much. The local model's electricity wasn't measured; its GPU time is the sum of its call times.
+- **Jev against Gemini, same assertions:** about 21 times cheaper and 12 times faster, for 3 fewer defects caught of 22
+  and the same zero false alarms. Against gpt-6.1-terra: about 9 times cheaper and 10 times faster, 3 fewer defects,
+  10 fewer false alarms.
+- **The cost that isn't on the bill is the false alarm.** Each one needs a person to look. At this run's rates, 100
+  harmless changes would raise about 67 alarms from the pixel diff, about 42 from gpt-6.1-terra's assertions and none
+  from Jev's or Gemini's. A few minutes of a person's time per alarm outweighs the API cost of any checker here.
+- **The cost of a miss** is a wrong total or blank pictures shipped. For a shop, Gemini's extra $0.0034 a screenshot
+  over Jev is likely cheap insurance; a team running very many screenshots might instead use Jev and check totals in
+  code (see the recommendations).
+- Prices change; these are the list and billed prices on the day of the run.
 
 **Follow-up, exploratory** (logged before it ran, written after the main results): I asked Jev's open question again
 in the style TypeSafe's docs recommend, specific and with true/false criteria. It caught 19 of 22 defects with 18 of
