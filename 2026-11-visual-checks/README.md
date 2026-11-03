@@ -1,6 +1,6 @@
 # Can yes/no screenshot checks catch the UI bugs that tests miss?
 
-**Status:** design draft, 2026-11-03, not yet pushed; no measured run yet. Changes after the push go in the
+**Status:** design, pushed 2026-11-03 before any measured run. Changes after the push go in the
 [amendment log](#amendment-log).
 
 ## Why
@@ -107,6 +107,11 @@ but slower.
 
 - OK to download one local vision model.
 - Jev credits: about 1,500 calls × ~1,500 tokens ≈ 2.3 M input tokens.
+
+## After the runs
+
+REPORT.md in the usual sections (results, impact, risks, configuration recommendations), a site page via PR, and a
+YouTube Short in the cast-and-board format (user, 2026-11-03: "for each one make sure we do a short video once done").
 
 ## Amendment log
 

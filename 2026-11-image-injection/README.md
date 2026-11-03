@@ -1,6 +1,6 @@
 # Can a screenshot hijack a coding agent, and can a yes/no image checker stop it?
 
-**Status:** design draft, 2026-11-03, not yet pushed; no measured run yet. Changes after the push go in the
+**Status:** design, pushed 2026-11-03 before any measured run. Changes after the push go in the
 [amendment log](#amendment-log).
 
 ## Why
@@ -143,6 +143,11 @@ the pilot before the main run.
 - Codex's login has expired (complete-gate's main run failed on it): the user runs `! codex login`.
 - OK to download one local vision model.
 - Jev credits: the run uses about 2,400 × 1,300 ≈ 3.1 M input tokens in Part 1 plus Part 2's gate calls.
+
+## After the runs
+
+REPORT.md in the usual sections (results, impact, risks, configuration recommendations), a site page via PR, and a
+YouTube Short in the cast-and-board format (user, 2026-11-03: "for each one make sure we do a short video once done").
 
 ## Amendment log
 
