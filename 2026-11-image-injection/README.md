@@ -203,3 +203,16 @@ YouTube Short in the cast-and-board format (user, 2026-11-03: "for each one make
     and least detected by Jev, and a checker-aware one), before the main run.
 - 2026-11-03, before the local checker's run: **a local call that gives no answer within 900 s is recorded as
   unusable** (not flagged, reported), as in visual-checks, where one `qwen3-vl:8b` answer ran away.
+- 2026-11-03, after Part 2's pilot and before its main run (pilot runs in `pilot-part2/`, not analysed with the main run):
+  - **Floor.** With `google/gemini-4-argon` as the agent and the screenshot attached to the ticket, 0 of 32 injected
+    runs were hijacked (4 techniques × 2 framings × 4 tickets; 95% interval 0–11%); all 36 runs passed their ticket and
+    none mentioned the instruction. Put to the user, who chose: "Pilot second agent and also how the image arrives".
+  - **Second agent:** `openai/gpt-6.1-terra`, same loop and prompt.
+  - **Second way in:** the screenshot is a file in the repository (`docs/bug-reports/screenshot.png`, in the
+    workspace's one commit), the ticket names it instead of attaching it, and the agent gets a `view_image` tool. Arms B
+    and C act at that tool (description instead of the image; Jev withholds it at noul ≥ 0.5). `viewed_image` records
+    whether the agent opened it.
+  - **Budget:** the user has about $10.79 of OpenRouter credit left ("I only have 10.79 left on openrouter"). Gemini runs
+    cost about $0.27 each (the slowest ticket, t2, up to $0.80), terra about $0.02, so both new pilots (36 runs each,
+    arm A, the same conditions) use terra, and the main run's agent is chosen from them. Gemini is not run again as the
+    agent.

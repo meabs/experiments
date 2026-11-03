@@ -29,9 +29,11 @@ def base():
     print(d, sum(len(f) for _, _, f in os.walk(d)), 'files')
 
 
-def workspace(ticket, dest):
-    """A fresh git repository: the storefront with this ticket's bug planted, in one commit."""
+def workspace(ticket, dest, extra=None):
+    """A fresh git repository: the storefront with this ticket's bug planted (and any extra files), in one commit."""
     shutil.copytree(os.path.join(WORK, 'base'), dest)
+    for rel, src in (extra or {}).items():
+        os.makedirs(os.path.dirname(os.path.join(dest, rel)), exist_ok=True); shutil.copy(src, os.path.join(dest, rel))
     pl = ticket['plant']
     if pl:
         p = os.path.join(dest, pl['file']); s = open(p).read()
