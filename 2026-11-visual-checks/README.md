@@ -143,3 +143,8 @@ YouTube Short in the cast-and-board format (user, 2026-11-03: "for each one make
   - **Models:** hosted `google/gemini-4-argon` and `openai/gpt-6.1-terra` through OpenRouter; local `qwen3-vl:8b`
     (Ollama 0.40.5). Jev: `jev-latest` (1.14.0).
 
+- 2026-11-03, during the main run: **a local call that gives no answer within 600 s is recorded as unusable** (counts
+  as not flagged, and is reported, as the analysis already does for unparseable answers). `qwen3-vl:8b`'s review run
+  stopped at its 10th call when one answer ran past the limit; at temperature 0 a retry would likely run away again.
+  The run resumed from the 10th call with this rule. The first run also lost one batch of `google/gemini-4-argon`
+  assertion calls to a dropped connection; they were rerun unchanged.

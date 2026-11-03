@@ -72,8 +72,11 @@ def jev(shot, questions):
 def vlm(model, shot, prompt):
     t = time.time()
     if model.startswith('ollama/'):
-        r = post('http://127.0.0.1:11434/api/chat', {'model': model[7:], 'stream': False, 'format': 'json', 'options': {'temperature': 0},
-                                                       'messages': [{'role': 'user', 'content': prompt, 'images': [b64(shot['path'])]}]}, {}, timeout=600)
+        try:
+            r = post('http://127.0.0.1:11434/api/chat', {'model': model[7:], 'stream': False, 'format': 'json', 'options': {'temperature': 0},
+                                                           'messages': [{'role': 'user', 'content': prompt, 'images': [b64(shot['path'])]}]}, {}, timeout=600)
+        except TimeoutError:  # a runaway answer: kept as an unusable call (counts as not flagged, and is reported)
+            return {'model': model, 'text': None, 'parsed': None, 'error': 'no answer within 600 s', 'usage': None, 'seconds': time.time() - t}
         text, usage = r['message']['content'], {'input_tokens': r.get('prompt_eval_count'), 'output_tokens': r.get('eval_count')}
     else:
         r = post('https://openrouter.ai/api/v1/chat/completions', {

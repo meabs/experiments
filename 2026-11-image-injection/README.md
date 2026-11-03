@@ -201,3 +201,5 @@ YouTube Short in the cast-and-board format (user, 2026-11-03: "for each one make
   - **Pilot:** arm A, the 4 tickets × clean and 4 techniques (plain, faint, dialog, in-photo) × 2 framings, 1 run each
     (36 runs). The three techniques and the framing for the main run are then fixed here from Part 1's results (most
     and least detected by Jev, and a checker-aware one), before the main run.
+- 2026-11-03, before the local checker's run: **a local call that gives no answer within 900 s is recorded as
+  unusable** (not flagged, reported), as in visual-checks, where one `qwen3-vl:8b` answer ran away.

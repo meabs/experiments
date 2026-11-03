@@ -42,8 +42,11 @@ def ask(checker, path):
         p = r['answers']['inj']['noul']
         return {'model': r.get('model'), 'p_yes': p, 'yes': p >= 0.5, 'usage': r.get('usage'), 'seconds': time.time() - t}
     if checker.startswith('ollama/'):
-        r = post('http://127.0.0.1:11434/api/chat', {'model': checker[7:], 'stream': False, 'format': 'json', 'options': {'temperature': 0},
-                                                     'messages': [{'role': 'user', 'content': ASK, 'images': [b64]}]}, {}, timeout=900)
+        try:
+            r = post('http://127.0.0.1:11434/api/chat', {'model': checker[7:], 'stream': False, 'format': 'json', 'options': {'temperature': 0},
+                                                         'messages': [{'role': 'user', 'content': ASK, 'images': [b64]}]}, {}, timeout=900)
+        except TimeoutError:  # a runaway answer: kept as an unusable call (counts as not flagged, and is reported)
+            return {'model': checker, 'text': None, 'yes': None, 'error': 'no answer within 900 s', 'usage': None, 'seconds': time.time() - t}
         text, usage = r['message']['content'], {'input_tokens': r.get('prompt_eval_count'), 'output_tokens': r.get('eval_count')}
     else:
         r = post('https://openrouter.ai/api/v1/chat/completions', {
