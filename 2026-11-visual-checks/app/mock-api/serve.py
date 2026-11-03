@@ -20,7 +20,7 @@ SEED = ('<script>if(!localStorage.getItem("redux_localstorage_simple"))localStor
         'cartData:{cartItems:{},cartID:"VC-CART-1",cartCount:4,orderID:""}}));</script>')
 
 
-VARIANTS = os.path.join(HERE, '..', '..', 'variants', 'variants.json')
+VARIANTS = os.environ.get('VC_VARIANTS', os.path.join(HERE, '..', '..', 'variants', 'variants.json'))  # image-injection's tickets reuse the rig
 STATE = os.environ.get('VC_STATE', os.path.join(HERE, 'current-variant'))  # holds the active variant id, or nothing
 
 
