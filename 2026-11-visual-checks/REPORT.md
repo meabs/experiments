@@ -137,29 +137,46 @@ usable as a gate.
 - **The open question is a pixel diff with extra steps.** Asked "is anything wrong?", Jev said yes to 22 of 24
   harmless changes and 7 of 8 untouched screens. The docs-style rewrite didn't fix it.
 - **The pixel diff missed 9 defects.** A cut-off price, a wrong currency symbol or `{{price}}` change fewer than 0.5% of
-  the pixels, so the usual threshold lets them through while a new font sets it off.
+  the pixels, so the usual threshold lets them through while a new font sets it off. This is one plain configuration:
+  a single threshold over the whole screen, no masked regions, no approval of new baselines. In a visual regression
+  workflow a deliberate font change isn't a mistake but a change to approve, so "false alarm" here means "flagged a
+  change that isn't a defect".
 
 ## 7. What this might mean in practice
 
 ### Impact
 
-Writing down what each screen must show, as yes/no questions, turned screenshot checking from noise into a usable
-signal: three of the four assertion checkers raised no false alarms on any harmless change. That's what makes a visual
-check something people will keep on in CI. The general question ("is anything broken?") didn't work with any model:
-every model that caught most defects that way also flagged half or more of the harmless changes.
+Writing down what each screen must show, as yes/no questions, turned the model checkers from noise into a usable
+signal: three of the four assertion checkers raised no false alarms on any harmless change. The general question
+("is anything broken?") didn't work with any model: every model that caught most defects that way also flagged half or
+more of the harmless changes.
 
-Jev was the fastest checker by ten times and never cried wolf, but it missed 3 of 22 defects, all of which needed
-comparing or arithmetic rather than spotting. Gemini caught all 22 with no false alarms, at about $0.003 a
-screenshot.
+Gemini, not Jev, was the strongest checker here: all 22 defects, no false alarms. Jev was ten times faster and about a
+twentieth of the price, but it missed 3 of 22 defects, all of which needed comparing or arithmetic rather than
+spotting. With 22 defect screenshots this doesn't show that Gemini is better in general, and it doesn't show that Jev
+is about as good: H2 wasn't supported, and its three misses could matter.
+
+Jev's misses also point at something bigger than the model comparison. A wrong total can be calculated, and a blank
+picture can be detected in the page (the image failed to load). These didn't need a model at all. Visual checking
+answers three different questions, and no single checker here answers all of them:
+
+1. **Does the page meet an explicit requirement?** (the total adds up, the Pay button is visible, the page fits the
+   screen) Deterministic checks first: arithmetic, DOM and Playwright assertions. Then written visual assertions for
+   what code can't easily see.
+2. **Does it look right to a person?** (readable, nothing overlapping, sensible layout) Vision models answering
+   written assertions.
+3. **Did anything change unexpectedly?** Pixel or snapshot comparison against an approved baseline, with dynamic
+   regions masked; a change is approved or rejected, not ignored.
 
 ### Configuration recommendations
 
 | Recommendation | Why | Strength |
 | --- | --- | --- |
-| Use written yes/no assertions per screen, not a pixel diff, as the visual gate | 0 against 16 of 24 decoy false alarms, and the pixel diff missed 9 of 22 defects | Strong: H1, Holm p = 0.0003 |
+| Use written yes/no assertions per screen alongside visual regression testing, not instead of it: assertions to judge whether a screen is broken, a pixel or snapshot diff with approved baselines to catch unexpected change | Against a plain 0.5% pixel diff: 0 against 16 of 24 harmless changes flagged, and the pixel diff missed 9 of 22 defects | Strong against the configuration tested (H1, Holm p = 0.0003); masked or regional diffs with baseline approval weren't tested |
+| Check what can be calculated in code before asking any model: totals with arithmetic, missing pictures with an image-load check, missing buttons with a visibility assertion, sideways overflow with the page's scroll width | Jev's three misses were a wrong total and missing pictures | Descriptive; the deterministic checks weren't run here |
 | Don't gate on an open "is anything wrong?" question, with any model | Jev flagged 22 of 24 decoys; Gemini and terra reviews 12–13; the docs-style rewrite 18 | Descriptive, consistent across models |
-| If you use Jev, keep its 0.5 threshold and don't rely on it for arithmetic or "is something missing" checks; check totals in code instead | It missed the wrong total and blank pictures; higher thresholds add false alarms faster than catches | Descriptive (H2 not supported) |
-| If missing nothing matters more than speed, use a strong hosted vision model for the assertions | Gemini: 22 of 22, 0 false alarms, about $0.003 a screenshot | Descriptive; the difference from Jev isn't significant at this size |
+| If you use Jev, keep its 0.5 threshold and don't rely on it for arithmetic or "is something missing" checks | It missed the wrong total and blank pictures; higher thresholds add false alarms faster than catches | Descriptive (H2 not supported) |
+| For the visual assertions themselves, prefer a strong hosted vision model unless speed or volume rules it out | Gemini: 22 of 22, 0 false alarms, $0.0036 a screenshot ($36 per 10,000) | Descriptive. Gemini wasn't shown better in general, and Jev wasn't shown about as good (H2 not supported): 22 defect screenshots are too few |
 | Write assertions per viewport, and read them for words a literal reader could fail | "navigation links … readable" caused all 13 of terra's false alarms on mobile | Descriptive |
 | Don't use an 8B local vision model as the gate | qwen3-vl:8b caught 11 of 22 (assertions) and 7 of 22 (review) | Descriptive |
 
@@ -169,8 +186,9 @@ screenshot.
   wrong total and missing pictures, both expensive in a real shop.
 - **The assertion is the weak point.** Results depend on how the questions are worded, and a badly worded one fails
   either way: silently (if it's too loose) or loudly (too literal).
-- **The pixel diff's 0.5% threshold is upside down for this job.** It is most sensitive to big harmless changes and
-  least to small harmful ones.
+- **A plain pixel threshold is upside down for spotting defects.** At 0.5% over the whole screen it is most sensitive to
+  big harmless changes and least to small harmful ones. It answers a different question (did anything change?), and
+  needs baselines and masks to answer it well.
 
 ## 8. What the experiment does not prove
 
@@ -183,6 +201,11 @@ screenshot.
 
 ## 9. What I'd test next
 
+- **A hybrid gate against AI-only gates**, on the same screenshots plus real bugs from a project's history:
+  deterministic Playwright and DOM checks only; Gemini with visual assertions; Jev with visual assertions; and
+  deterministic checks plus targeted visual assertions, sending only unclear failures to a stronger model. Measure
+  defects caught, false alarms, review time, total cost, and which bugs get past every layer. (Suggested by a reviewer;
+  this is the most useful next step.)
 - **Jev with the arithmetic taken out:** assertions that never ask it to add up or compare, with the totals checked in
   code, to see whether its misses go away.
 - **Real regressions** from a project's history instead of planted ones.
@@ -209,4 +232,8 @@ All of these are in the README's amendment log:
 - **During the main run:** a local call with no answer in 10 minutes counts as unusable; one dropped batch of Gemini
   calls was rerun unchanged.
 - **Afterwards, exploratory:** the docs-style open question.
+- **After publication, from a reviewer's comments (3 November 2026):** the pixel-diff recommendation now says
+  "alongside", not "instead of", and is limited to the configuration tested; deterministic checks were added as a
+  recommendation; the wording on Jev against Gemini no longer leans on "not significant"; the three verification
+  questions and the hybrid-gate experiment were added. No number changed.
 - **Not changed after the main run started:** the hypotheses, assertions, variants and analysis.
