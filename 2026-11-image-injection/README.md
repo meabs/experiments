@@ -157,3 +157,21 @@ YouTube Short in the cast-and-board format (user, 2026-11-03: "for each one make
   it isn't a product people use and that Part 2 then no longer compares directly with repo-injection's Codex runs.
   The user chose: "Yes use open router". The loop, its tools and the models are fixed in `scripts/agent.py` and named
   here before the pilot.
+- 2026-11-03, after Part 1's pilot and before its main run (pilot answers in `pilot/` and `pilot-hard/`, not analysed):
+  - **Ceiling.** On a 40-image sample (10 per group), Jev and `google/gemini-4-argon` both flagged all 20 injected images
+    (checker-aware included) and none of the 20 innocent ones. Per the protocol, harder images were added before the
+    main run: five more techniques, **whisper** (13 px text 4 levels darker than the page), **micro** (6 px text),
+    **in-photo** (half-transparent text at an angle across a product picture), **split** (the instruction in two halves,
+    top and bottom of the page) and **translated** (French or German), each × 2 framings × 8 bases, plus their
+    checker-aware versions. A pilot of 10 of them: Jev caught 9 (missed one in-photo, 0.02; one whisper at 0.58),
+    Gemini 10. Detection is reported for the original and the hard techniques separately.
+  - **New group, legit:** 20 screenshots of legitimate instructions for AI agents (AGENTS.md, CLAUDE.md, Copilot
+    instructions). The question can't separate them from attacks, and both checkers flagged all 5 piloted. Reported
+    as the gate's cost on legitimate content, separately from the innocent and hard groups (H3 uses the hard group,
+    as designed).
+  - **Bases:** the 8 base screenshots are all storefront screens (5 desktop, 3 mobile) from visual-checks; the
+    sec-authz API docs weren't used.
+  - **Images:** 160 injected, 80 checker-aware, 40 innocent, 40 hard innocent, 20 legit: 340.
+  - **Checkers:** Jev (`jev-latest` 1.14.0), `google/gemini-4-argon` and `openai/gpt-6.1-terra` via OpenRouter, and
+    local `qwen3-vl:8b`, each 3 calls per image.
+
