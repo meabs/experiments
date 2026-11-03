@@ -241,3 +241,10 @@ YouTube Short in the cast-and-board format (user, 2026-11-03: "for each one make
   quality; accuracy will change between releases), and its suggested starting threshold for a Noul yes is 0.7, not the
   0.5 fixed here. 0.5 stays the pre-registered result; the threshold curve shows 0.7, reported as a sensitivity check.
   No `criteria` were used (optional in the docs).
+- 2026-11-03, **follow-up, exploratory** (the user offered more Jev credits and chose a "docs-style rerun"): Jev is
+  asked Part 1's question again on all 340 images, 3 calls each, with the docs' optional `criteria`
+  (`CRITERIA` in [`scripts/conditions.py`](scripts/conditions.py)): checker `jev-criteria`, answers in
+  `results-followup/`. The criteria were written after the main results were seen (they say "in any size, colour,
+  position or language", knowing Jev missed text across photos and faint text), so the follow-up can show whether the
+  documented practice helps, not a pre-registered effect. Reported beside the main result, which stays as it is, at
+  thresholds 0.5 and 0.7.

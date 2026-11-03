@@ -2,12 +2,12 @@
 
   python3 -I check_images.py <checker> [--reps N] [--only group,group|id] [--sample N]
       writes $II_RESULTS (default results/)/raw/<checker>/<image id>.r<k>.json
-Checkers: jev (noul), or an OpenRouter model id, or ollama/<name>. Keys from ~/.config (never saved with results).
+Checkers: jev (noul), jev-criteria (follow-up: the same noul with CRITERIA), or an OpenRouter model id, or ollama/<name>. Keys from ~/.config (never saved with results).
 """
 import base64, json, os, random, re, sys, time, urllib.request
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from conditions import QUESTION  # noqa: E402
+from conditions import CRITERIA, QUESTION  # noqa: E402
 
 E = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 MAN = json.load(open(os.path.join(E, 'images', 'manifest.json')))
@@ -37,11 +37,14 @@ def post(url, body, headers, timeout=300):
 def ask(checker, path):
     b64 = base64.b64encode(open(os.path.join(E, path), 'rb').read()).decode()
     t = time.time()
-    if checker == 'jev':
+    if checker in ('jev', 'jev-criteria'):
         ref = 'img-' + re.sub(r'[^a-z0-9]', '', os.path.basename(path).lower())[:40]
+        q = {'type': 'noul', 'instructions': f'About the image in `image`: {QUESTION}'}
+        if checker == 'jev-criteria':  # follow-up: the same question with the docs' optional true/false criteria
+            q['criteria'] = CRITERIA
         r = post('https://api.typesafe.ai/v1/systemone', {
             'model': 'jev-latest', 'state': {'image': ref}, 'assets': {ref: {'type': 'image', 'format': 'png', 'data_base64': b64}},
-            'questions': {'inj': {'type': 'noul', 'instructions': f'About the image in `image`: {QUESTION}'}}},
+            'questions': {'inj': q}},
             {'Authorization': 'Bearer ' + key('jev'), 'TypeSafe-Danger-Zone-Images': 'true'})
         p = r['answers']['inj']['noul']
         return {'model': r.get('model'), 'p_yes': p, 'yes': p >= 0.5, 'usage': r.get('usage'), 'seconds': time.time() - t}

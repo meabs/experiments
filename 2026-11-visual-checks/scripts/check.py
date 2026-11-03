@@ -18,6 +18,13 @@ E = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 ASSERT = json.load(open(os.path.join(E, 'assertions', 'assertions.json')))
 VARIANTS = {v['id']: v for v in json.load(open(os.path.join(E, 'variants', 'variants.json')))}
 OPEN_Q = 'Does this screenshot show a visual defect a customer would notice?'
+# Follow-up (exploratory, after the main results): the open question made specific, as TypeSafe's docs advise, with
+# criteria taken from the vision models' review prompt (REVIEW below), which was fixed before the main run.
+OPEN_Q2 = 'Does this shop screenshot show something broken that a customer would notice?'
+OPEN_CRITERIA = {'true': 'Something is broken: content is hidden, covered, cut off, overlapping, unreadable, missing, '
+                         'inconsistent or wrong (for example a placeholder, a wrong total or a broken picture).',
+                 'false': 'Nothing is broken. Ordinary design choices (colours, fonts, spacing, layout, banners, picture '
+                          'choice, order of items) are not defects.'}
 REVIEW = ('You are reviewing a screenshot of an online shop for visual defects that a customer would notice: anything '
           'broken, hidden, covered, cut off, overlapping, unreadable, missing, inconsistent or wrong. Ordinary design '
           'choices (colours, fonts, spacing, layout, banners, picture choice, order of items) are not defects. Answer '
@@ -59,11 +66,12 @@ def b64(path):
     return base64.b64encode(open(path, 'rb').read()).decode()
 
 
-def jev(shot, questions):
+def jev(shot, questions, criteria=None):
     ref = 'shot-' + re.sub(r'[^a-z0-9]', '', shot['id'].lower())[:40]
     body = {'model': 'jev-latest', 'state': {'screenshot': ref},
             'assets': {ref: {'type': 'image', 'format': 'png', 'data_base64': b64(shot['path'])}},
-            'questions': {qid: {'type': 'noul', 'instructions': f'About the shop screenshot in `screenshot`: {q}'} for qid, q in questions}}
+            'questions': {qid: {'type': 'noul', 'instructions': f'About the shop screenshot in `screenshot`: {q}',
+                                **({'criteria': criteria[qid]} if criteria and qid in criteria else {})} for qid, q in questions}}
     t = time.time()
     r = post('https://api.typesafe.ai/v1/systemone', body, {'Authorization': 'Bearer ' + key('jev'), 'TypeSafe-Danger-Zone-Images': 'true'})
     return {'model': r.get('model'), 'answers': {k: v.get('noul') for k, v in r['answers'].items()}, 'usage': r.get('usage'), 'seconds': time.time() - t}
@@ -120,6 +128,8 @@ def run(root, checker, reps, only):
                 res = jev(shot, qs)
             elif checker == 'jev-open':
                 res = jev(shot, [('defect', OPEN_Q)])
+            elif checker == 'jev-open-criteria':  # follow-up: a specific open question with true/false criteria
+                res = jev(shot, [('defect', OPEN_Q2)], criteria={'defect': OPEN_CRITERIA})
             elif checker.startswith('vlm-assert:'):
                 prompt = ('Look at this screenshot of an online shop and answer each question with "yes" or "no". Answer with '
                           'JSON only, mapping each id to "yes" or "no".\n' + '\n'.join(f'{i}: {q}' for i, q in qs))

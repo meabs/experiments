@@ -21,9 +21,9 @@ V = {v['id']: v for v in json.load(open(os.path.join(E, 'variants', 'variants.js
 def flagged(c, d):
     if c == 'pixel':
         return d['changed'] > 0.005, []
-    if c in ('jev-assert', 'jev-open'):
+    if c in ('jev-assert', 'jev-open', 'jev-open-criteria'):
         a = d.get('answers') or {}
-        if c == 'jev-open':
+        if c in ('jev-open', 'jev-open-criteria'):
             return (a.get('defect') or 0) >= 0.5, []
         bad = [k for k, v in a.items() if v is not None and v < 0.5]
         return bool(bad), bad

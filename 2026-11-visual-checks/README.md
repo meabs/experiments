@@ -148,3 +148,8 @@ YouTube Short in the cast-and-board format (user, 2026-11-03: "for each one make
   stopped at its 10th call when one answer ran past the limit; at temperature 0 a retry would likely run away again.
   The run resumed from the 10th call with this rule. The first run also lost one batch of `google/gemini-4-argon`
   assertion calls to a dropped connection; they were rerun unchanged.
+- 2026-11-03, **follow-up, exploratory** (the user offered more Jev credits and chose a "docs-style rerun"): TypeSafe's
+  docs advise an unambiguous yes/no boundary and optional `criteria`. Jev's open question is asked again on all 54
+  screenshots, 3 calls each, made specific and with true/false criteria taken from the vision models' review prompt
+  (fixed before the main run): checker `jev-open-criteria` ([`scripts/check.py`](scripts/check.py)), answers in
+  `results-followup/`. Written after the main results were seen; reported beside them, not instead of them.
