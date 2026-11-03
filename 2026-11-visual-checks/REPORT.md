@@ -1,4 +1,4 @@
-# Yes/no screenshot checks: report
+# Can Jev, a new kind of AI model, catch UI bugs better than vision models or a pixel diff? Report
 
 3 November 2026. Design: [README.md](README.md), pushed before any measured run (d3e16f44). The assertions were
 committed before any defect was designed (0ad9363d). The pilot fixes and the analysis script were pushed before the
