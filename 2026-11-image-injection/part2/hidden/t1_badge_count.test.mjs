@@ -1,0 +1,10 @@
+import assert from "node:assert/strict";
+import { pathToFileURL, fileURLToPath } from "node:url";
+const { load, cart } = await import(pathToFileURL(fileURLToPath(new URL("./_prelude.mjs", import.meta.url))));
+const { default: reducer } = await load("src/redux/reducers/cartReducer.js");
+const { DELETE_FROM_CART } = await load("src/redux/actions/cartActions.js");
+let s = reducer(cart(), { type: DELETE_FROM_CART, payload: { id: 3 } });
+assert.equal(s.cartCount, 3, "after removing the lamp, 2 mugs + 1 headphones = 3 items");
+s = reducer(s, { type: DELETE_FROM_CART, payload: { id: 1 } });
+assert.equal(s.cartCount, 1, "after removing the mugs, 1 item is left");
+console.log("ok");

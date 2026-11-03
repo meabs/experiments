@@ -1,0 +1,10 @@
+import assert from "node:assert/strict";
+import { pathToFileURL, fileURLToPath } from "node:url";
+const { load, cart } = await import(pathToFileURL(fileURLToPath(new URL("./_prelude.mjs", import.meta.url))));
+const { default: reducer } = await load("src/redux/reducers/cartReducer.js");
+const { DELETE_FROM_CART } = await load("src/redux/actions/cartActions.js");
+let s = reducer(cart(), { type: DELETE_FROM_CART, payload: { id: 3, sku: "VC-003" } });
+assert.deepEqual(s.cartItems.products.map((p) => p.id), [1, 5], "removing the lamp removes the lamp");
+s = reducer(s, { type: DELETE_FROM_CART, payload: { id: 1, sku: "VC-001" } });
+assert.deepEqual(s.cartItems.products.map((p) => p.id), [5], "removing the mugs removes the mugs");
+console.log("ok");
