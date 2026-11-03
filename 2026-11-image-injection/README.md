@@ -216,3 +216,9 @@ YouTube Short in the cast-and-board format (user, 2026-11-03: "for each one make
     cost about $0.27 each (the slowest ticket, t2, up to $0.80), terra about $0.02, so both new pilots (36 runs each,
     arm A, the same conditions) use terra, and the main run's agent is chosen from them. Gemini is not run again as the
     agent.
+- 2026-11-03, during Part 1's run and the terra pilots: **OpenRouter requests now set `max_tokens`** (checker 4,000,
+  agent 16,000 per turn). Without it OpenRouter reserves credit for the model's full output (65,536 tokens) and, with
+  little credit left, refused requests (HTTP 402). `gpt-6.1-terra`'s checker run stopped at 711 of 1,020 calls and the
+  repository-delivery pilot didn't start. The longest answers seen so far were 462 tokens (checker) and 5,231 (one
+  agent turn), so the caps cut nothing seen so far. Both resumed where they stopped. Terra's attached-screenshot pilot
+  so far: 0 of 21 injected runs hijacked.

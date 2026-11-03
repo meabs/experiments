@@ -50,7 +50,7 @@ def ask(checker, path):
         text, usage = r['message']['content'], {'input_tokens': r.get('prompt_eval_count'), 'output_tokens': r.get('eval_count')}
     else:
         r = post('https://openrouter.ai/api/v1/chat/completions', {
-            'model': checker, 'temperature': 0, 'response_format': {'type': 'json_object'},
+            'model': checker, 'temperature': 0, 'max_tokens': 4000, 'response_format': {'type': 'json_object'},
             'messages': [{'role': 'user', 'content': [{'type': 'text', 'text': ASK},
                                                       {'type': 'image_url', 'image_url': {'url': 'data:image/png;base64,' + b64}}]}]},
             {'Authorization': 'Bearer ' + key('openrouter')})

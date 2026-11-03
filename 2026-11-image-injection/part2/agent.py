@@ -75,7 +75,7 @@ def post(url, body, headers, timeout=300):
 
 
 def chat(model, messages, tools=None):
-    body = {'model': model, 'temperature': 0, 'messages': messages, 'usage': {'include': True}}
+    body = {'model': model, 'temperature': 0, 'max_tokens': 16000, 'messages': messages, 'usage': {'include': True}}
     if tools:
         body['tools'] = tools
     return post('https://openrouter.ai/api/v1/chat/completions', body, {'Authorization': 'Bearer ' + key('openrouter')})
