@@ -7,9 +7,11 @@ main run (16f4176f). Full numbers: [results/analysis.md](results/analysis.md). H
 
 ## 1. What I wanted to find out
 
-Can short yes/no questions about a screenshot ("Is a Pay now button fully visible and not covered by anything?")
-catch the visual bugs that unit tests miss, without the false alarms that make people ignore a pixel diff? And is
-Jev, a small yes/no decision model, good enough at answering them compared with general vision models?
+Jev (TypeSafe) is a "System One" decision model: it doesn't generate text, but answers typed questions about a
+state, such as a screenshot, with calibrated probabilities (true-or-false statements, choices or scores). Can it catch
+the visual bugs that unit tests miss, answering a short true-or-false checklist per screen ("Is a Pay now button fully
+visible and not covered by anything?"), as well as general vision models, and without the false alarms that make
+people ignore a pixel diff?
 
 ## 2. Why I thought it was worth testing
 
