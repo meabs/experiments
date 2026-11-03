@@ -1,7 +1,8 @@
 """Screenshots of the storefront's five screens at desktop and mobile size, offline (every host except this machine is
 blocked, so the page's Google Maps and Stripe scripts never load). Needs app/mock-api/serve.py running.
 
-  python3 -I shoot.py <out dir> [screen ...]       writes <screen>-<viewport>.png
+  python3 -I shoot.py <out dir> [screen ...]       clean screens: <screen>-<viewport>.png
+  python3 -I shoot.py --variants <out dir>         every variant in variants/variants.json: <variant>/<screen>-<viewport>.png
 """
 import os, subprocess, sys
 
@@ -21,7 +22,28 @@ def shoot(out, page, vp):
     return path
 
 
+STATE = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'app', 'mock-api', 'current-variant')
+
+
+def variants(out):
+    import json
+    vs = json.load(open(os.path.join(os.path.dirname(STATE), '..', '..', 'variants', 'variants.json')))
+    try:
+        for v in vs:
+            open(STATE, 'w').write(v['id'])
+            d = os.path.join(out, v['id'])
+            os.makedirs(d, exist_ok=True)
+            for page in v['screens']:
+                for vp in v['viewports']:
+                    print(shoot(d, page, vp))
+    finally:
+        open(STATE, 'w').write('')
+
+
 if __name__ == '__main__':
+    if sys.argv[1] == '--variants':
+        variants(sys.argv[2])
+        sys.exit()
     out = sys.argv[1]
     os.makedirs(out, exist_ok=True)
     for page in sys.argv[2:] or PAGES:

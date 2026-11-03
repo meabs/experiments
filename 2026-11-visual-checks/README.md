@@ -115,4 +115,14 @@ YouTube Short in the cast-and-board format (user, 2026-11-03: "for each one make
 
 ## Amendment log
 
-(empty)
+- 2026-11-03, while building the variants and before any checker saw them:
+  - **How variants are applied.** Each variant is injected CSS, a script or changed mock-API data
+    ([`variants/variants.json`](variants/variants.json), applied by `app/mock-api/serve.py`), not a patch to the
+    storefront's JSX; the build stays the same for every screenshot. Data defects (wrong total, `{{price}}`, euros,
+    missing names, broken pictures) are the backend sending bad data, a real class of UI bug.
+  - **D11 replaced before use.** "Empty product list" rendered the storefront's own "No items found in category"
+    message, which a person can't call a defect from the screen alone. It is now "product cards have no names".
+  - **D05 and D08 strengthened** after my visual check: the price now overlaps the product name, and the mobile
+    pages now run off the right edge visibly.
+  - **Counts:** 12 defects on 26 screenshots and 8 decoys on 28 screenshots (the design estimated about 26 and 20),
+    plus the 10 clean screens: 64 screenshots.

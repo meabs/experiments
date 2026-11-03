@@ -17,9 +17,39 @@ SEED = ('<script>if(!localStorage.getItem("redux_localstorage_simple"))localStor
         'cartData:{cartItems:{},cartID:"VC-CART-1",cartCount:0,orderID:""}}));</script>')
 
 
+VARIANTS = os.path.join(HERE, '..', '..', 'variants', 'variants.json')
+STATE = os.environ.get('VC_STATE', os.path.join(HERE, 'current-variant'))  # holds the active variant id, or nothing
+
+
+def variant():
+    vid = open(STATE).read().strip() if os.path.exists(STATE) else ''
+    return next((v for v in json.load(open(VARIANTS)) if v['id'] == vid), None) if vid else None
+
+
 def fixtures():
+    import copy
     p = os.path.join(HERE, 'fixtures.json')
-    return json.load(open(p)) if os.path.exists(p) else []
+    F = json.load(open(p)) if os.path.exists(p) else []
+    v = variant()
+    for m in (v or {}).get('fixtures', []):
+        for f in F:
+            if f['path'] != m['path'] or f.get('method', 'GET') != m.get('method', 'GET'):
+                continue
+            b = f['body'] = copy.deepcopy(f['body'])
+            b.update(m.get('set', {}))
+            if 'line_set' in m:
+                b['products'][m['line_set'][0]].update(m['line_set'][1])
+            for pid in m.get('image_fail', []):
+                for prod in b['products']:
+                    if prod['id'] == pid:
+                        prod['image'] = {'imageUrl': f'/mock-img/missing-{pid}.jpg'}
+                        prod['images'] = [{'imageUrl': f'/mock-img/missing-{pid}.jpg', 'id': pid}]
+            if m.get('blank_names'):
+                for prod in b['products']:
+                    prod['description'] = {**prod['description'], 'name': ''}
+            if m.get('reverse_products'):
+                b['products'] = b['products'][::-1]
+    return F
 
 
 class App(SimpleHTTPRequestHandler):
@@ -37,8 +67,14 @@ class App(SimpleHTTPRequestHandler):
             # the page: index.html with the state seed first, so a fresh browser opens with product 1 and the fixture
             # cart selected (the storefront keeps both in saved app state, normally set by clicking through)
             html = open(os.path.join(BUILD, 'index.html'), encoding='utf-8').read().replace('<head>', '<head>' + SEED, 1)
+            v = variant()
+            if v and v['css']:
+                html = html.replace('</head>', '<style>' + v['css'] + '</style></head>', 1)
+            if v and v['js']:
+                html = html.replace('</body>', '<script>' + v['js'] + '</script></body>', 1)
             data = html.encode()
             self.send_response(200)
+            self.send_header('Cache-Control', 'no-store')
             self.send_header('Content-Type', 'text/html; charset=utf-8')
             self.send_header('Content-Length', str(len(data)))
             self.end_headers()

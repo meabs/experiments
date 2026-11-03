@@ -151,4 +151,9 @@ YouTube Short in the cast-and-board format (user, 2026-11-03: "for each one make
 
 ## Amendment log
 
-(empty)
+- 2026-11-03, before any run: **Part 2's agent is an OpenRouter vision model in a small agent loop, not Codex.**
+  The Codex login has expired, and I offered a loop of my own (an OpenRouter vision model, plus the local
+  `qwen3-vl:8b` if it runs, with file and shell tools in the same bubblewrap sandbox) as the alternative, noting that
+  it isn't a product people use and that Part 2 then no longer compares directly with repo-injection's Codex runs.
+  The user chose: "Yes use open router". The loop, its tools and the models are fixed in `scripts/agent.py` and named
+  here before the pilot.
