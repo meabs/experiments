@@ -106,3 +106,9 @@ less. A model either clears it or doesn't; the leaderboard shows how far each is
   (checked: it exits with an error). Offered: report it as is, or upgrade Ollama to 0.40.13 (its notes don't mention a
   fix) and rerun its pilot. The user chose: "A". The report says it couldn't drive Codex through Ollama 0.40.5, an
   integration result rather than a measure of its coding. Main run: 4 models, 96 runs; Holm over H2–H4.
+- 2026-11-03, during the pilot and before any main run: **devstral runs with reasoning effort "none".** Its first 8
+  pilot runs failed in 0.5 s each, before any model output: Ollama rejected the request with `"devstral-small-2:24b"
+  does not support thinking`, because the rig sent `model_reasoning_effort="medium"`. Checked: "minimal" fails the same
+  way, "none" works (the model ran a command and finished its turn). It has no thinking mode, so "none" is its only
+  setting, not a handicap. The 8 failed runs are kept aside (`rig-failed-devstral/`) and not analysed; its pilot was
+  rerun. The other models keep "medium".

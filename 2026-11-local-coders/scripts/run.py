@@ -31,6 +31,8 @@ SET_S = ["g1_delete_item", "g2_add_voucher", "g3_checkout_request", "g4_orders_l
 SET_J = ["C1", "C2", "L1X", "S2X"]
 TASKS = SET_S + SET_J
 LIMIT, EFFORT = 1800, "medium"
+# devstral has no thinking mode; Ollama rejects any effort but "none" (pilot, 2026-11-03)
+EFFORT_BY_MODEL = {"devstral-small-2:24b": "none"}
 GIT = ["git", "-c", "user.name=trial", "-c", "user.email=trial@example.com"]
 
 
@@ -73,14 +75,14 @@ def new(run, model, task):
     subprocess.run(GIT + ["add", "-A"], cwd=ws, check=True)
     subprocess.run(GIT + ["commit", "-q", "-m", "start"], cwd=ws, check=True)
     save_meta(run, {"run": run, "model": model, "task": task, "set": "S" if task in SET_S else "J",
-                    "effort": EFFORT, "created": time.time()})
+                    "effort": EFFORT_BY_MODEL.get(model, EFFORT), "created": time.time()})
     print(d)
 
 
 def go(run):
     m, d = meta(run), rdir(run)
     cmd = ["bash", os.path.join(LOCAL, "codex-bwrap.sh"), "exec", "-s", "danger-full-access", "--skip-git-repo-check",
-           "--json", "--model", m["model"], "-c", f'model_reasoning_effort="{EFFORT}"', "-c", 'web_search="disabled"',
+           "--json", "--model", m["model"], "-c", f'model_reasoning_effort="{EFFORT_BY_MODEL.get(m["model"], EFFORT)}"', "-c", 'web_search="disabled"',
            prompt(m["task"])]
     env = {**os.environ, "TRIAL_OUT": d, "TRIAL_ID": run}
     power = subprocess.Popen(["bash", os.path.join(LOCAL, "powerlog.sh"), os.path.join(d, "power.csv")],
