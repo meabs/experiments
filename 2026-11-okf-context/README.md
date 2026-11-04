@@ -16,22 +16,11 @@ writing and maintaining, and for which kinds of work?
 
 ## Scope
 
-The scope is this message (user, 3 November 2026), quoted as written:
-
-> In my own environment create a repo with:
-> - OKF Enabled, based on documenting only the key information / challenges of the repo and system context e.g. what
->   it integrates into (external systems) and business processes the code supports
-> - Vanila Repo
->
-> Then get the agent to do these two types of tasks:
-> - Introduce a new feature
-> - Generate a FMEA report
->
-> The aim is to test two different scenarios with the same config e.g. a technical change and then a detailed
-> understanding task, I have a testing framework that allows me to automate these. I will use the Luna model as I need
-> to manage usage.
->
-> I will then share the findings
+The scope (3 November 2026): a repo with an OKF bundle that documents only the key information and challenges of the
+repo and its system context (the external systems it integrates with and the business processes it supports), and the
+same repo without it; the agent does two kinds of task on each with the same configuration, a new feature (a technical
+change) and an FMEA report (a detailed understanding task); the model is Luna; the runs are automated; the findings
+are shared.
 
 How this design meets it:
 
@@ -47,8 +36,8 @@ How this design meets it:
 | Share the findings | REPORT.md and a site page |
 
 Added beyond the scope, with the user's agreement (3 November 2026, "A, B and C"): **arm C**, the same facts as a plain
-AGENTS.md section, to tell the format apart from the facts. Not in this run: Cursor (the message says it comes later,
-subject to governance), so the agent here is Codex CLI with the same model.
+AGENTS.md section, to tell the format apart from the facts. Not in this run: Cursor (planned for later, subject to governance), so the agent
+here is Codex CLI with the same model.
 
 ## Terms
 
@@ -187,8 +176,8 @@ for the judge, not a target: the measures below don't require the agent's number
 ## Agent
 
 Codex CLI with hosted `gpt-5.6-luna` at medium effort, one turn per run, nobody to ask, in a bubblewrap sandbox with no
-network. The hidden tests and answer keys aren't in the sandbox. The colleague plans to repeat the setup in Cursor later;
-the arms, tasks and graders are designed to carry over.
+network. The hidden tests and answer keys aren't in the sandbox. A Cursor repeat is planned later; the arms, tasks
+and graders are designed to carry over.
 
 ## Measures
 
@@ -415,3 +404,8 @@ answer key.
 18. **Failure taxonomy**: every failed feature run fell into one category (integration rule wrong), so Cohen's kappa
     on the category is undefined (chance agreement is 100%); the plain agreement (100%) is reported instead. On the rule
     (two values) kappa is 1.00. The judge labeller ran with `max_tokens` 400 to fit the remaining credit.
+19. **Scope wording and report content** (4 November 2026, after publication of the first version). The user asked:
+    "Can you remove the colleague statement and [I want] some actual samples of the FMEA in the report and also explain
+    the changes requested for the features and also the end state OKF structure with samples". The quoted scope message
+    is replaced by a summary of its content (the scope itself is unchanged), and REPORT.md gains the ticket texts, the
+    bundle's structure with excerpts, and real FMEA rows. No result changes.

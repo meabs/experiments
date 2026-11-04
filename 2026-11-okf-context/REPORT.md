@@ -8,8 +8,8 @@ Hand-check overrides: [results/main/judge-overrides.json](results/main/judge-ove
 
 ## 1. What I wanted to find out
 
-A colleague asked whether an **Open Knowledge Format (OKF)** bundle (a few short, structured files describing what a
-system is, how it is built and what world it sits in) helps a coding agent that can already read the whole repository.
+Does an **Open Knowledge Format (OKF)** bundle (a few short, structured files describing what a
+system is, how it is built and what world it sits in) help a coding agent that can already read the whole repository?
 Earlier OKF experiments here used questions the code could answer. This one asks about the knowledge the code can't
 give: the **behaviour of the external systems** a service talks to, and the **service's role** for the people and
 systems that depend on it.
@@ -76,6 +76,105 @@ fmea will be better with okf". Fixed before any run:
   (`anthropic/claude-sonnet-5.5`) graded 40 of the 75 reports before the judging credit ran out (amendment 11).
 - **Statistics:** permutation tests (10,000, seed 1), bootstrap intervals, Holm correction across H2 to H7; H1 is a
   two-one-sided equivalence test on a 90% interval resampling tickets, then runs.
+
+### The feature tickets
+
+Each ticket was the whole prompt, with the line "Follow the existing conventions (README.md) and keep the existing
+behaviour and tests working" at the end. The full texts are in [tasks/](tasks/); the hidden tests in [hidden/](hidden/).
+
+| Ticket | What it asks for | Where the rule that decides it lives | What the hidden tests check |
+| --- | --- | --- | --- |
+| F1 payment history | `GET /api/accounts/{accountId}/payments`: the account's payments, newest first, with an optional `status` filter (an unknown status gets 400) | the code: the existing payment endpoint and access rules | newest first, filter, 400 on an unknown status, only that account's payments; support staff and admins who look after the account see them, anyone else gets 404 |
+| F2 cancel a queued payment | `POST /api/payments/{paymentId}/cancel`: `QUEUED` becomes `CANCELLED` and is never sent; any other status can't be cancelled; holder only | the code: statuses, the queued-payment job, the holder rule | the holder cancels, the payment is never sent, other statuses conflict, only the holder, write scope needed |
+| F3 today's allowance | `GET /api/accounts/{accountId}/payment-allowance`: `dailyLimit`, `paidToday`, `remaining` (never below 0), agreeing with the existing limit check | the code: the limit check in `PaymentService` | rejected payments don't count, queued ones count on the day they're made, the UK day boundary, agreement with the limit check, staff access |
+| F6 scheme timeout | on `SchemeTimeoutException`, save the payment as `RECEIVED` and answer 201; a `SchemeRetryJob.resubmit()` every 5 minutes resubmits `RECEIVED` payments, which then carry on as normal | **the context only:** the scheme's reference is unique for 30 days and a repeat gets `DUPL`; a timeout may mean the scheme accepted it, so `DUPL` on a resubmission means "already have it", not a refusal | the payment is kept; a resubmission completes it; it **reuses the same reference**; a payment the scheme accepted before timing out is **completed, not rejected or paid twice** |
+| F7 notify every outcome | also notify the customer when a payment is queued for a later day and when the scheme rejects it, "as we already do for payments that are sent" | **the context only:** the notification service's template names (`PAYMENT_QUEUED`, `PAYMENT_FAILED`) and the last-four-digits rule; the code only shows `PAYMENT_SENT` | both outcomes notified, still one message for a sent payment, a notification failure doesn't fail the payment; **the service's real template names**; never the full account number |
+
+F4 (fraud screening) and F5 (ledger retry) were written and piloted but dropped at the ceiling (section 4, pilot).
+
+What the difference looked like in the code. F6, the `DUPL` branch an OKF run wrote (B/1, passed):
+
+```java
+} catch (SchemeRejectedException e) {
+    // A retry after a timeout can discover that the original instruction was
+    // accepted. The scheme reference is idempotent, so carry on with the
+    // payment rather than treating that discovery as a rejection.
+    if (payment.getStatus() == PaymentStatus.RECEIVED && "DUPL".equals(e.getCode())) {
+        payment.setExecutionDate(today);
+        payment.setStatus(PaymentStatus.SUBMITTED);
+    } else {
+        payment.setStatus(PaymentStatus.REJECTED);
+        ...
+```
+
+The vanilla run A/1 caught the timeout and reused the reference correctly, but left the existing rejection handler as
+it was, so the resubmission's `DUPL` marked the payment `REJECTED` (failed). F7, vanilla A/1 (failed): it added
+`notifyCustomer(account, payment, "PAYMENT_REJECTED", ...)`; the notification service has no such template.
+
+### The OKF bundle (end state)
+
+Arm B's repository had this added (written before the tickets, from the code and a wiki-style system context, and
+checked with OKF's `check_okf.py --strict`; files in [arms/B/okf/](arms/B/okf/)):
+
+```
+AGENTS.md                 one added line pointing to okf/index.md
+okf/
+  index.md          150 words   what the bundle is and which file to read for what
+  system.md         579 words   what the service is; build, run, test; six key pitfalls
+  architecture.md   649 words   components, the payment flow, and each external system's rules and failure behaviour
+  context.md        615 words   the service's role in the bank, the business processes, who depends on it
+```
+
+Each file starts with OKF front matter (`type`, `title`, `description`, `status`, who wrote it and when, and its
+sources). Excerpts, quoted as the agent saw them:
+
+`okf/index.md`:
+
+> - [System information](/system.md) - what the service is, how to build, run and test it, and its key pitfalls. Read
+>   before any change.
+> - [Architecture](/architecture.md) - components, the payment flow, and each external system's rules and failure
+>   behaviour (scheme gateway, fraud screening, core ledger, notifications). Read before touching `payment` or
+>   `integration`.
+> - [System context](/context.md) - the service's role in the bank, the business processes end to end, who depends on
+>   it and what they need. Read for anything about risk, operations or the effect of a change on other teams.
+
+`okf/system.md`, key pitfalls (two of six):
+
+> 1. **The balance here is a copy.** The ledger overwrites `accounts.balance` every night at 02:00; during the day the
+>    service debits its own copy. Anything that must be exact (closing an account at zero balance) has to be checked
+>    against the ledger, not the copy.
+> 2. **The ledger `reference` is an idempotency key.** The ledger books a reference once (a repeat within 24 hours
+>    returns the first booking). A ledger **timeout doesn't mean the posting failed**: it may have been booked. Any
+>    retry must reuse the payment's original `ledgerReference`; a new reference debits the customer twice.
+
+`okf/architecture.md`, two of the four external systems (the facts F6 and F7 turn on):
+
+> ### Payment scheme gateway
+> - **Reference unique for 30 days** (`DUPL` on a repeat). Resending the same reference is safe; a new reference pays
+>   twice.
+> - **Timeout 10 s.** A timeout may mean accepted. The status query `GET /v2/instructions/{reference}` tells you; the
+>   service doesn't use it yet, and doesn't catch the timeout (the request fails and rolls back).
+>
+> ### Customer notifications
+> - Templates: `PAYMENT_SENT`, `PAYMENT_QUEUED`, `PAYMENT_UNDER_REVIEW`, `PAYMENT_FAILED`.
+> - **Last four digits only** (`accountEnding`), never a full account number or sort code: a full number is a
+>   reportable data-protection breach.
+> - **Best effort:** catch and log failures; never fail or undo a payment for one; no retries.
+
+`okf/context.md`, a business process and part of the dependants table (the facts the FMEA's context-only entries need):
+
+> ### Closing an account
+> The holder or an admin asks; an approver decides. An account may only be closed at a zero balance, **checked against
+> the ledger**; closing with money left in it strands the customer's funds until operations remediate by hand.
+>
+> | Dependant | What they need |
+> | --- | --- |
+> | Finance reconciliation | at **07:00** every morning it matches ledger postings to the scheme's settlement report by payment reference; a double posting, or a payment sent but not posted, is a break a person must investigate |
+> | Fraud team | held payments, with the screening result, to review within four hours |
+> | Regulatory reporting | complete, correct statements for the monthly return |
+
+Arm C got the same text, without front matter or links, as a "System knowledge" section of AGENTS.md (200 lines;
+[arms/C/AGENTS.md](arms/C/AGENTS.md)).
 
 ## 5. What happened
 
@@ -181,6 +280,39 @@ key's (1 = same order; higher is better): A 0.39, B 0.50, C 0.58.
 
 Invented facts were rare: 4 in 25 A reports (for example "the scheme has no idempotency contract", where the context
 says the reference is unique for 30 days), none in B, 2 in one C report (audit logs the code doesn't have).
+
+### Sample FMEA rows
+
+Real rows, quoted as written (from [A/12](results/main/fmea-A/runs/FMEA/A/codex/12/fmea.md) and
+[B/12](results/main/fmea-B/runs/FMEA/B/codex/12/fmea.md); the reports had 16 and 18 rows). Scores are the agent's:
+S severity, O occurrence, D detection (10 = least likely to be caught), RPN = S × O × D.
+
+**The same failure mode, with and without the context** (key entry K02, scheme timeout). Both found it and scored it
+the same; B's row names the 10-second timeout, the unused status query and the `P` reference from the bundle, and
+gives a fix that matches the scheme's rules. A's is right but generic.
+
+| Run | Failure mode | Cause | Effect | S/O/D | RPN | Action |
+| --- | --- | --- | --- | --- | --- | --- |
+| A/12 | Scheme timeout leaves payment outcome ambiguous | `HttpSchemeClient` converts network errors to `SchemeTimeoutException`, but the API has no explicit handler or durable retry/reconciliation state; the gateway may accept before the response is lost | Customer receives a 5xx or sees no usable result; retry can duplicate the transfer, while a successful scheme instruction may be hidden. Scheme and accounts service disagree; operations must search by instruction/reference | 10/4/9 | 360 | Treat submission as an outbox/state machine, use a stable idempotency/reference, map timeout to an explicit pending state, and reconcile unknown outcomes before retrying |
+| B/12 | Scheme timeout loses the local payment while the scheme accepted it | A 10-second submit timeout is allowed to escape; the surrounding transaction rolls back, and the service does not query the scheme status | The scheme may send the money while the customer sees an error and no payment record exists locally. The customer may retry and create a second payment; finance and complaints cannot reliably trace it | 10/4/9 | 360 | Persist a `SUBMITTING` record before the call; on timeout query by the stable `P` reference, then reconcile to submitted/rejected/unknown; make retries reuse the same scheme reference |
+
+**A failure mode only the context reveals** (K10; found by 25 of 25 B reports and none of A's). B/12:
+
+| Failure mode | Cause | Effect | S/O/D | RPN | Action |
+| --- | --- | --- | --- | --- | --- |
+| Account closure proceeds without proving a zero ledger balance | Closure request flow checks only local account status and pending-request state; the required approver/approval and ledger zero-balance operation are not present in the exposed implementation | An account can be closed with money left, stranding customer funds and requiring manual operations remediation. Back office and complaints lose a reliable closure trail | 10/4/8 | 320 | Implement a two-person approval transition that queries the ledger immediately before closure, is idempotent and auditable, and blocks closure on non-zero/unknown balance |
+
+The code alone shows a closure request with a status check; nothing in it says the local balance is only a copy, so
+none of the 25 vanilla reports saw the risk.
+
+**A code-level failure mode vanilla found more often** (K21, in-memory database; A 25 of 25, B 19). A/12, which
+cites the configuration directly:
+
+| Failure mode | Cause | Effect | S/O/D | RPN | Action |
+| --- | --- | --- | --- | --- | --- |
+| Persistent customer/account/payment data is lost on restart | Production configuration uses in-memory H2, `ddl-auto: create-drop`, and fixture initialisation | Accounts, balances, history, cases, and payment status disappear or revert to fixtures. Ledger/scheme reconciliation breaks; support and operations lose the audit trail | 10/3/9 | 270 | Use a supported durable production database with migrations, backups, restore drills, HA, and explicit production profiles. Fail startup if an in-memory datasource is used outside tests |
+
+B/12 did find it, folded into a wider "service unavailable or data lost on restart" row; six B reports didn't.
 
 ### How the agent used the context
 
