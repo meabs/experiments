@@ -1,0 +1,86 @@
+diff --git a/src/main/java/com/example/accounts/payment/LedgerRetryJob.java b/src/main/java/com/example/accounts/payment/LedgerRetryJob.java
+new file mode 100644
+index 0000000..7540cef
+--- /dev/null
++++ b/src/main/java/com/example/accounts/payment/LedgerRetryJob.java
+@@ -0,0 +1,45 @@
++package com.example.accounts.payment;
++
++import org.slf4j.Logger;
++import org.slf4j.LoggerFactory;
++import org.springframework.scheduling.annotation.Scheduled;
++import org.springframework.stereotype.Component;
++import org.springframework.transaction.annotation.Transactional;
++
++import com.example.accounts.integration.ledger.LedgerClient;
++import com.example.accounts.integration.ledger.LedgerPosting;
++import com.example.accounts.integration.ledger.LedgerTimeoutException;
++
++/** Retries failed ledger postings every 15 minutes, up to three times per payment. */
++@Component
++public class LedgerRetryJob {
++
++    private static final Logger log = LoggerFactory.getLogger(LedgerRetryJob.class);
++    private static final int MAX_RETRIES = 3;
++
++    private final PaymentRepository payments;
++    private final LedgerClient ledger;
++
++    public LedgerRetryJob(PaymentRepository payments, LedgerClient ledger) {
++        this.payments = payments;
++        this.ledger = ledger;
++    }
++
++    @Scheduled(cron = "0 */15 * * * *", zone = "Europe/London")
++    @Transactional
++    public void retryFailed() {
++        for (Payment payment : payments.findByStatusAndLedgerRetryCountLessThanOrderById(
++                PaymentStatus.POSTING_FAILED.name(), MAX_RETRIES)) {
++            try {
++                ledger.post(new LedgerPosting(payment.getLedgerReference(), payment.getAccountId(),
++                    payment.getAmount().negate(), "Payment to " + payment.getPayeeName()));
++                payment.setStatus(PaymentStatus.COMPLETED);
++                payments.save(payment);
++            } catch (LedgerTimeoutException e) {
++                payment.incrementLedgerRetryCount();
++                payments.save(payment);
++                log.warn("Ledger retry {} failed for payment {}", payment.getLedgerRetryCount(), payment.getId(), e);
++            }
++        }
++    }
++}
+diff --git a/src/main/java/com/example/accounts/payment/Payment.java b/src/main/java/com/example/accounts/payment/Payment.java
+index 707379f..73c0b6d 100644
+--- a/src/main/java/com/example/accounts/payment/Payment.java
++++ b/src/main/java/com/example/accounts/payment/Payment.java
+@@ -54,6 +54,10 @@ public class Payment {
+     /** Reference sent with the ledger posting. */
+     private String ledgerReference;
+ 
++    /** Number of automatic ledger retries already attempted. */
++    @Column(nullable = false, columnDefinition = "integer default 0")
++    private int ledgerRetryCount;
++
+     @Column(nullable = false)
+     private String createdBy;
+ 
+@@ -95,6 +99,8 @@ public class Payment {
+     public void setSchemeId(String schemeId) { this.schemeId = schemeId; }
+     public String getLedgerReference() { return ledgerReference; }
+     public void setLedgerReference(String ledgerReference) { this.ledgerReference = ledgerReference; }
++    public int getLedgerRetryCount() { return ledgerRetryCount; }
++    public void incrementLedgerRetryCount() { ledgerRetryCount++; }
+     public String getCreatedBy() { return createdBy; }
+     public Instant getCreatedAt() { return createdAt; }
+ }
+diff --git a/src/main/java/com/example/accounts/payment/PaymentRepository.java b/src/main/java/com/example/accounts/payment/PaymentRepository.java
+index 309df33..df50715 100644
+--- a/src/main/java/com/example/accounts/payment/PaymentRepository.java
++++ b/src/main/java/com/example/accounts/payment/PaymentRepository.java
+@@ -11,4 +11,6 @@ public interface PaymentRepository extends JpaRepository<Payment, Long> {
+     List<Payment> findByAccountIdAndCreatedAtGreaterThanEqual(Long accountId, Instant from);
+ 
+     List<Payment> findByStatusAndExecutionDateLessThanEqualOrderById(String status, LocalDate date);
++
++    List<Payment> findByStatusAndLedgerRetryCountLessThanOrderById(String status, int retryCount);
+ }

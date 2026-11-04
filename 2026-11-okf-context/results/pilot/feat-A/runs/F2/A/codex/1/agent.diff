@@ -1,0 +1,98 @@
+diff --git a/src/main/java/com/example/accounts/payment/PaymentController.java b/src/main/java/com/example/accounts/payment/PaymentController.java
+index eff06a2..1a67615 100644
+--- a/src/main/java/com/example/accounts/payment/PaymentController.java
++++ b/src/main/java/com/example/accounts/payment/PaymentController.java
+@@ -34,4 +34,10 @@ public class PaymentController {
+     public PaymentView get(@PathVariable Long paymentId) {
+         return PaymentView.of(service.get(paymentId));
+     }
++
++    @PostMapping("/api/payments/{paymentId}/cancel")
++    @PreAuthorize("hasAuthority('SCOPE_accounts:write')")
++    public PaymentView cancel(@PathVariable Long paymentId) {
++        return PaymentView.of(service.cancel(paymentId));
++    }
+ }
+diff --git a/src/main/java/com/example/accounts/payment/PaymentRepository.java b/src/main/java/com/example/accounts/payment/PaymentRepository.java
+index 309df33..e5647d4 100644
+--- a/src/main/java/com/example/accounts/payment/PaymentRepository.java
++++ b/src/main/java/com/example/accounts/payment/PaymentRepository.java
+@@ -3,12 +3,22 @@ package com.example.accounts.payment;
+ import java.time.Instant;
+ import java.time.LocalDate;
+ import java.util.List;
++import java.util.Optional;
+ 
++import jakarta.persistence.LockModeType;
+ import org.springframework.data.jpa.repository.JpaRepository;
++import org.springframework.data.jpa.repository.Lock;
++import org.springframework.data.repository.query.Param;
++import org.springframework.data.jpa.repository.Query;
+ 
+ public interface PaymentRepository extends JpaRepository<Payment, Long> {
+ 
+     List<Payment> findByAccountIdAndCreatedAtGreaterThanEqual(Long accountId, Instant from);
+ 
++    @Lock(LockModeType.PESSIMISTIC_WRITE)
++    @Query("select p from Payment p where p.id = :id")
++    Optional<Payment> findByIdForUpdate(@Param("id") Long id);
++
++    @Lock(LockModeType.PESSIMISTIC_WRITE)
+     List<Payment> findByStatusAndExecutionDateLessThanEqualOrderById(String status, LocalDate date);
+ }
+diff --git a/src/main/java/com/example/accounts/payment/PaymentService.java b/src/main/java/com/example/accounts/payment/PaymentService.java
+index 5d41980..c00e7f2 100644
+--- a/src/main/java/com/example/accounts/payment/PaymentService.java
++++ b/src/main/java/com/example/accounts/payment/PaymentService.java
+@@ -81,6 +81,22 @@ public class PaymentService {
+         return payment;
+     }
+ 
++    /** Cancel a queued payment belonging to the caller. */
++    public Payment cancel(Long paymentId) {
++        Payment payment = payments.findByIdForUpdate(paymentId)
++            .orElseThrow(() -> new NotFoundException("Payment not found"));
++        Account account = accounts.getVisible(payment.getAccountId());
++        CurrentUser user = users.current();
++        if (!access.ownsAccount(user, account)) {
++            throw new ForbiddenException("Only the account holder can cancel payments");
++        }
++        if (payment.getStatus() != PaymentStatus.QUEUED) {
++            throw new ConflictException("Payment is not queued");
++        }
++        payment.setStatus(PaymentStatus.CANCELLED);
++        return payments.save(payment);
++    }
++
+     private BigDecimal paidToday(Long accountId) {
+         return payments.findByAccountIdAndCreatedAtGreaterThanEqual(accountId,
+                 LocalDate.now(clock).atStartOfDay(clock.getZone()).toInstant()).stream()
+diff --git a/src/test/java/com/example/accounts/PaymentApiTest.java b/src/test/java/com/example/accounts/PaymentApiTest.java
+index f5adf40..5bec031 100644
+--- a/src/test/java/com/example/accounts/PaymentApiTest.java
++++ b/src/test/java/com/example/accounts/PaymentApiTest.java
+@@ -81,6 +81,24 @@ class PaymentApiTest extends ApiTest {
+         assertThat(scheme.submitted).hasSize(1);
+     }
+ 
++    @Test
++    void ownerCanCancelAQueuedPayment() throws Exception {
++        postAs(ALICE, "/api/payments/4/cancel", null).andExpect(status().isOk())
++            .andExpect(jsonPath("$.id").value(4)).andExpect(jsonPath("$.status").value("CANCELLED"));
++        queuedJob.runDue();
++        assertThat(scheme.submitted).isEmpty();
++    }
++
++    @Test
++    void anotherCustomerCannotCancelAPayment() throws Exception {
++        postAs(BOB, "/api/payments/4/cancel", null).andExpect(status().isNotFound());
++    }
++
++    @Test
++    void completedPaymentCannotBeCancelled() throws Exception {
++        postAs(ALICE, "/api/payments/1/cancel", null).andExpect(status().isConflict());
++    }
++
+     @org.springframework.beans.factory.annotation.Autowired
+     com.example.accounts.payment.QueuedPaymentJob queuedJob;
+ }

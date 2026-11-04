@@ -144,7 +144,7 @@ Written as tickets, not as instructions: no ticket restates a rule from the syst
 The two task types are treated as **equals**: the same number of runs per arm (25 each), a per-run score on the same
 0–1 scale, the same tests, and results reported side by side. Neither is pooled into the other.
 
-- **Feature tickets (5 tickets × 5 runs per arm):** ordinary feature work on the service, as a team would get it.
+- **Feature tickets (5 tickets × 5 runs per arm; F4 and F5 replaced by F6 and F7, amendment 1):** ordinary feature work on the service, as a team would get it.
   The mix is fixed before any run: **three** tickets whose rules are all in the code, and **two** that touch an external
   system's behaviour (for example, "Let customers schedule a payment for later today", which crosses the scheme's
   cut-off). Graded by **hidden tests** run after the agent finishes: the ticket's behaviour, any integration rule, and
@@ -336,4 +336,40 @@ YouTube Short in the whiteboard format with the robot, the duck and humour.
 
 ## Amendment log
 
-(none yet)
+All made on 4 November 2026, after the pilot and **before the main run**. The pilot's runs are not part of the results.
+
+1. **Two feature tickets replaced (ceiling check).** In the pilot, arm A (no context) got all 10 runs of the five
+   tickets right, including both integration tickets: F4 (fraud screening), because the unused status
+   `HELD_FOR_REVIEW` gave away what `REFER` means, and failing closed is the obvious choice; and F5 (ledger retry),
+   because the payment already stores its `ledgerReference`, so reusing it is the natural code. Neither tested the
+   context. I put this to the user, who chose (quoted): "Replace F4/F5 (Recommended)". They are replaced by **F6**
+   (a scheme timeout: keep the payment and resubmit it; the context says a timeout may mean the scheme took it, that the
+   reference must be reused, and that the scheme answers `DUPL` to a reference it already has) and **F7** (notify
+   customers of queued and rejected payments; the context gives the notification service's templates and the
+   last-four-digits rule). Both rely only on facts already in the system context, which was **not** changed. F6 and F7
+   were piloted (arm A twice, arm B once) before the main run. The F4 and F5 pilot results are reported as a finding:
+   on these, the code's traces were enough.
+2. **Code and test support changed for F6 and F7**, for every arm alike: `SchemeTimeoutException` (the scheme client
+   now throws it on a timeout instead of Spring's exception; still not caught, as before); `FakeScheme` behaves like the
+   scheme (remembers references, answers `DUPL` to a repeat, can time out before or after taking an instruction);
+   `FakeNotifications` can fail. The 34 existing tests pass unchanged.
+3. **External systems in tests are in-process fakes** (`TestIntegrations`), not local stub servers as the design said.
+4. **Sandbox network.** The sandbox shares the network, because the hosted model needs it; web search is off in every
+   arm (`web_search="disabled"`). Nothing else changes ("no network" in the design was wrong).
+5. **Codex loads AGENTS.md into the prompt itself.** So arm C always has its section in context; arm B sees the
+   one-line pointer and must open `okf/`. "Use of the context" is therefore measured for B only (every pilot B run
+   opened all four bundle files first). This is a real difference between the formats, and the report will say so.
+6. **The bundle is about 2,000 words** (under the 3,000 cap; it passes OKF's `check_okf.py --strict`). It was written
+   by me (Claude) from the code and the system context in a few minutes, so its writing time says nothing about a
+   team's effort; the payback analysis (part 5) uses its size and a stated estimate of a person's time instead.
+7. **Judges.** Primary `google/gemini-4-argon`, second `anthropic/claude-sonnet-5.5`, both through OpenRouter. After
+   the pilot hand check (every match: 86 positives checked, none wrong; one "invented fact" was a recommendation, and is
+   overridden), the judge prompt now says that a recommendation or proposed change is not an invented fact.
+8. **Answer key: K03 re-tagged** from context only to inferable. In every pilot A run the agent found that payments
+   aren't screened, from the unused client in the code; only the policy behind it (FRD-7) is context. The key now has
+   7 context-only, 5 inferable and 10 in-code entries. No entry was added, removed or reworded.
+9. **H6 made precise.** H6 is tested on the FMEA (recall on context-only entries minus recall on in-code entries,
+   B against A). Its feature half is reported in section 1 (in-code tickets F1 to F3 against integration tickets F6 and
+   F7) with an interval, outside the Holm family.
+10. **Hidden tests** check behaviour, and an external system's names only where they are its interface: F7 checks the
+    notification service's template names, which are written in the system context.

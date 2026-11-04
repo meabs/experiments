@@ -1,0 +1,113 @@
+diff --git a/src/main/java/com/example/accounts/payment/LedgerRetryJob.java b/src/main/java/com/example/accounts/payment/LedgerRetryJob.java
+new file mode 100644
+index 0000000..2532c72
+--- /dev/null
++++ b/src/main/java/com/example/accounts/payment/LedgerRetryJob.java
+@@ -0,0 +1,47 @@
++package com.example.accounts.payment;
++
++import org.slf4j.Logger;
++import org.slf4j.LoggerFactory;
++import org.springframework.scheduling.annotation.Scheduled;
++import org.springframework.stereotype.Component;
++import org.springframework.transaction.annotation.Transactional;
++
++import com.example.accounts.integration.ledger.LedgerClient;
++import com.example.accounts.integration.ledger.LedgerPosting;
++import com.example.accounts.integration.ledger.LedgerTimeoutException;
++
++/** Retries ledger postings that failed after the payment was sent to the scheme. */
++@Component
++public class LedgerRetryJob {
++
++    private static final Logger log = LoggerFactory.getLogger(LedgerRetryJob.class);
++    private static final int MAX_RETRIES = 3;
++
++    private final PaymentRepository payments;
++    private final LedgerClient ledger;
++
++    public LedgerRetryJob(PaymentRepository payments, LedgerClient ledger) {
++        this.payments = payments;
++        this.ledger = ledger;
++    }
++
++    @Scheduled(cron = "0 */15 * * * *", zone = "Europe/London")
++    @Transactional
++    public void retryFailed() {
++        for (Payment payment : payments.findByStatusOrderById(PaymentStatus.POSTING_FAILED.name())) {
++            if (payment.getLedgerRetryCount() >= MAX_RETRIES) {
++                continue;
++            }
++            try {
++                ledger.post(new LedgerPosting(payment.getLedgerReference(), payment.getAccountId(),
++                    payment.getAmount().negate(), "Payment to " + payment.getPayeeName()));
++                payment.setStatus(PaymentStatus.COMPLETED);
++            } catch (LedgerTimeoutException e) {
++                payment.incrementLedgerRetryCount();
++                log.warn("Ledger retry failed for payment {} (attempt {} of {})", payment.getId(),
++                    payment.getLedgerRetryCount(), MAX_RETRIES, e);
++            }
++            payments.save(payment);
++        }
++    }
++}
+diff --git a/src/main/java/com/example/accounts/payment/Payment.java b/src/main/java/com/example/accounts/payment/Payment.java
+index 707379f..4151e26 100644
+--- a/src/main/java/com/example/accounts/payment/Payment.java
++++ b/src/main/java/com/example/accounts/payment/Payment.java
+@@ -54,6 +54,10 @@ public class Payment {
+     /** Reference sent with the ledger posting. */
+     private String ledgerReference;
+ 
++    /** Number of failed automatic retries of the ledger posting. */
++    @Column(nullable = false)
++    private int ledgerRetryCount;
++
+     @Column(nullable = false)
+     private String createdBy;
+ 
+@@ -95,6 +99,8 @@ public class Payment {
+     public void setSchemeId(String schemeId) { this.schemeId = schemeId; }
+     public String getLedgerReference() { return ledgerReference; }
+     public void setLedgerReference(String ledgerReference) { this.ledgerReference = ledgerReference; }
++    public int getLedgerRetryCount() { return ledgerRetryCount; }
++    public void incrementLedgerRetryCount() { ledgerRetryCount++; }
+     public String getCreatedBy() { return createdBy; }
+     public Instant getCreatedAt() { return createdAt; }
+ }
+diff --git a/src/main/java/com/example/accounts/payment/PaymentRepository.java b/src/main/java/com/example/accounts/payment/PaymentRepository.java
+index 309df33..187e985 100644
+--- a/src/main/java/com/example/accounts/payment/PaymentRepository.java
++++ b/src/main/java/com/example/accounts/payment/PaymentRepository.java
+@@ -11,4 +11,6 @@ public interface PaymentRepository extends JpaRepository<Payment, Long> {
+     List<Payment> findByAccountIdAndCreatedAtGreaterThanEqual(Long accountId, Instant from);
+ 
+     List<Payment> findByStatusAndExecutionDateLessThanEqualOrderById(String status, LocalDate date);
++
++    List<Payment> findByStatusOrderById(String status);
+ }
+diff --git a/src/main/resources/data.sql b/src/main/resources/data.sql
+index 54c2c08..04f470e 100644
+--- a/src/main/resources/data.sql
++++ b/src/main/resources/data.sql
+@@ -67,12 +67,12 @@ INSERT INTO closure_requests (id, tenant_id, account_id, requested_by, status, d
+ ALTER TABLE closure_requests ALTER COLUMN id RESTART WITH 100;
+ 
+ -- Payments made before the fixtures' "today". Statuses: see PaymentStatus.
+-INSERT INTO payments (id, tenant_id, account_id, payee_name, payee_sort_code, payee_account_number, amount, reference, status, reason_code, execution_date, scheme_id, ledger_reference, created_by, created_at) VALUES
+- (1, 'acme',   1, 'Northern Power', '601234', '11223344',  64.20, 'ELEC-8812',  'COMPLETED',      NULL,     '2026-09-15', 'S-90001', 'a6f1c2d0-1111-4c1e-9a01-000000000001', 'u-alice', '2026-09-15T09:12:00Z'),
+- (2, 'acme',   1, 'J Smith',        '309912', '55667788', 120.00, 'RENT SEPT',  'COMPLETED',      NULL,     '2026-09-28', 'S-90002', 'a6f1c2d0-1111-4c1e-9a01-000000000002', 'u-alice', '2026-09-28T08:40:00Z'),
+- (3, 'acme',   1, 'City Council',   '601299', '90001234',  98.00, 'CTAX 4471',  'REJECTED',       'AC04',   '2026-10-01', NULL,      NULL,                                   'u-alice', '2026-10-01T10:05:00Z'),
+- (4, 'acme',   1, 'J Smith',        '309912', '55667788', 120.00, 'RENT OCT',   'QUEUED',         NULL,     '2026-10-07', NULL,      NULL,                                   'u-alice', '2026-10-05T17:20:00Z'),
+- (5, 'acme',   2, 'Alice Archer',   '401122', '31926819', 200.00, 'TOP UP',     'COMPLETED',      NULL,     '2026-09-20', 'S-90005', 'a6f1c2d0-1111-4c1e-9a01-000000000005', 'u-alice', '2026-09-20T12:00:00Z'),
+- (6, 'acme',   3, 'Phone Co',       '207733', '41234567',  25.00, 'MOBILE',     'POSTING_FAILED', NULL,     '2026-09-30', 'S-90006', 'a6f1c2d0-1111-4c1e-9a01-000000000006', 'u-bob',   '2026-09-30T11:30:00Z'),
+- (7, 'globex', 4, 'Landlord Ltd',   '404040', '12121212', 300.00, 'RENT',       'COMPLETED',      NULL,     '2026-09-30', 'S-90007', 'a6f1c2d0-1111-4c1e-9a01-000000000007', 'u-carol', '2026-09-30T09:00:00Z');
++INSERT INTO payments (id, tenant_id, account_id, payee_name, payee_sort_code, payee_account_number, amount, reference, status, reason_code, execution_date, scheme_id, ledger_reference, ledger_retry_count, created_by, created_at) VALUES
++ (1, 'acme',   1, 'Northern Power', '601234', '11223344',  64.20, 'ELEC-8812',  'COMPLETED',      NULL,     '2026-09-15', 'S-90001', 'a6f1c2d0-1111-4c1e-9a01-000000000001', 0, 'u-alice', '2026-09-15T09:12:00Z'),
++ (2, 'acme',   1, 'J Smith',        '309912', '55667788', 120.00, 'RENT SEPT',  'COMPLETED',      NULL,     '2026-09-28', 'S-90002', 'a6f1c2d0-1111-4c1e-9a01-000000000002', 0, 'u-alice', '2026-09-28T08:40:00Z'),
++ (3, 'acme',   1, 'City Council',   '601299', '90001234',  98.00, 'CTAX 4471',  'REJECTED',       'AC04',   '2026-10-01', NULL,      NULL,                                   0, 'u-alice', '2026-10-01T10:05:00Z'),
++ (4, 'acme',   1, 'J Smith',        '309912', '55667788', 120.00, 'RENT OCT',   'QUEUED',         NULL,     '2026-10-07', NULL,      NULL,                                   0, 'u-alice', '2026-10-05T17:20:00Z'),
++ (5, 'acme',   2, 'Alice Archer',   '401122', '31926819', 200.00, 'TOP UP',     'COMPLETED',      NULL,     '2026-09-20', 'S-90005', 'a6f1c2d0-1111-4c1e-9a01-000000000005', 0, 'u-alice', '2026-09-20T12:00:00Z'),
++ (6, 'acme',   3, 'Phone Co',       '207733', '41234567',  25.00, 'MOBILE',     'POSTING_FAILED', NULL,     '2026-09-30', 'S-90006', 'a6f1c2d0-1111-4c1e-9a01-000000000006', 0, 'u-bob',   '2026-09-30T11:30:00Z'),
++ (7, 'globex', 4, 'Landlord Ltd',   '404040', '12121212', 300.00, 'RENT',       'COMPLETED',      NULL,     '2026-09-30', 'S-90007', 'a6f1c2d0-1111-4c1e-9a01-000000000007', 0, 'u-carol', '2026-09-30T09:00:00Z');
+ ALTER TABLE payments ALTER COLUMN id RESTART WITH 100;
