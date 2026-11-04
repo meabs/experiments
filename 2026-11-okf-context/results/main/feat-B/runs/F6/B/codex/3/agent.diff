@@ -1,0 +1,113 @@
+diff --git a/src/main/java/com/example/accounts/payment/PaymentDispatcher.java b/src/main/java/com/example/accounts/payment/PaymentDispatcher.java
+index 8b2ba6a..5a2b5cf 100644
+--- a/src/main/java/com/example/accounts/payment/PaymentDispatcher.java
++++ b/src/main/java/com/example/accounts/payment/PaymentDispatcher.java
+@@ -21,6 +21,7 @@ import com.example.accounts.integration.scheme.SchemeClient;
+ import com.example.accounts.integration.scheme.SchemePayment;
+ import com.example.accounts.integration.scheme.SchemeReceipt;
+ import com.example.accounts.integration.scheme.SchemeRejectedException;
++import com.example.accounts.integration.scheme.SchemeTimeoutException;
+ 
+ /** Sends a payment to the scheme, posts it to the ledger and tells the customer. */
+ @Component
+@@ -59,8 +60,20 @@ public class PaymentDispatcher {
+             payment.setExecutionDate(today);
+             payment.setStatus(PaymentStatus.SUBMITTED);
+         } catch (SchemeRejectedException e) {
+-            payment.setStatus(PaymentStatus.REJECTED);
+-            payment.setReasonCode(e.getCode());
++            if (!"DUPL".equals(e.getCode())) {
++                payment.setStatus(PaymentStatus.REJECTED);
++                payment.setReasonCode(e.getCode());
++                return payments.save(payment);
++            }
++            // A duplicate reference means a previous submission was accepted. Continue with the
++            // local effects; the stable P{id} reference makes this safe after a timeout.
++            payment.setExecutionDate(today);
++            payment.setStatus(PaymentStatus.SUBMITTED);
++        } catch (SchemeTimeoutException e) {
++            // The scheme may have accepted the instruction. Keep the payment so the retry can safely
++            // resubmit the same scheme reference instead of losing it with the request transaction.
++            log.warn("Scheme timed out for payment {}; leaving it received for retry", payment.getId(), e);
++            payment.setStatus(PaymentStatus.RECEIVED);
+             return payments.save(payment);
+         }
+         account.debit(payment.getAmount());
+diff --git a/src/main/java/com/example/accounts/payment/PaymentRepository.java b/src/main/java/com/example/accounts/payment/PaymentRepository.java
+index 309df33..e7c2aee 100644
+--- a/src/main/java/com/example/accounts/payment/PaymentRepository.java
++++ b/src/main/java/com/example/accounts/payment/PaymentRepository.java
+@@ -10,5 +10,7 @@ public interface PaymentRepository extends JpaRepository<Payment, Long> {
+ 
+     List<Payment> findByAccountIdAndCreatedAtGreaterThanEqual(Long accountId, Instant from);
+ 
++    List<Payment> findByStatusOrderById(String status);
++
+     List<Payment> findByStatusAndExecutionDateLessThanEqualOrderById(String status, LocalDate date);
+ }
+diff --git a/src/main/java/com/example/accounts/payment/SchemeRetryJob.java b/src/main/java/com/example/accounts/payment/SchemeRetryJob.java
+new file mode 100644
+index 0000000..53eca71
+--- /dev/null
++++ b/src/main/java/com/example/accounts/payment/SchemeRetryJob.java
+@@ -0,0 +1,26 @@
++package com.example.accounts.payment;
++
++import org.springframework.scheduling.annotation.Scheduled;
++import org.springframework.stereotype.Component;
++import org.springframework.transaction.annotation.Transactional;
++
++/** Resubmits payments whose scheme submission timed out. */
++@Component
++public class SchemeRetryJob {
++
++    private final PaymentRepository payments;
++    private final PaymentDispatcher dispatcher;
++
++    public SchemeRetryJob(PaymentRepository payments, PaymentDispatcher dispatcher) {
++        this.payments = payments;
++        this.dispatcher = dispatcher;
++    }
++
++    @Scheduled(fixedRate = 5 * 60 * 1000L)
++    @Transactional
++    public void resubmit() {
++        for (Payment payment : payments.findByStatusOrderById(PaymentStatus.RECEIVED.name())) {
++            dispatcher.dispatch(payment);
++        }
++    }
++}
+diff --git a/src/test/java/com/example/accounts/PaymentApiTest.java b/src/test/java/com/example/accounts/PaymentApiTest.java
+index f5adf40..3bd01a0 100644
+--- a/src/test/java/com/example/accounts/PaymentApiTest.java
++++ b/src/test/java/com/example/accounts/PaymentApiTest.java
+@@ -43,6 +43,21 @@ class PaymentApiTest extends ApiTest {
+         assertThat(ledger.calls).isEmpty();
+     }
+ 
++    @Test
++    void schemeTimeoutIsRetriedWithoutLosingThePayment() throws Exception {
++        scheme.timeOutNext(true);
++        postAs(ALICE, "/api/accounts/1/payments", RENT).andExpect(status().isCreated())
++            .andExpect(jsonPath("$.status").value("RECEIVED"));
++        assertThat(ledger.calls).isEmpty();
++        assertThat(notifications.sent).isEmpty();
++
++        schemeRetryJob.resubmit();
++
++        assertThat(ledger.bookedFor(1L)).hasSize(1);
++        assertThat(notifications.sent).hasSize(1);
++        assertThat(scheme.submitted).hasSize(1);
++    }
++
+     @Test
+     void ledgerTimeoutLeavesThePaymentForOperations() throws Exception {
+         ledger.timeOutNext(1, false);
+@@ -83,4 +98,7 @@ class PaymentApiTest extends ApiTest {
+ 
+     @org.springframework.beans.factory.annotation.Autowired
+     com.example.accounts.payment.QueuedPaymentJob queuedJob;
++
++    @org.springframework.beans.factory.annotation.Autowired
++    com.example.accounts.payment.SchemeRetryJob schemeRetryJob;
+ }

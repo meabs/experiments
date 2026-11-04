@@ -1,0 +1,84 @@
+diff --git a/src/main/java/com/example/accounts/payment/PaymentController.java b/src/main/java/com/example/accounts/payment/PaymentController.java
+index eff06a2..c300771 100644
+--- a/src/main/java/com/example/accounts/payment/PaymentController.java
++++ b/src/main/java/com/example/accounts/payment/PaymentController.java
+@@ -34,4 +34,11 @@ public class PaymentController {
+     public PaymentView get(@PathVariable Long paymentId) {
+         return PaymentView.of(service.get(paymentId));
+     }
++
++    /** Cancel a queued payment from one of the caller's accounts. Needs the accounts:write scope. */
++    @PostMapping("/api/payments/{paymentId}/cancel")
++    @PreAuthorize("hasAuthority('SCOPE_accounts:write')")
++    public PaymentView cancel(@PathVariable Long paymentId) {
++        return PaymentView.of(service.cancel(paymentId));
++    }
+ }
+diff --git a/src/main/java/com/example/accounts/payment/PaymentService.java b/src/main/java/com/example/accounts/payment/PaymentService.java
+index 5d41980..a0a08cf 100644
+--- a/src/main/java/com/example/accounts/payment/PaymentService.java
++++ b/src/main/java/com/example/accounts/payment/PaymentService.java
+@@ -81,6 +81,26 @@ public class PaymentService {
+         return payment;
+     }
+ 
++    /** Cancel a queued payment from the caller's own account. */
++    public Payment cancel(Long paymentId) {
++        CurrentUser user = users.current();
++        Payment payment = payments.findById(paymentId).orElseThrow(() -> new NotFoundException("Payment not found"));
++        Account account;
++        try {
++            account = accounts.getVisible(payment.getAccountId());
++        } catch (NotFoundException e) {
++            throw new NotFoundException("Payment not found");
++        }
++        if (!access.ownsAccount(user, account)) {
++            throw new ForbiddenException("Only the account holder can cancel payments");
++        }
++        if (payment.getStatus() != PaymentStatus.QUEUED) {
++            throw new ConflictException("Only queued payments can be cancelled");
++        }
++        payment.setStatus(PaymentStatus.CANCELLED);
++        return payments.save(payment);
++    }
++
+     private BigDecimal paidToday(Long accountId) {
+         return payments.findByAccountIdAndCreatedAtGreaterThanEqual(accountId,
+                 LocalDate.now(clock).atStartOfDay(clock.getZone()).toInstant()).stream()
+diff --git a/src/test/java/com/example/accounts/PaymentApiTest.java b/src/test/java/com/example/accounts/PaymentApiTest.java
+index f5adf40..60c26f7 100644
+--- a/src/test/java/com/example/accounts/PaymentApiTest.java
++++ b/src/test/java/com/example/accounts/PaymentApiTest.java
+@@ -81,6 +81,32 @@ class PaymentApiTest extends ApiTest {
+         assertThat(scheme.submitted).hasSize(1);
+     }
+ 
++    @Test
++    void ownerCanCancelAQueuedPayment() throws Exception {
++        postAs(ALICE, "/api/payments/4/cancel", null)
++            .andExpect(status().isOk())
++            .andExpect(jsonPath("$.id").value(4))
++            .andExpect(jsonPath("$.status").value("CANCELLED"))
++            .andExpect(jsonPath("$.payeeName").value("J Smith"));
++        queuedJob.runDue();
++        assertThat(scheme.submitted).isEmpty();
++    }
++
++    @Test
++    void anotherCustomerCannotCancelAPaymentTheyCannotSee() throws Exception {
++        postAs(BOB, "/api/payments/4/cancel", null).andExpect(status().isNotFound());
++    }
++
++    @Test
++    void supportCannotCancelAQueuedPayment() throws Exception {
++        postAs(SAM, "/api/payments/4/cancel", null).andExpect(status().isForbidden());
++    }
++
++    @Test
++    void completedPaymentCannotBeCancelled() throws Exception {
++        postAs(ALICE, "/api/payments/1/cancel", null).andExpect(status().isConflict());
++    }
++
+     @org.springframework.beans.factory.annotation.Autowired
+     com.example.accounts.payment.QueuedPaymentJob queuedJob;
+ }

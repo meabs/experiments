@@ -373,3 +373,45 @@ All made on 4 November 2026, after the pilot and **before the main run**. The pi
    F7) with an interval, outside the Holm family.
 10. **Hidden tests** check behaviour, and an external system's names only where they are its interface: F7 checks the
     notification service's template names, which are written in the system context.
+
+### After the main run (4 November 2026)
+
+These were made after the main run had finished, while analysing it. None changes a hypothesis, a measure or the
+answer key.
+
+11. **Judge budget.** The OpenRouter credit ran low part-way through judging (two judges in parallel, six requests
+    each, hit "would exceed your available credits"). The failed calls were dropped and re-run one at a time
+    (`OKFC_JUDGE_WORKERS=1`). The primary judge graded all 75 reports. The **second judge graded 40**: the 23 A reports it
+    finished before the credit ran out, plus 10 B and 10 C reports drawn at random (seed 1; `OKFC_JUDGE_RUNS`), of
+    which 3 C calls failed when the credit ran out again (10 B and 7 C graded). Its results and its agreement with the
+    primary judge are therefore on this subset only.
+12. **Hand check of the primary judge, as done.** I read the matched row title of every positive (1,228), read in
+    full the row behind every one whose title didn't plainly name the key entry's failure (about 250), and read the
+    row text found by a keyword search for a random fifth of negatives (84 of 422, seed 1). 24 positives were wrong and
+    are overridden (most: a row about logs or API responses credited as a notification leak, K08; a generic
+    notification outage credited as "not told about a rejection", K18; a disclosure-only access row credited as "someone
+    else makes a payment", K20); 2 negatives were wrong and are added. All 16 "invented facts" were read: 10 are removed
+    (the code does have `Customer.riskScore`; "no approval endpoint" is true of the code; three were recommendations) and
+    6 kept. Every override, with its reason, is in `results/main/judge-overrides.json`. The "extra failure modes"
+    verdicts (valid, generic, wrong) were not hand-checked and are reported as the judge's.
+13. **Mixed models replaced.** The planned logistic and linear mixed models (exploratory) were not fitted: `statsmodels`
+    isn't installed (and I ask before installing), and the feature data are completely separated (every run of F1 to
+    F3, and every B run, passed), so a logistic model has no finite estimate. In their place, an **entry-level check**:
+    each answer-key entry is the unit, resampled over entries, which asks whether the FMEA result holds across failure
+    modes rather than across runs.
+14. **Exploratory section added after seeing the results** (`analyse.py`, section 6a): two-sided recall differences
+    for every pair of arms on in-code, internals and context-only entries. It was added because the pilot hinted that
+    the bundle draws attention away from code-level entries; it is labelled exploratory and not Holm-adjusted.
+15. **Bug fix in `analyse.py`**: the H5 rows did not receive their Holm-adjusted verdict (a key mismatch); fixed. No
+    other number changed.
+16. **Correction of how F6's failure was described.** In the pilot notes I wrote that arm A "pays twice after a
+    timeout". It doesn't: every run resubmits with the same reference (`integration_resubmitUsesTheSameReference`
+    passed in all 15 runs). The failing runs treat the scheme's `DUPL` answer (it already has that instruction) as a
+    refusal and mark the payment `REJECTED`. The payee has been paid, but the customer is never debited and nothing is
+    posted to the ledger, and the customer is told nothing. Finance's 07:00 reconciliation sees a payment sent but not
+    posted.
+17. **Payback (part 5)** uses a stated assumption, not a measurement: that a person would take about 4 hours to write
+    and review a bundle like this one (amendment 6).
+18. **Failure taxonomy**: every failed feature run fell into one category (integration rule wrong), so Cohen's kappa
+    on the category is undefined (chance agreement is 100%); the plain agreement (100%) is reported instead. On the rule
+    (two values) kappa is 1.00. The judge labeller ran with `max_tokens` 400 to fit the remaining credit.

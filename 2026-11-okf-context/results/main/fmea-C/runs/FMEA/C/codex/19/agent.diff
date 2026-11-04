@@ -1,0 +1,67 @@
+diff --git a/docs/fmea.md b/docs/fmea.md
+new file mode 100644
+index 0000000..86b373e
+--- /dev/null
++++ b/docs/fmea.md
+@@ -0,0 +1,61 @@
++# Accounts service FMEA
++
++## Scope and scoring
++
++This FMEA covers the service as implemented in this repository and the operational
++dependencies described in `README.md` and `AGENTS.md`: account data, payments out,
++fraud screening, the payment scheme, the core ledger, notifications, queued work,
++closures, statements and access control. It is a pre-release assessment, not a
++claim that every failure has been reproduced.
++
++Scores are on a 1–10 scale:
++
++- **Severity (S):** 1 = negligible inconvenience; 10 = customer money loss,
++  duplicate payment, regulatory breach or material cross-tenant disclosure.
++- **Occurrence (O):** 1 = exceptional; 10 = expected/frequent under normal
++  operation or already present on the normal path.
++- **Detection (D):** 1 = automatically detected immediately; 10 = unlikely to
++  be detected before customer, reconciliation or regulatory impact. The resulting
++  **RPN is S × O × D**. RPN is a prioritisation aid; a severity-10 failure should
++  be treated as release-blocking even when its RPN is moderate.
++
++## FMEA register
++
++| ID | Failure mode | Likely cause / evidence | Effect on customers and dependants | Detection | S | O | D | RPN | Recommended action |
++|---|---|---|---|---|---:|---:|---:|---:|---|
++| F-01 | A payment is sent without fraud screening | `PaymentService.create` does not inject or call `FraudScreeningClient`; the fraud client exists but is unused. | Fraudulent or prohibited payments can reach the scheme and ledger; fraud operations lose the required review decision; bank breaches FRD-7. | Code review, fraud-service call metrics, scheme-to-screening reconciliation and an automated test proving no unscreened submission. | 10 | 10 | 9 | **900** | Make screening a mandatory step before dispatch. Treat `ACCEPT` as proceed, `REFER` and timeout/error as `HELD_FOR_REVIEW`, and `REJECT` as non-specific `FRAUD`; persist the decision and notify only for review where required. |
++| F-02 | A scheme timeout loses the local payment while the scheme may have accepted it | `SchemeTimeoutException` is not caught in `PaymentDispatcher`; the transaction rolls back. The scheme reference may already have been accepted. | Customer sees an error and may retry; the scheme can pay once with no local record, causing an unreconciled payment and possible duplicate on retry. | Scheme settlement report versus local payments; currently no status query or timeout metric. | 10 | 4 | 8 | **320** | Persist `RECEIVED` before submission, catch timeout, retain `P` + payment id, mark an indeterminate/reconciliation state, query `/v2/instructions/{reference}`, and retry only with the same reference. Add end-to-end timeout tests. |
++| F-03 | A scheme 5xx or unexpected response aborts after an uncertain submission | `HttpSchemeClient` maps only HTTP 4xx to rejection; other client errors escape. | Same sent-but-not-recorded and retry-duplicate exposure as F-02; API may return an unhelpful 500. | HTTP error logs and settlement reconciliation; no local indeterminate status. | 9 | 4 | 8 | **288** | Classify all transport/5xx outcomes as indeterminate, retain the payment atomically, use status enquiry and alert operations. Return a stable customer-facing pending state. |
++| F-04 | A ledger timeout or manual retry posts twice | `ledgerReference` is generated with a new UUID on every dispatch; it is not created before the first attempt and no retry path reuses it. Ledger timeouts may mean the debit was booked. | Customer can be debited twice; finance reconciliation breaks. A `POSTING_FAILED` payment can remain unresolved. | Daily ledger/scheme reconciliation and exception report; duplicate-reference checks cannot help when a new UUID is used. | 10 | 4 | 8 | **320** | Generate and persist one ledger reference before the first post, make dispatch idempotent, retry with that reference, query/reconcile timeout outcomes, and alert on `POSTING_FAILED` age. |
++| F-05 | Scheme accepted but ledger posting fails | The dispatcher submits to the scheme, debits the local copy, then catches only `LedgerTimeoutException` and stores `POSTING_FAILED`; the scheme payment remains sent. | Money leaves through the scheme but is absent from the ledger; customer balance and finance books diverge, and operations must remediate. | `POSTING_FAILED` status and 07:00 settlement reconciliation (assuming both are actively monitored). | 9 | 5 | 4 | **180** | Keep the explicit exception state, but add durable outbox/retry processing, stable idempotency, aged-item alerts and a runbook. Never automatically create a new ledger reference. |
++| F-06 | Balance or daily limit is overspent under concurrent requests | Checks use the copied `accounts.balance` and an unprotected `paidToday` query; no row lock, optimistic version or atomic debit is visible. | Two accepted requests can exceed available funds or the daily limit; ledger/settlement and customer-visible balances disagree. | Ledger reconciliation, negative-balance/limit reports and concurrency tests; no immediate guard is present. | 9 | 5 | 8 | **360** | Reserve funds atomically in the database (with locking/versioning), enforce the daily limit in the same transaction, and reconcile against the ledger. |
++| F-07 | A stale local balance authorises an unaffordable payment | `Account.balance` is explicitly a copy overwritten by the ledger at 02:00; payment validation never checks the ledger. | Payment may be accepted despite a real ledger shortfall, or be refused despite available funds; overdraft and customer complaints follow. | 07:00 ledger reconciliation and balance-difference monitoring; the API itself cannot detect staleness. | 9 | 6 | 8 | **432** | Define a ledger-backed funds/reservation check for payment authorisation, or make the copy freshness/uncertainty explicit and fail safely when stale. Add freshness and divergence alerts. |
++| F-08 | Queued payment is never dispatched or is dispatched late | The scheduled job runs only at 06:00 Monday–Friday, has no lease/idempotency or completion metric, and an exception can abort the loop/transaction. | Payment misses its promised execution date; customers and payees wait, operations lack a reliable overdue queue, and subsequent retries may be unsafe. | Query for `QUEUED` payments past `executionDate`; this is described as an operations dependency but no report/alert is implemented. | 7 | 4 | 7 | **196** | Add a durable job-run record, metrics/alerting, per-payment isolation, retry/backoff and an overdue queue. Make dispatch idempotent so reruns are safe. |
++| F-09 | A payment on a bank holiday is sent on an invalid date or rejected | `WorkingDays` knows weekdays only; bank holidays are a documented gap and the scheme can return `DT01`. | Payment is rejected or delayed unexpectedly; customer promise and scheme operations are violated. | `DT01` reason codes and holiday-specific monitoring; no holiday calendar is used for queue calculation. | 6 | 3 | 6 | **108** | Use a versioned UK bank-holiday calendar shared with the scheme, queue to the next valid working day, and test holiday boundaries and calendar updates. |
++| F-10 | Payment notification is missing or contains a misleading success signal | Queued payments never call a notification template; notification failures are caught and logged with no retry. `notifySent` is also called for `POSTING_FAILED`. | Customer may not know a payment is queued, or may be told it was sent when ledger posting failed; support and complaints workload increases. | Notification delivery metrics, dead-letter/failed-send count, customer complaints; current handling is log-only. | 6 | 6 | 7 | **252** | Notify `PAYMENT_QUEUED`, use status-specific templates (`SENT` versus `FAILED`), add durable best-effort delivery with bounded retry, and alert on failures. Preserve last-four-only data. |
++| F-11 | Account closure proceeds with money still at the ledger | Closure flow only creates requests; the documented zero-balance rule requires a ledger check, but no ledger check or approval/close operation is implemented here. | Funds can be stranded or an account can appear closed while the core ledger still holds money; customer, operations and regulatory records diverge. | Closure/ledger reconciliation and manual review; no automated zero-balance gate is present. | 10 | 3 | 8 | **240** | Implement approval as a ledger-authoritative zero-balance check, prevent payment/closure races, record the ledger check time/reference, and require segregation of duties. |
++| F-12 | Monthly statement or regulatory return is missing/stale | The repository contains a `Statement` entity and fixtures but no statement generation, customer endpoint or regulatory-return job. | Customers cannot obtain a complete statement; the return due by the fifth working day can be wrong or incomplete, affecting complaints and regulatory compliance. | Reconcile statement periods and return completeness against the ledger; no scheduled control is visible. | 8 | 4 | 7 | **224** | Implement ledger-sourced, period-closed statement generation, idempotent reruns, completeness checks and an alert before the regulatory deadline. |
++| F-13 | In-memory database loses operational records on restart | `application.yml` configures `jdbc:h2:mem:accounts;DB_CLOSE_DELAY=-1` with `create-drop`; this is suitable for tests but not durable production storage. | Payments, statuses, cases, notes, closure requests and audit history can disappear; reconciliation and customer support lose the service record. | Startup logs/health checks may show a healthy empty database, so data loss can be detected only by reconciliation or customer reports. | 10 | 3 | 9 | **270** | Use a durable, backed-up production database profile; run migrations, restore drills and startup row-count/snapshot checks. Keep H2 restricted to tests. |
++| F-14 | Audit timestamps use the host clock rather than the injected UK clock | `ClosureRequest` and `SupportCase` call `Instant.now()` directly; the service otherwise provides a `Clock`. | Ordering, SLA evidence and investigations can be wrong under clock skew or test/time-boundary conditions; closure and complaint records become harder to trust. | Compare timestamps with platform time and inspect audit anomalies; no clock consistency check is present. | 5 | 4 | 6 | **120** | Inject `Clock` into all domain creation paths, store UTC instants, and add clock-skew and DST boundary tests. |
++| F-15 | Cross-tenant or unauthorised resource access is introduced by an inconsistent path | Most access is centralised in `AccessPolicy`, but payment visibility depends on the account lookup and data integrity; tenant predicates are not uniformly enforced in repository methods (for example closure uniqueness is only by account id). | Disclosure or mutation of another tenant's accounts, payments, cases or staff data; severe privacy and trust impact. | Negative API tests for every role/tenant combination, access logs and periodic authorisation review; database-level tenant integrity is not evident. | 10 | 2 | 7 | **140** | Enforce tenant scoping in repository/service queries and database constraints, add deny-by-default integration tests, and monitor cross-tenant access attempts. Retain 404-for-invisible-resource semantics. |
++| F-16 | External dependency failure returns an unclassified 500 or leaves partial work | Ledger and scheme clients catch only selected transport cases; there is no circuit breaker, bulkhead or dependency health/readiness policy. | Customer requests fail unpredictably during outages; accepted external work may not have a local state, and retries amplify load or duplicate payments. | Logs and infrastructure health only; no dependency latency/error budget or partial-work dashboard is visible. | 8 | 5 | 7 | **280** | Standardise timeout/error classification, add dependency metrics and tracing, circuit breaking/bulkheads, and state-machine/outbox handling for every external call. |
++
++## Release priorities
++
++1. Block release until F-01 is fixed: no payment may reach the scheme without a
++   persisted fraud decision, with fail-closed handling.
++2. Fix F-02, F-04 and F-06/F-07 before enabling material payment volume: these are
++   the duplicate-debit, lost-payment and overspend controls.
++3. Make reconciliation operational rather than documentary: monitor scheme versus
++   ledger versus local payment state, alert on aged `POSTING_FAILED`, indeterminate
++   scheme outcomes and overdue `QUEUED` payments, and give operations safe
++   idempotent runbooks.
++4. Replace the in-memory production profile and implement ledger-authoritative
++   closure and statement controls before relying on the service as the system of
++   record described by the operating model.
++
++The existing tests cover ordinary submission, cut-off queueing, scheme rejection,
++ledger timeout status, access boundaries and queued dispatch. They do not currently
++cover the highest-risk paths above: fraud decisions, scheme timeout/5xx, duplicate
++dispatch, concurrency, bank holidays, job failure, database restart, or ledger
++authoritative closure.

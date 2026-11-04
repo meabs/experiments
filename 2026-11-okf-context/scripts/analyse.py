@@ -276,8 +276,9 @@ def main(stage, judge_model, second_model):
             hyp.append([h, label, f"{pts(o)} points", "-", f"{p:.4f}", None])
     adj = holm(ps) if ps else {}
     for row in hyp:
-        if row[0] in adj:
-            row[5] = f"Holm p = {adj[row[0]]:.4f}: " + ("supported" if adj[row[0]] < 0.05 else "not supported")
+        key = {"H5 (features)": "H5-features", "H5 (FMEA)": "H5-FMEA"}.get(row[0], row[0])
+        if key in adj:
+            row[5] = f"Holm p = {adj[key]:.4f}: " + ("supported" if adj[key] < 0.05 else "not supported")
     res["p"], res["holm"] = ps, adj
     md += ["## Pre-registered hypotheses", "",
            "Differences are B - A unless stated, in percentage points of the measure's 0-100% scale. p values are "
@@ -468,6 +469,34 @@ def main(stage, judge_model, second_model):
     md += ["Cost per run at list price (lower is better). Last column: cost per correct result (per fully correct "
            "feature change; per answer-key entry found).", "",
            table(["Task", "Arm", "Runs", "Input tokens", "Output tokens", "Seconds", "Cost per run", "Cost per correct result"], rows), ""]
+
+    # ---------- exploratory: does the context crowd out code-level entries? entry-level resampling
+    if fm:
+        md += ["## 6a. Exploratory checks (not pre-registered as hypotheses; not Holm-adjusted)", ""]
+        rows = []
+        for field, label in (("recall_in_code", "10 in-code entries"), ("recall_internals", "8 internals entries"),
+                             ("recall_context", "7 context-only entries"), ("recall", "all 22 entries")):
+            g = {a: [r[field] for r in fm if r["arm"] == a] for a in ARMS}
+            for a, b in (("A", "B"), ("A", "C"), ("B", "C")):
+                o, p = perm_test(g[a], g[b], alternative="two-sided")
+                lo, hi = boot_ci(g[a], g[b])
+                rows.append([label, f"{b} - {a}", f"{pts(o)}", f"{pts(lo)} to {pts(hi)}", f"{p:.4f}"])
+        md += ["Recall differences between arms, two-sided permutation over reports (points; 95% bootstrap interval).", "",
+               table(["Entries", "Difference", "Points", "95% CI", "p (two-sided)"], rows), ""]
+        # entry-level: each answer-key entry as the unit (instead of a mixed model with entry as a random effect)
+        rate = {a: {i: mean([r["found"][i] for r in fm if r["arm"] == a]) for i in KEY} for a in ARMS}
+        rows = []
+        for sub, ids in (("all 22", list(KEY)), ("context only", [i for i in KEY if KEY[i]["source"] == "context_only"]),
+                         ("in code", [i for i in KEY if KEY[i]["source"] == "in_code"])):
+            for a, b in (("A", "B"), ("A", "C")):
+                diffs = [rate[b][i] - rate[a][i] for i in ids]
+                rng = random.Random(1)
+                bs = sorted(mean([rng.choice(diffs) for _ in diffs]) for _ in range(N_BOOT))
+                rows.append([sub, f"{b} - {a}", f"{pts(mean(diffs))}", f"{pts(bs[int(0.025 * N_BOOT)])} to {pts(bs[int(0.975 * N_BOOT)])}",
+                             f"{sum(d > 0 for d in diffs)} up, {sum(d < 0 for d in diffs)} down, {sum(d == 0 for d in diffs)} level"])
+        md += ["Entry-level check: each answer-key entry is the unit (its share of reports that found it), resampled "
+               "over entries. Replaces the planned mixed model; see the amendment log.", "",
+               table(["Entries", "Difference", "Mean points", "95% CI (entries resampled)", "Entries"], rows), ""]
 
     # ---------- part 6: robustness
     if fm2:

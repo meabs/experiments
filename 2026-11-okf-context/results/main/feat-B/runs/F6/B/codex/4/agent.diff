@@ -1,0 +1,148 @@
+diff --git a/src/main/java/com/example/accounts/payment/PaymentDispatcher.java b/src/main/java/com/example/accounts/payment/PaymentDispatcher.java
+index 8b2ba6a..e636aed 100644
+--- a/src/main/java/com/example/accounts/payment/PaymentDispatcher.java
++++ b/src/main/java/com/example/accounts/payment/PaymentDispatcher.java
+@@ -21,6 +21,7 @@ import com.example.accounts.integration.scheme.SchemeClient;
+ import com.example.accounts.integration.scheme.SchemePayment;
+ import com.example.accounts.integration.scheme.SchemeReceipt;
+ import com.example.accounts.integration.scheme.SchemeRejectedException;
++import com.example.accounts.integration.scheme.SchemeTimeoutException;
+ 
+ /** Sends a payment to the scheme, posts it to the ledger and tells the customer. */
+ @Component
+@@ -51,6 +52,7 @@ public class PaymentDispatcher {
+     public Payment dispatch(Payment payment) {
+         Account account = accounts.findById(payment.getAccountId()).orElseThrow();
+         LocalDate today = LocalDate.now(clock);
++        boolean retry = payment.getStatus() == PaymentStatus.RECEIVED;
+         try {
+             SchemeReceipt receipt = scheme.submit(new SchemePayment("P" + payment.getId(), account.getSortCode(),
+                 account.getAccountNumber(), payment.getPayeeName(), payment.getPayeeSortCode(),
+@@ -59,8 +61,20 @@ public class PaymentDispatcher {
+             payment.setExecutionDate(today);
+             payment.setStatus(PaymentStatus.SUBMITTED);
+         } catch (SchemeRejectedException e) {
+-            payment.setStatus(PaymentStatus.REJECTED);
+-            payment.setReasonCode(e.getCode());
++            if (retry && "DUPL".equals(e.getCode())) {
++                // A timeout may have been accepted by the scheme. The stable scheme reference makes this
++                // duplicate response the acknowledgement needed to continue processing the original payment.
++                payment.setExecutionDate(today);
++                payment.setStatus(PaymentStatus.SUBMITTED);
++            } else {
++                payment.setStatus(PaymentStatus.REJECTED);
++                payment.setReasonCode(e.getCode());
++                return payments.save(payment);
++            }
++        } catch (SchemeTimeoutException e) {
++            // The instruction may have been accepted even though its response timed out. Keep the payment for
++            // SchemeRetryJob; no balance or ledger changes are made until a scheme submission is confirmed.
++            payment.setStatus(PaymentStatus.RECEIVED);
+             return payments.save(payment);
+         }
+         account.debit(payment.getAmount());
+diff --git a/src/main/java/com/example/accounts/payment/PaymentRepository.java b/src/main/java/com/example/accounts/payment/PaymentRepository.java
+index 309df33..e7c2aee 100644
+--- a/src/main/java/com/example/accounts/payment/PaymentRepository.java
++++ b/src/main/java/com/example/accounts/payment/PaymentRepository.java
+@@ -10,5 +10,7 @@ public interface PaymentRepository extends JpaRepository<Payment, Long> {
+ 
+     List<Payment> findByAccountIdAndCreatedAtGreaterThanEqual(Long accountId, Instant from);
+ 
++    List<Payment> findByStatusOrderById(String status);
++
+     List<Payment> findByStatusAndExecutionDateLessThanEqualOrderById(String status, LocalDate date);
+ }
+diff --git a/src/main/java/com/example/accounts/payment/SchemeRetryJob.java b/src/main/java/com/example/accounts/payment/SchemeRetryJob.java
+new file mode 100644
+index 0000000..3770898
+--- /dev/null
++++ b/src/main/java/com/example/accounts/payment/SchemeRetryJob.java
+@@ -0,0 +1,26 @@
++package com.example.accounts.payment;
++
++import org.springframework.scheduling.annotation.Scheduled;
++import org.springframework.stereotype.Component;
++import org.springframework.transaction.annotation.Transactional;
++
++/** Resubmits payments whose scheme submission timed out. */
++@Component
++public class SchemeRetryJob {
++
++    private final PaymentRepository payments;
++    private final PaymentDispatcher dispatcher;
++
++    public SchemeRetryJob(PaymentRepository payments, PaymentDispatcher dispatcher) {
++        this.payments = payments;
++        this.dispatcher = dispatcher;
++    }
++
++    @Scheduled(cron = "0 */5 * * * *", zone = "Europe/London")
++    @Transactional
++    public void resubmit() {
++        for (Payment payment : payments.findByStatusOrderById(PaymentStatus.RECEIVED.name())) {
++            dispatcher.dispatch(payment);
++        }
++    }
++}
+diff --git a/src/test/java/com/example/accounts/PaymentApiTest.java b/src/test/java/com/example/accounts/PaymentApiTest.java
+index f5adf40..e0d9cb7 100644
+--- a/src/test/java/com/example/accounts/PaymentApiTest.java
++++ b/src/test/java/com/example/accounts/PaymentApiTest.java
+@@ -11,6 +11,8 @@ import org.junit.jupiter.api.Test;
+ 
+ import com.example.accounts.support.ApiTest;
+ import com.example.accounts.support.TestTokens;
++import com.example.accounts.payment.PaymentRepository;
++import com.example.accounts.payment.PaymentStatus;
+ 
+ class PaymentApiTest extends ApiTest {
+ 
+@@ -43,6 +45,36 @@ class PaymentApiTest extends ApiTest {
+         assertThat(ledger.calls).isEmpty();
+     }
+ 
++    @Test
++    void schemeTimeoutIsRetainedAndRetried() throws Exception {
++        scheme.timeOutNext(false);
++        postAs(ALICE, "/api/accounts/1/payments", RENT).andExpect(status().isCreated())
++            .andExpect(jsonPath("$.status").value("RECEIVED"));
++        assertThat(ledger.calls).isEmpty();
++        long paymentId = payments.findByStatusOrderById(PaymentStatus.RECEIVED.name()).getLast().getId();
++
++        schemeRetryJob.resubmit();
++
++        getAs(ALICE, "/api/payments/" + paymentId).andExpect(jsonPath("$.status").value("COMPLETED"));
++        assertThat(scheme.submitted).hasSize(1);
++        assertThat(ledger.bookedFor(1L)).hasSize(1);
++        assertThat(notifications.sent).hasSize(1);
++    }
++
++    @Test
++    void timeoutAfterSchemeAcceptedIsCompletedOnRetry() throws Exception {
++        scheme.timeOutNext(true);
++        postAs(ALICE, "/api/accounts/1/payments", RENT).andExpect(status().isCreated())
++            .andExpect(jsonPath("$.status").value("RECEIVED"));
++        long paymentId = payments.findByStatusOrderById(PaymentStatus.RECEIVED.name()).getLast().getId();
++
++        schemeRetryJob.resubmit();
++
++        getAs(ALICE, "/api/payments/" + paymentId).andExpect(jsonPath("$.status").value("COMPLETED"));
++        assertThat(scheme.submitted).hasSize(1);
++        assertThat(ledger.bookedFor(1L)).hasSize(1);
++    }
++
+     @Test
+     void ledgerTimeoutLeavesThePaymentForOperations() throws Exception {
+         ledger.timeOutNext(1, false);
+@@ -83,4 +115,10 @@ class PaymentApiTest extends ApiTest {
+ 
+     @org.springframework.beans.factory.annotation.Autowired
+     com.example.accounts.payment.QueuedPaymentJob queuedJob;
++
++    @org.springframework.beans.factory.annotation.Autowired
++    com.example.accounts.payment.SchemeRetryJob schemeRetryJob;
++
++    @org.springframework.beans.factory.annotation.Autowired
++    PaymentRepository payments;
+ }

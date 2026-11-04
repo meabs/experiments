@@ -109,7 +109,8 @@ def main(stage, model):
     for f in sorted(stage.glob("fmea-*/runs/FMEA/*/codex/*/fmea.md")):
         arm, rep = f.parts[-4], f.parts[-2]
         run = f"{arm}/{rep}"
-        if run not in done:
+        only = os.environ.get("OKFC_JUDGE_RUNS")
+        if run not in done and (not only or run in only.split(",")):
             jobs.append((run, arm, int(rep), f.read_text(errors="replace")))
 
     def one(job):
@@ -119,7 +120,7 @@ def main(stage, model):
             fh.write(json.dumps({"run": run, "arm": arm, "rep": rep, "judge": model, "words": len(text.split()),
                                  **label, "cost": cost}) + "\n")
 
-    with ThreadPoolExecutor(6) as ex:
+    with ThreadPoolExecutor(int(os.environ.get("OKFC_JUDGE_WORKERS", "6"))) as ex:
         list(ex.map(one, jobs))
     print(len(jobs), "judged by", model, "->", out)
 
