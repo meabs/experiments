@@ -221,3 +221,11 @@ direction is better, a token chart, and real artefacts (stale statements, summar
      strict count alongside it (the bundle's dates, `stale_after`, "out of date", "outdated", "stale OKF/bundle/doc/
      note/guidance/knowledge" in any agent message): A, B, D, F and V 0 of 24, E 8 of 24.
    - **Diagrams** made by `scripts/diagrams.py` (colours checked for colour-blind separation).
+3. **After publication** (4 November 2026). The user shared an external review ("Some feedback"). Applied to
+   REPORT.md: the verify line's evidence rests on the timeout ticket (0 of 8, 95% upper bound 37%, beside the pooled
+   0 of 24 and 14%); H1's zero-width interval explained as complete separation; the date finding worded as "expiry
+   metadata without an instruction or enforcement mechanism did not change behaviour"; the verify line's four parts
+   (verify, where to look, precedence, report) and the source-of-truth hierarchy added to the limits and
+   recommendations; "no run asked" qualified (one-turn runs, nobody to answer); the passing-tests finding promoted;
+   the reviewer's next experiment (generic verify against a named source against an enforced check, several tasks)
+   added. No hypothesis, measure or number changed.

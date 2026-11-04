@@ -1,8 +1,8 @@
 # When the context is wrong: does a coding agent follow a stale OKF bundle? Report
 
 4 November 2026. Design: [README.md](README.md), pushed before any measured run (e18e66e1). The build and the pilot
-(amendment 1) were made before the main run; amendment 2 was made while analysing and changes no hypothesis, measure or
-answer key. Full numbers: [results/main/analysis.md](results/main/analysis.md). Hand-check overrides:
+(amendment 1) were made before the main run; amendment 2 was made while analysing and amendment 3 after an external review; neither changes a
+hypothesis, measure, answer key or number. Full numbers: [results/main/analysis.md](results/main/analysis.md). Hand-check overrides:
 [results/main/judge-overrides.json](results/main/judge-overrides.json). Diagrams: [diagrams/](diagrams/) (made by
 `scripts/diagrams.py`).
 
@@ -95,12 +95,19 @@ The verify line (E and F):
 
 **The user's prediction held on both halves.** With the verify line, the agent followed the stale fact in **0 of 24**
 runs (E). Without it, a stale bundle led to the wrong change in **8 of 24** (B), against 0 of 24 with a correct
-bundle (A). Freshness dates in the front matter changed nothing: D behaved exactly like B.
+bundle (A). Freshness dates in the front matter changed nothing: D behaved exactly like B. (Precisely: adding expiry
+metadata without an instruction or a mechanism that acts on it did not change the agent's behaviour.)
 
 All the damage was on one ticket. On the timeout ticket, **every B and D run (16 of 16) resubmitted under a new
 reference**, which pays a customer twice whenever the scheme took the first instruction. On the template and
 daily-limit tickets, every arm got the truth, because the runs went to the contract or the code for reasons of their
-own (below).
+own (below). So the evidence for the verify line rests on the one ticket where a stale fact did harm: 0 of 8 with the
+line against 8 of 8 without.
+
+**The stale runs wrote tests for the wrong behaviour.** Every one of the 16 passed the existing tests, and 6 of the 8
+B runs added a passing test asserting the new reference. A false assumption went in as a recipe and came out as a
+green test (examples below). A test written by the agent that misread the requirement is not an independent check:
+it confirms the implementation matches the agent's understanding, which here was wrong. The hidden tests caught it.
 
 ### Outcomes
 
@@ -137,8 +144,11 @@ Differences are in percentage points, the first arm minus the second, averaged o
 | H5 | D follows the stale fact less often than B (B − D) | 0 | 0 to 0 | 1.0 | not supported |
 | H6 | E reports the conflict more often than B (E − B) | +54 | +33 to +75 | 0.0005 | supported |
 
-H1's interval has no width because every ticket's difference was the same in every resample (B 8 of 8 and E 0 of 8 on
-the timeout, 0 of 8 each on the others). H4 not being supported does not show that a stale bundle is as good as none;
+H1's interval of +33 to +33 is an artefact of complete separation in a small sample (B 8 of 8 and E 0 of 8 on the
+timeout, 0 of 8 each on the others, so every resample gives the same difference); it doesn't mean the effect is known
+exactly. H2's pooled bound is also more reassuring than the evidence that matters: two of the three tickets had no
+stale-following in any arm, so the 0 of 24 is mostly tickets that couldn't fail this way. On the timeout ticket alone,
+E's 0 of 8 has a 95% Clopper-Pearson upper bound of 37%. H4 not being supported does not show that a stale bundle is as good as none;
 it means 8 runs per ticket couldn't tell them apart (V's timeout failures were *other*, B's were *stale*).
 
 ### How the runs decided
@@ -168,7 +178,8 @@ From the Codex event logs (`scripts/transcripts.py`). Shares of 24 runs per arm;
   24, counted strictly, amendment 2). In E, 8 of 24 did.
 - **The verify line got checking, not always reporting.** E opened the source first in 24 of 24 runs but said in its
   summary that the bundle was wrong in 13 (template 3 of 8, timeout 5, daily limit 5), although the line asks for it.
-  No run in any arm asked the user which source was right; all of them just made the change.
+  No run in any arm asked the user which source was right; all of them just made the change. That says little about
+  willingness to escalate: the runs were one turn, with nobody to answer.
 
 ### What the agent wrote
 
@@ -287,19 +298,32 @@ For Codex with gpt-5.6-luna at medium effort, on tickets like these (the tested 
    > `okf/` is maintained by hand and can be out of date. Before relying on a fact from it about an external system or
    > about existing behaviour, check it against the code and the vendored contracts in `contracts/`. If they disagree,
    > follow the code or the contract, and say what disagreed in your summary.
-   It cut stale-following from 8 of 24 to 0 of 24 and cost $0.015 a run.
+   It cut stale-following from 8 of 24 to 0 of 24 (0 of 8 against 8 of 8 on the one ticket where it mattered) and
+   cost $0.015 a run. The line does four things at once: tells the agent to verify, names where to look
+   (`contracts/`), says which source wins and asks for the disagreement to be reported. Which of those did the work
+   isn't separated; naming the place to check may be most of it. Keep all four until that is tested.
 2. **Vendor the authoritative contracts into the repository** (`contracts/` here), so there is something to check
    against. The line only works if the truth is in reach.
-3. **Don't rely on `stale_after` or `verified` dates** to make the agent careful. They had no effect here (D = B).
-   Use them for people and tooling: a CI check that fails when a bundle file passes its `stale_after` would catch
-   what the agent ignores.
+3. **Don't rely on `stale_after` or `verified` dates** to make the agent careful. Expiry metadata with no instruction
+   or mechanism that acts on it had no effect here (D = B). That doesn't make the fields worthless: use them in
+   something that enforces them, such as a CI check that fails when a bundle file passes its `stale_after`, or an
+   instruction that tells the agent what to do with an expired file (untested).
 4. **Don't rely on the summary to tell you the bundle is wrong.** Even with the line, about half the summaries said
    nothing. If you want bundle drift reported, check for it mechanically (for example, a test that the template names
    in `okf/` exist in the contract), or ask for a separate, explicit "context disagreements" section.
 5. **Review tests the agent adds for encoded assumptions** about external systems: they can lock in the wrong fact.
+   Keep an independent check (contract tests, tests written from the contract by someone else) for behaviour that
+   crosses a system boundary.
+6. **Say which source owns which fact.** "Follow the code or the contract" was right here because the contracts were
+   authoritative and the code was correct. In a real system a contract defines an external interface, the code shows
+   current behaviour, and neither settles the intended business rule; either can be stale too. A real AGENTS.md
+   should name the owner per kind of fact (for example: the scheme's behaviour, `contracts/scheme-gateway`; limits,
+   the product spec) and say to ask when they disagree about intent.
 
 ### Risks this exposes
 
+- **A false assumption becomes a passing test.** Stale but convincing knowledge, then the wrong behaviour, then a test
+  the agent wrote to confirm it, then green. Tests from the same agent are not an independent check.
 - **Plausible stale recipes are the dangerous kind.** The stale fact the agent followed was the one that read like
   complete instructions, and it appeared in three files. A wrong fact that leaves a gap gets checked; one that fills
   the gap doesn't.
@@ -307,7 +331,8 @@ For Codex with gpt-5.6-luna at medium effort, on tickets like these (the tested 
   wrong behaviour, and no summary mentioned doubt.
 - **Silent correction keeps the bundle wrong.** E fixed the code but only reported the conflict in half its runs, so
   the bundle stays stale for the next human or agent that reads it.
-- **No one asked.** In 144 runs the agent never asked the user which source was right; it always chose and proceeded.
+- **It chose without flagging.** In 144 one-turn runs the agent never asked which source was right; with nobody to
+  answer, that is weak evidence about escalation, but it means the choice is made silently unless the summary says so.
 
 ## 8. What the experiment does not prove
 
@@ -318,12 +343,22 @@ For Codex with gpt-5.6-luna at medium effort, on tickets like these (the tested 
   recipe or the ticket that made the difference can't be separated here.
 - Each stale fact is cleanly contradicted by one file in the repository. Real staleness is messier, and often there
   is no contract to check.
-- One agent and model at one effort; one wording of the verify line.
+- One agent and model at one effort; one wording of the verify line, which bundles four things (verify, where to look,
+  which source wins, report the disagreement). Which part works is not isolated.
+- The line's precedence rule ("follow the code or the contract") suits this test, where those sources are right by
+  construction. It isn't a general source-of-truth hierarchy.
+- The runs were one turn with nobody to answer, so they can't test whether the agent would ask.
+- The pooled 0 of 24 for the verify line is mostly tickets that never failed; on the vulnerable ticket it's 0 of 8
+  (95% upper bound 37%).
 - 8 runs per arm and ticket: wide intervals on anything but the large effects; H4 and the F-against-A comparison are
   inconclusive, not equal.
 
 ## 9. What I'd test next
 
+- **Why the verify line works** (suggested by an external reviewer): stale knowledge only; plus a generic "verify facts"
+  line; plus a pointer to the named source; plus an enforced check of that source. Several independently built tasks
+  with complete but false guidance, not one timeout ticket, measuring whether the agent opened the right source, got
+  the behaviour right, reported the disagreement and passed independent tests.
 - **Separate the timeout fact's ingredients:** the same stale timeout fact as a single line, without the recipe, and
   on a ticket that doesn't need the contract, to see which one made the agent trust it.
 - **Getting the conflict reported:** a separate "context disagreements" section in the instruction, or a final check
@@ -355,3 +390,8 @@ grades and the extracted fields in `results/main/transcripts.jsonl` are.
 - Amendment 2 (while analysing): one judge verdict overridden by hand; the "mentioned freshness" measure as designed
   also matched "Verified with `mvn` …" in ordinary summaries, so the report gives a strict count (the dates,
   `stale_after`, "out of date", "stale OKF/bundle/guidance") alongside it; diagrams added.
+- Amendment 3 (after publication, from an external review the user shared on 4 November 2026): the timeout-only bound
+  (0 of 8, upper 37%) and the H1 interval explained; the date finding worded as "expiry metadata without an
+  instruction or enforcement"; the verify line's four parts and the source-of-truth hierarchy added to the limits and
+  recommendations; "no one asked" qualified (one-turn runs); the passing-tests finding promoted; the reviewer's
+  next experiment added. No number changed.
