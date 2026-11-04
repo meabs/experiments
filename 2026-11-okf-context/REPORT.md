@@ -58,7 +58,7 @@ fmea will be better with okf". Fixed before any run:
 
 ## 4. How I tested it
 
-- **Repository:** written for the experiment, with the integrations as in-process fakes in tests that behave like
+- **Repository:** the accounts API from SEC-1, extended by me for this experiment (67 main Java files, 1,883 lines), with the integrations as in-process fakes in tests that behave like
   the real systems in the context (for example the fake scheme remembers references and answers `DUPL` to a repeat).
   34 existing tests.
 - **Bundle:** written from the code and a wiki-style system context before the tickets, and checked with OKF's
@@ -113,6 +113,8 @@ it was, so the resubmission's `DUPL` marked the payment `REJECTED` (failed). F7,
 
 ### The OKF bundle (end state)
 
+![The OKF bundle's structure: AGENTS.md points to okf/index.md, which maps to system.md, architecture.md and context.md, with each file's front matter and headings](diagrams/png/3-bundle.png)
+
 Arm B's repository had this added (written before the tickets, from the code and a wiki-style system context, and
 checked with OKF's `check_okf.py --strict`; files in [arms/B/okf/](arms/B/okf/)):
 
@@ -120,7 +122,7 @@ checked with OKF's `check_okf.py --strict`; files in [arms/B/okf/](arms/B/okf/))
 AGENTS.md                 one added line pointing to okf/index.md
 okf/
   index.md          150 words   what the bundle is and which file to read for what
-  system.md         579 words   what the service is; build, run, test; six key pitfalls
+  system.md         579 words   what the service is; build, run, test; eight key pitfalls
   architecture.md   649 words   components, the payment flow, and each external system's rules and failure behaviour
   context.md        615 words   the service's role in the bank, the business processes, who depends on it
 ```
@@ -138,7 +140,7 @@ sources). Excerpts, quoted as the agent saw them:
 > - [System context](/context.md) - the service's role in the bank, the business processes end to end, who depends on
 >   it and what they need. Read for anything about risk, operations or the effect of a change on other teams.
 
-`okf/system.md`, key pitfalls (two of six):
+`okf/system.md`, key pitfalls (two of eight):
 
 > 1. **The balance here is a copy.** The ledger overwrites `accounts.balance` every night at 02:00; during the day the
 >    service debits its own copy. Anything that must be exact (closing an account at zero balance) has to be checked
@@ -268,6 +270,39 @@ Where the context cost something (*exploratory*, added after seeing the results;
 | K22 every call refused (identity key change) | in code | 20 | 13 | 11 |
 | K14 a client retry creates a second payment | in code | 21 | 18 | 20 |
 
+Every answer-key entry (reports containing it, of 25; higher is better):
+
+![Every answer-key failure mode: how many FMEAs found it, by arm, grouped by where the knowledge lives](diagrams/png/4-entries.png)
+
+<details><summary>The same as a table</summary>
+
+| Key | Failure mode | Source | About | A | B | C |
+| --- | --- | --- | --- | --- | --- | --- |
+| K01 | A payment is booked twice in the core ledger | context only | role | 15/25 | 25/25 | 25/25 |
+| K02 | The scheme accepts a payment but the service loses its record of it | inferable | role | 24/25 | 25/25 | 25/25 |
+| K03 | Payments are sent without fraud screening | inferable | role | 25/25 | 25/25 | 25/25 |
+| K04 | A payment goes through unscreened when the fraud service is slow or down | context only | role | 4/25 | 6/25 | 12/25 |
+| K05 | A fraud REFER is treated as a rejection | context only | role | 0/25 | 5/25 | 8/25 |
+| K06 | Payments queued for a bank holiday are rejected by the scheme | inferable | role | 14/25 | 25/25 | 25/25 |
+| K07 | Queued payments are not sent on their execution date | in code | role | 25/25 | 24/25 | 25/25 |
+| K08 | A customer notification contains a full account number or sort code | context only | role | 0/25 | 13/25 | 9/25 |
+| K09 | Customers are not told about their payments | in code | role | 25/25 | 25/25 | 22/25 |
+| K10 | An account is closed with money still in it | context only | role | 0/25 | 25/25 | 25/25 |
+| K11 | Payments are approved or refused against an out-of-date balance | context only | role | 8/25 | 25/25 | 24/25 |
+| K12 | Statements are wrong or missing | context only | role | 3/25 | 23/25 | 23/25 |
+| K13 | Payments sent to the scheme are never posted to the ledger | inferable | role | 25/25 | 25/25 | 25/25 |
+| K14 | A customer's payment is created twice | in code | internals | 21/25 | 18/25 | 20/25 |
+| K15 | The daily limit is exceeded | in code | internals | 25/25 | 24/25 | 25/25 |
+| K16 | An account is overdrawn by payments | in code | internals | 25/25 | 24/25 | 25/25 |
+| K17 | Payments around the cut-off are sent or queued wrongly | inferable | internals | 16/25 | 15/25 | 21/25 |
+| K18 | The customer isn't told that the scheme rejected their payment | in code | internals | 0/25 | 0/25 | 5/25 |
+| K19 | One bank's data is visible to another (tenant isolation fails) | in code | internals | 25/25 | 25/25 | 25/25 |
+| K20 | Someone other than the account holder makes a payment | in code | internals | 15/25 | 14/25 | 18/25 |
+| K21 | Data is lost when the service restarts | in code | internals | 25/25 | 19/25 | 20/25 |
+| K22 | Nobody can use the app or back office: every call is refused | in code | role | 20/25 | 13/25 | 11/25 |
+
+</details>
+
 On the 10 in-code entries, B found 8 points fewer than A (95% interval −13 to −3; two-sided p = 0.005, not
 Holm-adjusted; the second judge gives −5 points, p = 0.08); 7 of the 10 entries went down and none up. C was 4 points below A (−9 to +1; p = 0.16). A also wrote
 more valid failure modes the key doesn't contain (3.2 per report, against B 1.5 and C 2.7; the judge's verdicts, not
@@ -319,6 +354,29 @@ B/12 did find it, folded into a wider "service unavailable or data lost on resta
 - **B opened the bundle in every run (50 of 50)**, as its first command, and read all four files in 48 (two feature
   runs skipped `system.md`). It still opened about as many source files as A (14 against 15 per FMEA): the bundle
   added to the exploration rather than replacing it.
+- **Exploration per run** (means; from the transcripts):
+
+| Task | Arm | Runs | Read okf | Commands | Source files opened | Commands before the first edit | Seconds |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| F1 | A | 5 | - | 6 | 14 | 4 | 68 |
+| F1 | B | 5 | 5/5 | 8 | 12 | 5 | 82 |
+| F1 | C | 5 | - | 7 | 14 | 4 | 73 |
+| F2 | A | 5 | - | 10 | 16 | 8 | 70 |
+| F2 | B | 5 | 5/5 | 7 | 13 | 4 | 76 |
+| F2 | C | 5 | - | 6 | 13 | 4 | 64 |
+| F3 | A | 5 | - | 7 | 15 | 4 | 77 |
+| F3 | B | 5 | 5/5 | 9 | 15 | 6 | 101 |
+| F3 | C | 5 | - | 8 | 15 | 5 | 73 |
+| F6 | A | 5 | - | 6 | 13 | 3 | 78 |
+| F6 | B | 5 | 5/5 | 10 | 11 | 5 | 108 |
+| F6 | C | 5 | - | 7 | 13 | 4 | 88 |
+| F7 | A | 5 | - | 8 | 10 | 5 | 79 |
+| F7 | B | 5 | 5/5 | 12 | 11 | 9 | 88 |
+| F7 | C | 5 | - | 7 | 9 | 4 | 70 |
+| FMEA | A | 25 | - | 10 | 15 | 8 | 121 |
+| FMEA | B | 25 | 25/25 | 11 | 14 | 10 | 119 |
+| FMEA | C | 25 | - | 14 | 17 | 12 | 126 |
+
 - **Facts reached the work** (FMEA reports containing the fact, of 25; A can only have them from the code or a guess):
 
 | Fact | A | B | C |
@@ -347,6 +405,27 @@ B/12 did find it, folded into a wider "service unavailable or data lost on resta
   a bundle like this, and an integration bug that passes every test costs at least an hour to find and fix, the bundle
   pays back after about 5 tickets that touch an external system's behaviour (it prevented 0.9 such bugs per ticket
   here). Run cost is negligible beside that: a few cents.
+
+### Tokens
+
+![Tokens per run by ticket and arm: input split into cached and new, and output](diagrams/png/5-tokens.png)
+
+Mean tokens per run: input (of which new, not cached) / output (lower is cheaper):
+
+| Task | A | B | C |
+| --- | --- | --- | --- |
+| F1 | 218k (28k new) / 2.8k | 303k (33k new) / 3.5k | 303k (35k new) / 3.0k |
+| F2 | 234k (30k new) / 2.9k | 264k (35k new) / 3.2k | 237k (31k new) / 2.6k |
+| F3 | 237k (33k new) / 3.3k | 386k (40k new) / 4.1k | 266k (32k new) / 3.0k |
+| F6 | 229k (28k new) / 3.4k | 489k (41k new) / 4.7k | 287k (33k new) / 4.0k |
+| F7 | 240k (30k new) / 3.4k | 319k (38k new) / 3.6k | 221k (32k new) / 2.9k |
+| FMEA | 329k (49k new) / 5.8k | 300k (46k new) / 5.6k | 308k (45k new) / 6.0k |
+
+- **Features:** B read 352k input tokens a run against A's 232k (+52%), C 263k (+13%). B's extra reading was largest
+  on F6 (489k against 229k). Cached input was 85–89% of input in every arm, which is why the cost difference (+32%) is
+  smaller than the token difference.
+- **FMEA:** about the same in every arm (300k to 329k a run).
+- **Output** stayed small everywhere (2.6k to 6.0k tokens a run).
 
 ### Robustness
 
@@ -430,7 +509,7 @@ For Codex with gpt-5.6-luna on a repository like this one (the configuration tes
 
 ## 8. What the experiment does not prove
 
-- One repository, written by me (Claude) for this test, with simulated integrations; the bundle and the answer key are
+- One repository, adapted by me (Claude) for this test from an earlier experiment's service, with simulated integrations; the bundle and the answer key are
   also mine, and I did the hand check. A real bank system is bigger and messier, and a team's bundle may be better or
   worse.
 - One agent and model at one effort level.
