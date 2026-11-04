@@ -1,6 +1,6 @@
 # When the context is wrong: does a coding agent follow a stale OKF bundle?
 
-**Status:** design, drafted 4 November 2026; to be pushed before any measured run. Later changes go in the
+**Status:** done; results in [REPORT.md](REPORT.md). Design drafted and pushed 4 November 2026 before any measured run. Later changes go in the
 [amendment log](#amendment-log).
 
 ## Why
@@ -213,3 +213,11 @@ direction is better, a token chart, and real artefacts (stale statements, summar
      verdict. Nothing is changed: as the design says, the pilot doesn't tune where the truth is or how visible it is.
    - **Clarification of a measure:** "mentioned freshness" is read from all the agent's messages during the run, not
      only the final summary (the design's "the summary or the agent's messages").
+2. **While analysing** (4 November 2026, after the main run; no hypothesis, measure or answer key changed).
+   - **One judge verdict overridden** after reading all 144 summaries: F7, D, run 2 says "not deprecated
+     `PAYMENT_DECLINED`" without saying the bundle is wrong, so it is not a reported conflict
+     (`results/main/judge-overrides.json`). The second judge already said so.
+   - **"Mentioned freshness"** as built also matched "Verified with `mvn` …" in ordinary summaries. The report gives a
+     strict count alongside it (the bundle's dates, `stale_after`, "out of date", "outdated", "stale OKF/bundle/doc/
+     note/guidance/knowledge" in any agent message): A, B, D, F and V 0 of 24, E 8 of 24.
+   - **Diagrams** made by `scripts/diagrams.py` (colours checked for colour-blind separation).

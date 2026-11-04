@@ -1,0 +1,204 @@
+"""Writes the report's diagrams (diagrams/*.html, SVG at 1800 px wide) from results/main. Render them to PNG with
+diagrams/render.sh.
+
+Colours (checked with the dataviz palette validator, light mode: lightness, chroma, colour-blind separation, contrast
+all pass): truth #1170a0, stale #d0731f (also hatched, so it doesn't rely on colour), other neutral #b9b2a0 (labelled).
+
+Usage: python3 -I scripts/diagrams.py
+"""
+import json
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parent.parent
+MAIN = ROOT / "results/main"
+OUT = ROOT / "diagrams"
+ARMS = [("A", "A  correct"), ("B", "B  stale"), ("D", "D  stale + dates"), ("E", "E  stale + verify line"),
+        ("F", "F  correct + verify line"), ("V", "V  no bundle")]
+TICKETS = [("F7", "Template"), ("F6", "Timeout"), ("F3", "Daily limit")]
+TRUTH, STALE, OTHER = "#1170a0", "#d0731f", "#b9b2a0"
+SRC = "Source: github.com/meabs/experiments, 2026-11-okf-stale"
+HATCH = ('<defs><pattern id="h" width="12" height="12" patternUnits="userSpaceOnUse" patternTransform="rotate(45)">'
+         f'<rect width="12" height="12" fill="{STALE}"/><line x1="0" y1="0" x2="0" y2="12" stroke="#fff" '
+         'stroke-width="4" stroke-opacity=".45"/></pattern></defs>')
+
+
+def runs():
+    out = {}
+    for f in MAIN.glob("feat-*/runs/*/*/codex/*/grade.json"):
+        t, a, rep = f.parts[-5], f.parts[-4], int(f.parts[-2])
+        out[(t, a, rep)] = {"outcome": json.loads(f.read_text())["outcome"]}
+    for l in (MAIN / "transcripts.jsonl").open():
+        r = json.loads(l)
+        out[(r["task"], r["arm"], int(r["rep"]))].update(r)
+    return out
+
+
+def page(h, body):
+    return (f'<link rel="stylesheet" href="style.css">\n<svg width="1800" height="{h}" viewBox="0 0 1800 {h}">'
+            f'{HATCH}\n{body}</svg>\n')
+
+
+def fill(o):
+    return {"truth": TRUTH, "stale": "url(#h)", "other": OTHER}[o]
+
+
+def legend(y):
+    s, x = [], 420
+    for c, name in ((TRUTH, "followed the code or contract (truth)"), ("url(#h)", "followed the stale fact"),
+                    (OTHER, "neither (other)")):
+        s.append(f'<rect x="{x}" y="{y}" width="26" height="26" rx="4" fill="{c}"/>'
+                 f'<text x="{x + 36}" y="{y + 22}" class="q">{name}</text>')
+        x += {TRUTH: 470, "url(#h)": 340}.get(c, 0)
+    return "".join(s)
+
+
+def setup():
+    rows = [("A", "correct", "Nov 2026", "no"), ("B", "stale", "Nov 2026", "no"),
+            ("D", "stale", "verified Mar, stale after Jun", "no"), ("E", "stale", "Nov 2026", "yes"),
+            ("F", "correct", "Nov 2026", "yes"), ("V", "none", "–", "no")]
+    s = ['<text x="40" y="62" class="th">Six arms, three tickets, one wrong fact per ticket</text>',
+         '<text x="40" y="102" class="ts">Same agent (Codex, gpt-5.6-luna) and repository in every arm; only okf/ '
+         'and AGENTS.md differ. 8 runs per arm and ticket: 144 runs.</text>',
+         '<text x="40" y="170" class="tb">Arm</text><text x="230" y="170" class="tb">okf/ bundle</text>'
+         '<text x="520" y="170" class="tb">Freshness dates in it</text><text x="1060" y="170" class="tb">'
+         'AGENTS.md verify line</text>']
+    for i, (a, b, d, v) in enumerate(rows):
+        y = 200 + i * 62
+        s.append(f'<rect x="40" y="{y}" width="1720" height="54" rx="8" class="{"boxr" if b == "stale" else "box"}"/>')
+        s.append(f'<text x="64" y="{y + 37}" class="tb">{a}</text><text x="230" y="{y + 37}" class="t">{b}</text>'
+                 f'<text x="520" y="{y + 37}" class="t">{d}</text><text x="1060" y="{y + 37}" class="t">{v}</text>')
+    facts = [("Template (F7)", "rejection template is PAYMENT_DECLINED", "PAYMENT_FAILED",
+              "contracts/notification-service/templates.yaml", "1 line"),
+             ("Timeout (F6)", "a timeout means not taken: resubmit under a new reference",
+              "it may have been taken: resend the same reference (DUPL), or use the status query", "contracts/scheme-gateway/openapi.yaml",
+              "3 files"),
+             ("Daily limit (F3)", "rejected payments count towards today's spend", "they don't",
+              "src/…/payment/PaymentService.java (the limit check)", "1 line")]
+    s.append('<text x="40" y="640" class="tb">The wrong facts (in B, D and E) and where the truth is</text>')
+    for i, (t, st, tr, where, n) in enumerate(facts):
+        y = 670 + i * 176
+        s.append(f'<rect x="40" y="{y}" width="1720" height="160" rx="12" class="box"/>')
+        s.append(f'<text x="64" y="{y + 44}" class="tb">{t}</text>'
+                 f'<text x="420" y="{y + 44}" class="t"><tspan class="red" font-weight="650">Bundle says: </tspan>'
+                 f'{st} <tspan class="muted">({n})</tspan></text>'
+                 f'<text x="420" y="{y + 94}" class="t"><tspan class="teal" font-weight="650">Truth: </tspan>{tr}</text>'
+                 f'<text x="420" y="{y + 136}" class="mono muted">in {where}</text>')
+    s.append(f'<text x="1760" y="1230" class="tsm" text-anchor="end">{SRC} (arms/, generated by '
+             'scripts/make_arms.py)</text>')
+    return page(1260, "\n".join(s))
+
+
+def outcomes(R):
+    sq, gw = 34, 8 * 41 + 40
+    x0 = 440
+    s = ['<text x="40" y="62" class="th">The agent followed the wrong fact only on the timeout ticket</text>',
+         '<text x="40" y="102" class="ts">One square per run, 8 per arm and ticket. Blue is better; orange '
+         '(hatched) means the change did what the stale bundle said.</text>', legend(128)]
+    for j, (t, name) in enumerate(TICKETS):
+        s.append(f'<text x="{x0 + j * gw + 4 * 41 - 4}" y="220" class="tb" text-anchor="middle">{name}</text>')
+    for i, (a, label) in enumerate(ARMS):
+        y = 250 + i * 92
+        s.append(f'<text x="40" y="{y + 30}" class="t">{label}</text>')
+        stale = 0
+        for j, (t, _) in enumerate(TICKETS):
+            for k in range(8):
+                o = R[(t, a, k + 1)]["outcome"]
+                stale += o == "stale"
+                s.append(f'<rect x="{x0 + j * gw + k * 41}" y="{y}" width="{sq}" height="{sq}" rx="4" '
+                         f'fill="{fill(o)}"/>')
+        s.append(f'<text x="{x0 + 3 * gw}" y="{y + 30}" class="q" font-weight="650">{stale} of 24 stale</text>')
+    s.append('<rect x="40" y="820" width="1720" height="150" rx="14" class="box"/>'
+             '<text x="70" y="870" class="t">• Timeout: every B and D run resubmitted under a new reference, which '
+             'pays twice if the scheme had taken it.</text>'
+             '<text x="70" y="920" class="t">• With the verify line (E): 0 of 24. Freshness dates (D) changed '
+             'nothing. Grey: same reference, but DUPL read as a rejection.</text>')
+    s.append(f'<text x="1760" y="1020" class="tsm" text-anchor="end">{SRC} (hidden tests with a stale detector '
+             'per ticket; results/main/analysis.md)</text>')
+    return page(1050, "\n".join(s))
+
+
+def checking(R):
+    s = ['<text x="40" y="62" class="th">Runs that opened the truth before editing never followed the wrong fact</text>',
+         '<text x="40" y="102" class="ts">24 runs per arm, split by whether the run opened the ticket\'s contract or '
+         'limit check before its first edit (from the transcripts).</text>']
+    x0, w = 520, 46
+    s.append(f'<rect x="420" y="128" width="26" height="26" rx="4" fill="{TRUTH}"/><text x="456" y="150" class="q">'
+             'opened it first</text>'
+             f'<rect x="700" y="128" width="26" height="26" rx="4" fill="{OTHER}"/><text x="736" y="150" class="q">'
+             'didn\'t, no stale fact followed</text>'
+             '<rect x="1060" y="128" width="26" height="26" rx="4" fill="url(#h)"/><text x="1096" y="150" class="q">'
+             'didn\'t, and followed the stale fact</text>')
+    for i, (a, label) in enumerate(ARMS):
+        y = 200 + i * 80
+        rs = [R[(t, a, k)] for t, _ in TICKETS for k in range(1, 9)]
+        first = sum(1 for r in rs if r["truth_source_before_edit"])
+        st = sum(1 for r in rs if not r["truth_source_before_edit"] and r["outcome"] == "stale")
+        rest = 24 - first - st
+        s.append(f'<text x="40" y="{y + 34}" class="t">{label}</text>')
+        x = x0
+        for n, c in ((first, TRUTH), (rest, OTHER), (st, "url(#h)")):
+            if n:
+                s.append(f'<rect x="{x}" y="{y}" width="{n * w - 2}" height="48" rx="4" fill="{c}"/>')
+                s.append(f'<text x="{x + n * w / 2}" y="{y + 33}" class="{"tw" if c != OTHER else "tb"}" '
+                         f'text-anchor="middle">{n}</text>')
+                x += n * w
+    s.append('<rect x="40" y="700" width="1720" height="150" rx="14" class="box"/>'
+             '<text x="70" y="750" class="t">• The verify line made every E run open the source first (24 of 24); '
+             'without it, 46–62% did.</text>'
+             '<text x="70" y="800" class="t">• All 16 stale runs skipped the source. Opening it first is the '
+             'difference, not the bundle\'s dates.</text>')
+    s.append(f'<text x="1760" y="900" class="tsm" text-anchor="end">{SRC} (scripts/transcripts.py over the Codex '
+             'event logs)</text>')
+    return page(930, "\n".join(s))
+
+
+def tokens():
+    tk = json.loads((MAIN / "analysis.json").read_text())["tokens"]
+    scale = 1150 / 800_000
+    x0 = 400
+    s = ['<text x="40" y="62" class="th">Tokens per run: the wrong timeout fact cost the most reading</text>',
+         '<text x="40" y="102" class="ts">Mean tokens per run (lower is cheaper). Bar: input tokens, cached (light) '
+         'and new (dark). Right column: output tokens.</text>',
+         f'<rect x="420" y="128" width="26" height="26" rx="4" fill="#a9cfe3"/><text x="456" y="150" class="q">'
+         'cached input</text>'
+         f'<rect x="680" y="128" width="26" height="26" rx="4" fill="{TRUTH}"/><text x="716" y="150" class="q">'
+         'new input</text><text x="1660" y="190" class="q" font-weight="650">output</text>']
+    y = 210
+    for t, name in TICKETS:
+        s.append(f'<text x="40" y="{y + 26}" class="tb">{name}</text>')
+        for a, label in ARMS:
+            v = tk[f"{a}/{t}"]
+            c, n = v["cached"] * scale, (v["input"] - v["cached"]) * scale
+            s.append(f'<text x="{x0 - 20}" y="{y + 25}" class="q" text-anchor="end">{label.split("  ")[0]}</text>'
+                     f'<rect x="{x0}" y="{y + 4}" width="{c - 2:.0f}" height="28" fill="#a9cfe3"/>'
+                     f'<rect x="{x0 + c:.0f}" y="{y + 4}" width="{n:.0f}" height="28" fill="{TRUTH}"/>'
+                     f'<text x="{x0 + c + n + 10:.0f}" y="{y + 27}" class="q" font-weight="650">'
+                     f'{v["input"] / 1000:.0f}k</text>'
+                     f'<text x="1660" y="{y + 27}" class="q">{v["output"] / 1000:.1f}k</text>')
+            y += 38
+        y += 30
+    for k in range(0, 900_000, 200_000):
+        x = x0 + k * scale
+        s.append(f'<line x1="{x:.0f}" y1="200" x2="{x:.0f}" y2="{y - 20}" stroke="#d9d3c4" stroke-width="1.5"/>'
+                 f'<text x="{x:.0f}" y="{y + 8}" class="tsm" text-anchor="middle">{k // 1000}k</text>')
+    y += 40
+    s.append(f'<rect x="40" y="{y}" width="1720" height="150" rx="14" class="box"/>'
+             f'<text x="70" y="{y + 50}" class="t">• Timeout: B read 723k input tokens a run, 2.4× A (298k); '
+             'E 546k, V 282k. Other tickets: within about 30%.</text>'
+             f'<text x="70" y="{y + 100}" class="t">• Most input is cached in every arm. Output stays small '
+             '(3–7k).</text>')
+    s.append(f'<text x="1760" y="{y + 200}" class="tsm" text-anchor="end">{SRC} (Codex token counts per run, '
+             '8 runs per arm and ticket)</text>')
+    return page(y + 230, "\n".join(s))
+
+
+def main():
+    R = runs()
+    for name, html in (("1-setup", setup()), ("2-outcomes", outcomes(R)), ("3-checking", checking(R)),
+                       ("4-tokens", tokens())):
+        (OUT / f"{name}.html").write_text(html)
+        print(OUT / f"{name}.html")
+
+
+if __name__ == "__main__":
+    main()
