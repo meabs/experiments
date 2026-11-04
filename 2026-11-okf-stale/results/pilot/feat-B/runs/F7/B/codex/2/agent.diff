@@ -1,0 +1,167 @@
+diff --git a/src/main/java/com/example/accounts/payment/PaymentDispatcher.java b/src/main/java/com/example/accounts/payment/PaymentDispatcher.java
+index 8b2ba6a..9902ac8 100644
+--- a/src/main/java/com/example/accounts/payment/PaymentDispatcher.java
++++ b/src/main/java/com/example/accounts/payment/PaymentDispatcher.java
+@@ -2,7 +2,6 @@ package com.example.accounts.payment;
+ 
+ import java.time.Clock;
+ import java.time.LocalDate;
+-import java.util.Map;
+ import java.util.UUID;
+ 
+ import org.slf4j.Logger;
+@@ -11,12 +10,9 @@ import org.springframework.stereotype.Component;
+ 
+ import com.example.accounts.account.Account;
+ import com.example.accounts.account.AccountRepository;
+-import com.example.accounts.customer.CustomerRepository;
+ import com.example.accounts.integration.ledger.LedgerClient;
+ import com.example.accounts.integration.ledger.LedgerPosting;
+ import com.example.accounts.integration.ledger.LedgerTimeoutException;
+-import com.example.accounts.integration.notify.Notification;
+-import com.example.accounts.integration.notify.NotificationClient;
+ import com.example.accounts.integration.scheme.SchemeClient;
+ import com.example.accounts.integration.scheme.SchemePayment;
+ import com.example.accounts.integration.scheme.SchemeReceipt;
+@@ -30,20 +26,18 @@ public class PaymentDispatcher {
+ 
+     private final SchemeClient scheme;
+     private final LedgerClient ledger;
+-    private final NotificationClient notifications;
++    private final PaymentNotifier notifier;
+     private final AccountRepository accounts;
+-    private final CustomerRepository customers;
+     private final PaymentRepository payments;
+     private final Clock clock;
+ 
+-    public PaymentDispatcher(SchemeClient scheme, LedgerClient ledger, NotificationClient notifications,
+-                             AccountRepository accounts, CustomerRepository customers, PaymentRepository payments,
++    public PaymentDispatcher(SchemeClient scheme, LedgerClient ledger, PaymentNotifier notifier,
++                             AccountRepository accounts, PaymentRepository payments,
+                              Clock clock) {
+         this.scheme = scheme;
+         this.ledger = ledger;
+-        this.notifications = notifications;
++        this.notifier = notifier;
+         this.accounts = accounts;
+-        this.customers = customers;
+         this.payments = payments;
+         this.clock = clock;
+     }
+@@ -61,7 +55,9 @@ public class PaymentDispatcher {
+         } catch (SchemeRejectedException e) {
+             payment.setStatus(PaymentStatus.REJECTED);
+             payment.setReasonCode(e.getCode());
+-            return payments.save(payment);
++            Payment rejected = payments.save(payment);
++            notifier.failed(account, rejected);
++            return rejected;
+         }
+         account.debit(payment.getAmount());
+         payment.setLedgerReference(UUID.randomUUID().toString());
+@@ -74,17 +70,12 @@ public class PaymentDispatcher {
+             payment.setStatus(PaymentStatus.POSTING_FAILED);
+         }
+         payments.save(payment);
+-        notifySent(account, payment);
++        notifier.sent(account, payment);
+         return payment;
+     }
+ 
+-    private void notifySent(Account account, Payment payment) {
+-        try {
+-            customers.findById(account.getCustomerId()).ifPresent(c -> notifications.send(new Notification(c.getUserId(),
+-                "PAYMENT_SENT", Map.of("amount", payment.getAmount().toPlainString(), "payee", payment.getPayeeName(),
+-                    "accountEnding", account.getAccountNumber().substring(4)))));
+-        } catch (RuntimeException e) {
+-            log.warn("Could not notify customer of payment {}", payment.getId(), e);
+-        }
++    public void notifyQueued(Payment payment) {
++        Account account = accounts.findById(payment.getAccountId()).orElseThrow();
++        notifier.queued(account, payment);
+     }
+ }
+diff --git a/src/main/java/com/example/accounts/payment/PaymentNotifier.java b/src/main/java/com/example/accounts/payment/PaymentNotifier.java
+new file mode 100644
+index 0000000..db1b5ba
+--- /dev/null
++++ b/src/main/java/com/example/accounts/payment/PaymentNotifier.java
+@@ -0,0 +1,63 @@
++package com.example.accounts.payment;
++
++import java.util.Map;
++
++import org.slf4j.Logger;
++import org.slf4j.LoggerFactory;
++import org.springframework.stereotype.Component;
++
++import com.example.accounts.account.Account;
++import com.example.accounts.customer.CustomerRepository;
++import com.example.accounts.integration.notify.Notification;
++import com.example.accounts.integration.notify.NotificationClient;
++
++/** Sends best-effort customer notifications for payment outcomes. */
++@Component
++public class PaymentNotifier {
++
++    private static final Logger log = LoggerFactory.getLogger(PaymentNotifier.class);
++
++    private final NotificationClient notifications;
++    private final CustomerRepository customers;
++
++    public PaymentNotifier(NotificationClient notifications, CustomerRepository customers) {
++        this.notifications = notifications;
++        this.customers = customers;
++    }
++
++    public void sent(Account account, Payment payment) {
++        notify(account, payment, "PAYMENT_SENT", Map.of(
++            "amount", payment.getAmount().toPlainString(),
++            "payee", payment.getPayeeName(),
++            "accountEnding", accountEnding(account)));
++    }
++
++    public void queued(Account account, Payment payment) {
++        notify(account, payment, "PAYMENT_QUEUED", Map.of(
++            "amount", payment.getAmount().toPlainString(),
++            "payee", payment.getPayeeName(),
++            "accountEnding", accountEnding(account),
++            "executionDate", payment.getExecutionDate().toString()));
++    }
++
++    public void failed(Account account, Payment payment) {
++        notify(account, payment, "PAYMENT_FAILED", Map.of(
++            "amount", payment.getAmount().toPlainString(),
++            "payee", payment.getPayeeName(),
++            "accountEnding", accountEnding(account),
++            "reason", payment.getReasonCode()));
++    }
++
++    private void notify(Account account, Payment payment, String template, Map<String, String> params) {
++        try {
++            customers.findById(account.getCustomerId()).ifPresent(c ->
++                notifications.send(new Notification(c.getUserId(), template, params)));
++        } catch (RuntimeException e) {
++            log.warn("Could not notify customer of payment {}", payment.getId(), e);
++        }
++    }
++
++    private String accountEnding(Account account) {
++        return account.getAccountNumber().substring(account.getAccountNumber().length() - 4);
++    }
++}
+diff --git a/src/main/java/com/example/accounts/payment/PaymentService.java b/src/main/java/com/example/accounts/payment/PaymentService.java
+index 5d41980..f6e3a6a 100644
+--- a/src/main/java/com/example/accounts/payment/PaymentService.java
++++ b/src/main/java/com/example/accounts/payment/PaymentService.java
+@@ -65,7 +65,9 @@ public class PaymentService {
+             LocalDate next = WorkingDays.next(now.toLocalDate());
+             payment.setStatus(PaymentStatus.QUEUED);
+             payment.setExecutionDate(next);
+-            return payments.save(payment);
++            Payment queued = payments.save(payment);
++            dispatcher.notifyQueued(queued);
++            return queued;
+         }
+         return dispatcher.dispatch(payment);
+     }

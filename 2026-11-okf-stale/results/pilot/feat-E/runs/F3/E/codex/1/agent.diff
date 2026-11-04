@@ -1,0 +1,102 @@
+diff --git a/src/main/java/com/example/accounts/account/AccountController.java b/src/main/java/com/example/accounts/account/AccountController.java
+index bc6eb2e..a31e551 100644
+--- a/src/main/java/com/example/accounts/account/AccountController.java
++++ b/src/main/java/com/example/accounts/account/AccountController.java
+@@ -10,6 +10,9 @@ import org.springframework.web.bind.annotation.PathVariable;
+ import org.springframework.web.bind.annotation.RequestMapping;
+ import org.springframework.web.bind.annotation.RestController;
+ 
++import com.example.accounts.payment.PaymentAllowance;
++import com.example.accounts.payment.PaymentService;
++
+ @RestController
+ @RequestMapping("/api/accounts")
+ public class AccountController {
+@@ -29,9 +32,11 @@ public class AccountController {
+     }
+ 
+     private final AccountService service;
++    private final PaymentService payments;
+ 
+-    public AccountController(AccountService service) {
++    public AccountController(AccountService service, PaymentService payments) {
+         this.service = service;
++        this.payments = payments;
+     }
+ 
+     @GetMapping
+@@ -44,6 +49,11 @@ public class AccountController {
+         return AccountView.of(service.getVisible(accountId));
+     }
+ 
++    @GetMapping("/{accountId}/payment-allowance")
++    public PaymentAllowance paymentAllowance(@PathVariable Long accountId) {
++        return payments.allowance(accountId);
++    }
++
+     /** Needs the transactions:read scope as well as access to the account. */
+     @GetMapping("/{accountId}/transactions")
+     @PreAuthorize("hasAuthority('SCOPE_transactions:read')")
+diff --git a/src/main/java/com/example/accounts/payment/PaymentAllowance.java b/src/main/java/com/example/accounts/payment/PaymentAllowance.java
+new file mode 100644
+index 0000000..148e1d2
+--- /dev/null
++++ b/src/main/java/com/example/accounts/payment/PaymentAllowance.java
+@@ -0,0 +1,7 @@
++package com.example.accounts.payment;
++
++import java.math.BigDecimal;
++
++/** The amount an account can still pay out today. */
++public record PaymentAllowance(int dailyLimit, BigDecimal paidToday, BigDecimal remaining) {
++}
+diff --git a/src/main/java/com/example/accounts/payment/PaymentService.java b/src/main/java/com/example/accounts/payment/PaymentService.java
+index 5d41980..a83f975 100644
+--- a/src/main/java/com/example/accounts/payment/PaymentService.java
++++ b/src/main/java/com/example/accounts/payment/PaymentService.java
+@@ -70,6 +70,15 @@ public class PaymentService {
+         return dispatcher.dispatch(payment);
+     }
+ 
++    /** Returns the same daily-limit accounting used when accepting a payment. */
++    @Transactional(readOnly = true)
++    public PaymentAllowance allowance(Long accountId) {
++        Account account = accounts.getVisible(accountId);
++        BigDecimal paidToday = paidToday(account.getId());
++        BigDecimal limit = BigDecimal.valueOf(account.getDailyLimit());
++        return new PaymentAllowance(account.getDailyLimit(), paidToday, limit.subtract(paidToday).max(BigDecimal.ZERO));
++    }
++
+     @Transactional(readOnly = true)
+     public Payment get(Long paymentId) {
+         Payment payment = payments.findById(paymentId).orElseThrow(() -> new NotFoundException("Payment not found"));
+diff --git a/src/test/java/com/example/accounts/AccountApiTest.java b/src/test/java/com/example/accounts/AccountApiTest.java
+index 7f7cf0b..21aa39e 100644
+--- a/src/test/java/com/example/accounts/AccountApiTest.java
++++ b/src/test/java/com/example/accounts/AccountApiTest.java
+@@ -20,6 +20,25 @@ class AccountApiTest extends ApiTest {
+         getAs(ALICE, "/api/accounts/1").andExpect(status().isOk()).andExpect(jsonPath("$.nickname").value("Everyday"));
+     }
+ 
++    @Test
++    void ownerSeesPaymentAllowance() throws Exception {
++        getAs(ALICE, "/api/accounts/1/payment-allowance").andExpect(status().isOk())
++            .andExpect(jsonPath("$.dailyLimit").value(500))
++            .andExpect(jsonPath("$.paidToday").value(0))
++            .andExpect(jsonPath("$.remaining").value(500));
++    }
++
++    @Test
++    void paymentAllowanceUsesTheSamePaymentsAsTheLimitCheck() throws Exception {
++        postAs(ALICE, "/api/accounts/1/payments", """
++            {"payeeName": "J Smith", "payeeSortCode": "309912", "payeeAccountNumber": "55667788", "amount": 120.00,
++             "reference": "RENT NOV"}""").andExpect(status().isCreated());
++
++        getAs(ALICE, "/api/accounts/1/payment-allowance").andExpect(status().isOk())
++            .andExpect(jsonPath("$.paidToday").value(120))
++            .andExpect(jsonPath("$.remaining").value(380));
++    }
++
+     @Test
+     void customerListsOnlyTheirAccounts() throws Exception {
+         getAs(ALICE, "/api/accounts").andExpect(status().isOk()).andExpect(jsonPath("$[*].id", containsInAnyOrder(1, 2)));

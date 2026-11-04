@@ -1,0 +1,103 @@
+diff --git a/src/main/java/com/example/accounts/payment/PaymentDispatcher.java b/src/main/java/com/example/accounts/payment/PaymentDispatcher.java
+index 8b2ba6a..66ea2ed 100644
+--- a/src/main/java/com/example/accounts/payment/PaymentDispatcher.java
++++ b/src/main/java/com/example/accounts/payment/PaymentDispatcher.java
+@@ -21,6 +21,7 @@ import com.example.accounts.integration.scheme.SchemeClient;
+ import com.example.accounts.integration.scheme.SchemePayment;
+ import com.example.accounts.integration.scheme.SchemeReceipt;
+ import com.example.accounts.integration.scheme.SchemeRejectedException;
++import com.example.accounts.integration.scheme.SchemeTimeoutException;
+ 
+ /** Sends a payment to the scheme, posts it to the ledger and tells the customer. */
+ @Component
+@@ -51,18 +52,26 @@ public class PaymentDispatcher {
+     public Payment dispatch(Payment payment) {
+         Account account = accounts.findById(payment.getAccountId()).orElseThrow();
+         LocalDate today = LocalDate.now(clock);
++        SchemeReceipt receipt;
+         try {
+-            SchemeReceipt receipt = scheme.submit(new SchemePayment("P" + payment.getId(), account.getSortCode(),
+-                account.getAccountNumber(), payment.getPayeeName(), payment.getPayeeSortCode(),
+-                payment.getPayeeAccountNumber(), payment.getAmount(), payment.getReference(), today));
+-            payment.setSchemeId(receipt.schemeId());
+-            payment.setExecutionDate(today);
+-            payment.setStatus(PaymentStatus.SUBMITTED);
++            receipt = findTimedOutInstruction(payment);
++            if (receipt == null) {
++                receipt = scheme.submit(new SchemePayment("P" + payment.getId(), account.getSortCode(),
++                    account.getAccountNumber(), payment.getPayeeName(), payment.getPayeeSortCode(),
++                    payment.getPayeeAccountNumber(), payment.getAmount(), payment.getReference(), today));
++            }
+         } catch (SchemeRejectedException e) {
+             payment.setStatus(PaymentStatus.REJECTED);
+             payment.setReasonCode(e.getCode());
+             return payments.save(payment);
++        } catch (SchemeTimeoutException e) {
++            // The scheme may have accepted the instruction. Keep the payment and retry with the same idempotency key.
++            payment.setStatus(PaymentStatus.RECEIVED);
++            return payments.save(payment);
+         }
++        payment.setSchemeId(receipt.schemeId());
++        payment.setExecutionDate(today);
++        payment.setStatus(PaymentStatus.SUBMITTED);
+         account.debit(payment.getAmount());
+         payment.setLedgerReference(UUID.randomUUID().toString());
+         try {
+@@ -78,6 +87,14 @@ public class PaymentDispatcher {
+         return payment;
+     }
+ 
++    /** Finds an instruction which was accepted before a previous timeout. */
++    private SchemeReceipt findTimedOutInstruction(Payment payment) {
++        if (payment.getStatus() != PaymentStatus.RECEIVED) {
++            return null;
++        }
++        return scheme.find("P" + payment.getId()).orElse(null);
++    }
++
+     private void notifySent(Account account, Payment payment) {
+         try {
+             customers.findById(account.getCustomerId()).ifPresent(c -> notifications.send(new Notification(c.getUserId(),
+diff --git a/src/main/java/com/example/accounts/payment/PaymentRepository.java b/src/main/java/com/example/accounts/payment/PaymentRepository.java
+index 309df33..187e985 100644
+--- a/src/main/java/com/example/accounts/payment/PaymentRepository.java
++++ b/src/main/java/com/example/accounts/payment/PaymentRepository.java
+@@ -11,4 +11,6 @@ public interface PaymentRepository extends JpaRepository<Payment, Long> {
+     List<Payment> findByAccountIdAndCreatedAtGreaterThanEqual(Long accountId, Instant from);
+ 
+     List<Payment> findByStatusAndExecutionDateLessThanEqualOrderById(String status, LocalDate date);
++
++    List<Payment> findByStatusOrderById(String status);
+ }
+diff --git a/src/main/java/com/example/accounts/payment/SchemeRetryJob.java b/src/main/java/com/example/accounts/payment/SchemeRetryJob.java
+new file mode 100644
+index 0000000..f75b770
+--- /dev/null
++++ b/src/main/java/com/example/accounts/payment/SchemeRetryJob.java
+@@ -0,0 +1,26 @@
++package com.example.accounts.payment;
++
++import org.springframework.scheduling.annotation.Scheduled;
++import org.springframework.stereotype.Component;
++import org.springframework.transaction.annotation.Transactional;
++
++/** Resubmits payments whose scheme submission timed out, every five minutes. */
++@Component
++public class SchemeRetryJob {
++
++    private final PaymentRepository payments;
++    private final PaymentDispatcher dispatcher;
++
++    public SchemeRetryJob(PaymentRepository payments, PaymentDispatcher dispatcher) {
++        this.payments = payments;
++        this.dispatcher = dispatcher;
++    }
++
++    @Scheduled(fixedRate = 300_000)
++    @Transactional
++    public void resubmit() {
++        for (Payment payment : payments.findByStatusOrderById(PaymentStatus.RECEIVED.name())) {
++            dispatcher.dispatch(payment);
++        }
++    }
++}
