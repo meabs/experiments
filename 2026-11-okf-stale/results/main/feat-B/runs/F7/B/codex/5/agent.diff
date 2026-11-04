@@ -1,0 +1,94 @@
+diff --git a/src/main/java/com/example/accounts/payment/PaymentDispatcher.java b/src/main/java/com/example/accounts/payment/PaymentDispatcher.java
+index 8b2ba6a..c268854 100644
+--- a/src/main/java/com/example/accounts/payment/PaymentDispatcher.java
++++ b/src/main/java/com/example/accounts/payment/PaymentDispatcher.java
+@@ -61,7 +61,9 @@ public class PaymentDispatcher {
+         } catch (SchemeRejectedException e) {
+             payment.setStatus(PaymentStatus.REJECTED);
+             payment.setReasonCode(e.getCode());
+-            return payments.save(payment);
++            payments.save(payment);
++            notifyFailed(account, payment, e.getCode());
++            return payment;
+         }
+         account.debit(payment.getAmount());
+         payment.setLedgerReference(UUID.randomUUID().toString());
+@@ -74,17 +76,35 @@ public class PaymentDispatcher {
+             payment.setStatus(PaymentStatus.POSTING_FAILED);
+         }
+         payments.save(payment);
+-        notifySent(account, payment);
++        notify(account, payment, "PAYMENT_SENT", Map.of(
++            "amount", payment.getAmount().toPlainString(), "payee", payment.getPayeeName(),
++            "accountEnding", accountEnding(account)));
+         return payment;
+     }
+ 
+-    private void notifySent(Account account, Payment payment) {
++    public void notifyQueued(Payment payment) {
++        Account account = accounts.findById(payment.getAccountId()).orElseThrow();
++        notify(account, payment, "PAYMENT_QUEUED", Map.of(
++            "amount", payment.getAmount().toPlainString(), "payee", payment.getPayeeName(),
++            "accountEnding", accountEnding(account), "executionDate", payment.getExecutionDate().toString()));
++    }
++
++    private void notifyFailed(Account account, Payment payment, String reason) {
++        notify(account, payment, "PAYMENT_FAILED", Map.of(
++            "amount", payment.getAmount().toPlainString(), "payee", payment.getPayeeName(),
++            "accountEnding", accountEnding(account), "reason", reason));
++    }
++
++    private void notify(Account account, Payment payment, String template, Map<String, String> params) {
+         try {
+             customers.findById(account.getCustomerId()).ifPresent(c -> notifications.send(new Notification(c.getUserId(),
+-                "PAYMENT_SENT", Map.of("amount", payment.getAmount().toPlainString(), "payee", payment.getPayeeName(),
+-                    "accountEnding", account.getAccountNumber().substring(4)))));
++                template, params)));
+         } catch (RuntimeException e) {
+             log.warn("Could not notify customer of payment {}", payment.getId(), e);
+         }
+     }
++
++    private String accountEnding(Account account) {
++        return account.getAccountNumber().substring(4);
++    }
+ }
+diff --git a/src/main/java/com/example/accounts/payment/PaymentService.java b/src/main/java/com/example/accounts/payment/PaymentService.java
+index 5d41980..544ce6f 100644
+--- a/src/main/java/com/example/accounts/payment/PaymentService.java
++++ b/src/main/java/com/example/accounts/payment/PaymentService.java
+@@ -65,7 +65,9 @@ public class PaymentService {
+             LocalDate next = WorkingDays.next(now.toLocalDate());
+             payment.setStatus(PaymentStatus.QUEUED);
+             payment.setExecutionDate(next);
+-            return payments.save(payment);
++            Payment saved = payments.save(payment);
++            dispatcher.notifyQueued(saved);
++            return saved;
+         }
+         return dispatcher.dispatch(payment);
+     }
+diff --git a/src/test/java/com/example/accounts/PaymentApiTest.java b/src/test/java/com/example/accounts/PaymentApiTest.java
+index f5adf40..f383667 100644
+--- a/src/test/java/com/example/accounts/PaymentApiTest.java
++++ b/src/test/java/com/example/accounts/PaymentApiTest.java
+@@ -33,6 +33,9 @@ class PaymentApiTest extends ApiTest {
+         postAs(ALICE, "/api/accounts/1/payments", RENT).andExpect(status().isCreated())
+             .andExpect(jsonPath("$.status").value("QUEUED")).andExpect(jsonPath("$.executionDate").value("2026-10-12"));
+         assertThat(scheme.submitted).isEmpty();
++        assertThat(notifications.sent).hasSize(1);
++        assertThat(notifications.sent.get(0).template()).isEqualTo("PAYMENT_QUEUED");
++        assertThat(notifications.sent.get(0).params()).containsEntry("executionDate", "2026-10-12");
+     }
+ 
+     @Test
+@@ -41,6 +44,9 @@ class PaymentApiTest extends ApiTest {
+         postAs(ALICE, "/api/accounts/1/payments", RENT).andExpect(status().isCreated())
+             .andExpect(jsonPath("$.status").value("REJECTED")).andExpect(jsonPath("$.reasonCode").value("AC01"));
+         assertThat(ledger.calls).isEmpty();
++        assertThat(notifications.sent).hasSize(1);
++        assertThat(notifications.sent.get(0).template()).isEqualTo("PAYMENT_FAILED");
++        assertThat(notifications.sent.get(0).params()).containsEntry("reason", "AC01");
+     }
+ 
+     @Test

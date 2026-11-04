@@ -1,0 +1,83 @@
+diff --git a/src/main/java/com/example/accounts/AccountsApplication.java b/src/main/java/com/example/accounts/AccountsApplication.java
+index 42c0c5d..7ce5a5f 100644
+--- a/src/main/java/com/example/accounts/AccountsApplication.java
++++ b/src/main/java/com/example/accounts/AccountsApplication.java
+@@ -3,9 +3,11 @@ package com.example.accounts;
+ import org.springframework.boot.SpringApplication;
+ import org.springframework.boot.autoconfigure.SpringBootApplication;
+ import org.springframework.boot.context.properties.ConfigurationPropertiesScan;
++import org.springframework.scheduling.annotation.EnableScheduling;
+ 
+ @SpringBootApplication
+ @ConfigurationPropertiesScan
++@EnableScheduling
+ public class AccountsApplication {
+     public static void main(String[] args) {
+         SpringApplication.run(AccountsApplication.class, args);
+diff --git a/src/main/java/com/example/accounts/payment/PaymentDispatcher.java b/src/main/java/com/example/accounts/payment/PaymentDispatcher.java
+index 8b2ba6a..777f54b 100644
+--- a/src/main/java/com/example/accounts/payment/PaymentDispatcher.java
++++ b/src/main/java/com/example/accounts/payment/PaymentDispatcher.java
+@@ -21,6 +21,7 @@ import com.example.accounts.integration.scheme.SchemeClient;
+ import com.example.accounts.integration.scheme.SchemePayment;
+ import com.example.accounts.integration.scheme.SchemeReceipt;
+ import com.example.accounts.integration.scheme.SchemeRejectedException;
++import com.example.accounts.integration.scheme.SchemeTimeoutException;
+ 
+ /** Sends a payment to the scheme, posts it to the ledger and tells the customer. */
+ @Component
+@@ -58,6 +59,10 @@ public class PaymentDispatcher {
+             payment.setSchemeId(receipt.schemeId());
+             payment.setExecutionDate(today);
+             payment.setStatus(PaymentStatus.SUBMITTED);
++        } catch (SchemeTimeoutException e) {
++            log.warn("Scheme submission timed out for payment {}", payment.getId(), e);
++            payment.setStatus(PaymentStatus.RECEIVED);
++            return payments.save(payment);
+         } catch (SchemeRejectedException e) {
+             payment.setStatus(PaymentStatus.REJECTED);
+             payment.setReasonCode(e.getCode());
+diff --git a/src/main/java/com/example/accounts/payment/PaymentRepository.java b/src/main/java/com/example/accounts/payment/PaymentRepository.java
+index 309df33..a85d15f 100644
+--- a/src/main/java/com/example/accounts/payment/PaymentRepository.java
++++ b/src/main/java/com/example/accounts/payment/PaymentRepository.java
+@@ -10,5 +10,7 @@ public interface PaymentRepository extends JpaRepository<Payment, Long> {
+ 
+     List<Payment> findByAccountIdAndCreatedAtGreaterThanEqual(Long accountId, Instant from);
+ 
++    List<Payment> findByStatus(String status);
++
+     List<Payment> findByStatusAndExecutionDateLessThanEqualOrderById(String status, LocalDate date);
+ }
+diff --git a/src/main/java/com/example/accounts/payment/SchemeRetryJob.java b/src/main/java/com/example/accounts/payment/SchemeRetryJob.java
+new file mode 100644
+index 0000000..8459e8e
+--- /dev/null
++++ b/src/main/java/com/example/accounts/payment/SchemeRetryJob.java
+@@ -0,0 +1,26 @@
++package com.example.accounts.payment;
++
++import org.springframework.scheduling.annotation.Scheduled;
++import org.springframework.stereotype.Component;
++import org.springframework.transaction.annotation.Transactional;
++
++/** Resubmits payments whose scheme submission timed out, every five minutes. */
++@Component
++public class SchemeRetryJob {
++
++    private final PaymentRepository payments;
++    private final PaymentDispatcher dispatcher;
++
++    public SchemeRetryJob(PaymentRepository payments, PaymentDispatcher dispatcher) {
++        this.payments = payments;
++        this.dispatcher = dispatcher;
++    }
++
++    @Scheduled(cron = "0 */5 * * * *", zone = "Europe/London")
++    @Transactional
++    public void resubmit() {
++        for (Payment payment : payments.findByStatus(PaymentStatus.RECEIVED.name())) {
++            dispatcher.dispatch(payment);
++        }
++    }
++}

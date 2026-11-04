@@ -1,0 +1,124 @@
+diff --git a/src/main/java/com/example/accounts/account/AccountController.java b/src/main/java/com/example/accounts/account/AccountController.java
+index bc6eb2e..e0e15f7 100644
+--- a/src/main/java/com/example/accounts/account/AccountController.java
++++ b/src/main/java/com/example/accounts/account/AccountController.java
+@@ -10,6 +10,8 @@ import org.springframework.web.bind.annotation.PathVariable;
+ import org.springframework.web.bind.annotation.RequestMapping;
+ import org.springframework.web.bind.annotation.RestController;
+ 
++import com.example.accounts.payment.PaymentService;
++
+ @RestController
+ @RequestMapping("/api/accounts")
+ public class AccountController {
+@@ -28,10 +30,18 @@ public class AccountController {
+         }
+     }
+ 
++    public record PaymentAllowanceView(BigDecimal dailyLimit, BigDecimal paidToday, BigDecimal remaining) {
++        static PaymentAllowanceView of(PaymentService.PaymentAllowance allowance) {
++            return new PaymentAllowanceView(allowance.dailyLimit(), allowance.paidToday(), allowance.remaining());
++        }
++    }
++
+     private final AccountService service;
++    private final PaymentService payments;
+ 
+-    public AccountController(AccountService service) {
++    public AccountController(AccountService service, PaymentService payments) {
+         this.service = service;
++        this.payments = payments;
+     }
+ 
+     @GetMapping
+@@ -44,6 +54,11 @@ public class AccountController {
+         return AccountView.of(service.getVisible(accountId));
+     }
+ 
++    @GetMapping("/{accountId}/payment-allowance")
++    public PaymentAllowanceView paymentAllowance(@PathVariable Long accountId) {
++        return PaymentAllowanceView.of(payments.allowance(accountId));
++    }
++
+     /** Needs the transactions:read scope as well as access to the account. */
+     @GetMapping("/{accountId}/transactions")
+     @PreAuthorize("hasAuthority('SCOPE_transactions:read')")
+diff --git a/src/main/java/com/example/accounts/payment/PaymentService.java b/src/main/java/com/example/accounts/payment/PaymentService.java
+index 5d41980..84563b2 100644
+--- a/src/main/java/com/example/accounts/payment/PaymentService.java
++++ b/src/main/java/com/example/accounts/payment/PaymentService.java
+@@ -22,6 +22,8 @@ import com.example.accounts.web.NotFoundException;
+ @Transactional
+ public class PaymentService {
+ 
++    public record PaymentAllowance(BigDecimal dailyLimit, BigDecimal paidToday, BigDecimal remaining) {}
++
+     private final PaymentRepository payments;
+     private final AccountService accounts;
+     private final PaymentDispatcher dispatcher;
+@@ -54,7 +56,7 @@ public class PaymentService {
+         if (req.amount().compareTo(account.getBalance()) > 0) {
+             throw new ConflictException("Insufficient funds");
+         }
+-        if (paidToday(accountId).add(req.amount()).compareTo(BigDecimal.valueOf(account.getDailyLimit())) > 0) {
++        if (paidToday(accountId).add(req.amount()).compareTo(dailyLimit(account)) > 0) {
+             throw new ConflictException("Daily limit exceeded");
+         }
+         Payment payment = payments.save(new Payment(account.getTenantId(), accountId, req.payeeName().trim(),
+@@ -70,6 +72,14 @@ public class PaymentService {
+         return dispatcher.dispatch(payment);
+     }
+ 
++    @Transactional(readOnly = true)
++    public PaymentAllowance allowance(Long accountId) {
++        Account account = accounts.getVisible(accountId);
++        BigDecimal dailyLimit = dailyLimit(account);
++        BigDecimal paidToday = paidToday(accountId);
++        return new PaymentAllowance(dailyLimit, paidToday, dailyLimit.subtract(paidToday).max(BigDecimal.ZERO));
++    }
++
+     @Transactional(readOnly = true)
+     public Payment get(Long paymentId) {
+         Payment payment = payments.findById(paymentId).orElseThrow(() -> new NotFoundException("Payment not found"));
+@@ -81,6 +91,10 @@ public class PaymentService {
+         return payment;
+     }
+ 
++    private BigDecimal dailyLimit(Account account) {
++        return BigDecimal.valueOf(account.getDailyLimit());
++    }
++
+     private BigDecimal paidToday(Long accountId) {
+         return payments.findByAccountIdAndCreatedAtGreaterThanEqual(accountId,
+                 LocalDate.now(clock).atStartOfDay(clock.getZone()).toInstant()).stream()
+diff --git a/src/test/java/com/example/accounts/AccountApiTest.java b/src/test/java/com/example/accounts/AccountApiTest.java
+index 7f7cf0b..feda8d5 100644
+--- a/src/test/java/com/example/accounts/AccountApiTest.java
++++ b/src/test/java/com/example/accounts/AccountApiTest.java
+@@ -20,6 +20,26 @@ class AccountApiTest extends ApiTest {
+         getAs(ALICE, "/api/accounts/1").andExpect(status().isOk()).andExpect(jsonPath("$.nickname").value("Everyday"));
+     }
+ 
++    @Test
++    void ownerSeesTodaysPaymentAllowance() throws Exception {
++        getAs(ALICE, "/api/accounts/1/payment-allowance").andExpect(status().isOk())
++            .andExpect(jsonPath("$.dailyLimit").value(500))
++            .andExpect(jsonPath("$.paidToday").value(0))
++            .andExpect(jsonPath("$.remaining").value(500));
++    }
++
++    @Test
++    void supportAndAdminCanSeePaymentAllowance() throws Exception {
++        getAs(SAM, "/api/accounts/1/payment-allowance").andExpect(status().isOk());
++        getAs(ADA, "/api/accounts/1/payment-allowance").andExpect(status().isOk());
++    }
++
++    @Test
++    void paymentAllowanceHidesAccountsCallerCannotSee() throws Exception {
++        getAs(BOB, "/api/accounts/1/payment-allowance").andExpect(status().isNotFound());
++        getAs(GIL, "/api/accounts/1/payment-allowance").andExpect(status().isNotFound());
++    }
++
+     @Test
+     void customerListsOnlyTheirAccounts() throws Exception {
+         getAs(ALICE, "/api/accounts").andExpect(status().isOk()).andExpect(jsonPath("$[*].id", containsInAnyOrder(1, 2)));

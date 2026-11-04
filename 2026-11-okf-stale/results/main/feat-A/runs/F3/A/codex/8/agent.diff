@@ -1,0 +1,97 @@
+diff --git a/src/main/java/com/example/accounts/payment/PaymentController.java b/src/main/java/com/example/accounts/payment/PaymentController.java
+index eff06a2..3d49ff9 100644
+--- a/src/main/java/com/example/accounts/payment/PaymentController.java
++++ b/src/main/java/com/example/accounts/payment/PaymentController.java
+@@ -34,4 +34,9 @@ public class PaymentController {
+     public PaymentView get(@PathVariable Long paymentId) {
+         return PaymentView.of(service.get(paymentId));
+     }
++
++    @GetMapping("/api/accounts/{accountId}/payment-allowance")
++    public PaymentService.PaymentAllowance allowance(@PathVariable Long accountId) {
++        return service.allowance(accountId);
++    }
+ }
+diff --git a/src/main/java/com/example/accounts/payment/PaymentRepository.java b/src/main/java/com/example/accounts/payment/PaymentRepository.java
+index 309df33..9e7615e 100644
+--- a/src/main/java/com/example/accounts/payment/PaymentRepository.java
++++ b/src/main/java/com/example/accounts/payment/PaymentRepository.java
+@@ -8,7 +8,8 @@ import org.springframework.data.jpa.repository.JpaRepository;
+ 
+ public interface PaymentRepository extends JpaRepository<Payment, Long> {
+ 
+-    List<Payment> findByAccountIdAndCreatedAtGreaterThanEqual(Long accountId, Instant from);
++    List<Payment> findByAccountIdAndCreatedAtGreaterThanEqualAndCreatedAtLessThan(Long accountId, Instant from,
++                                                                                    Instant until);
+ 
+     List<Payment> findByStatusAndExecutionDateLessThanEqualOrderById(String status, LocalDate date);
+ }
+diff --git a/src/main/java/com/example/accounts/payment/PaymentService.java b/src/main/java/com/example/accounts/payment/PaymentService.java
+index 5d41980..d031d57 100644
+--- a/src/main/java/com/example/accounts/payment/PaymentService.java
++++ b/src/main/java/com/example/accounts/payment/PaymentService.java
+@@ -22,6 +22,9 @@ import com.example.accounts.web.NotFoundException;
+ @Transactional
+ public class PaymentService {
+ 
++    public record PaymentAllowance(int dailyLimit, BigDecimal paidToday, BigDecimal remaining) {
++    }
++
+     private final PaymentRepository payments;
+     private final AccountService accounts;
+     private final PaymentDispatcher dispatcher;
+@@ -70,6 +73,15 @@ public class PaymentService {
+         return dispatcher.dispatch(payment);
+     }
+ 
++    /** The amount still available under the account's daily payment limit. */
++    @Transactional(readOnly = true)
++    public PaymentAllowance allowance(Long accountId) {
++        Account account = accounts.getVisible(accountId);
++        BigDecimal paidToday = paidToday(accountId);
++        BigDecimal dailyLimit = BigDecimal.valueOf(account.getDailyLimit());
++        return new PaymentAllowance(account.getDailyLimit(), paidToday, dailyLimit.subtract(paidToday).max(BigDecimal.ZERO));
++    }
++
+     @Transactional(readOnly = true)
+     public Payment get(Long paymentId) {
+         Payment payment = payments.findById(paymentId).orElseThrow(() -> new NotFoundException("Payment not found"));
+@@ -82,8 +94,10 @@ public class PaymentService {
+     }
+ 
+     private BigDecimal paidToday(Long accountId) {
+-        return payments.findByAccountIdAndCreatedAtGreaterThanEqual(accountId,
+-                LocalDate.now(clock).atStartOfDay(clock.getZone()).toInstant()).stream()
++        LocalDate today = LocalDate.now(clock);
++        return payments.findByAccountIdAndCreatedAtGreaterThanEqualAndCreatedAtLessThan(accountId,
++                today.atStartOfDay(clock.getZone()).toInstant(), today.plusDays(1).atStartOfDay(clock.getZone()).toInstant())
++            .stream()
+             .filter(p -> p.getStatus() != PaymentStatus.REJECTED && p.getStatus() != PaymentStatus.CANCELLED)
+             .map(Payment::getAmount).reduce(BigDecimal.ZERO, BigDecimal::add);
+     }
+diff --git a/src/test/java/com/example/accounts/AccountApiTest.java b/src/test/java/com/example/accounts/AccountApiTest.java
+index 7f7cf0b..d5c7dc6 100644
+--- a/src/test/java/com/example/accounts/AccountApiTest.java
++++ b/src/test/java/com/example/accounts/AccountApiTest.java
+@@ -43,6 +43,21 @@ class AccountApiTest extends ApiTest {
+         getAs(SAM, "/api/accounts").andExpect(jsonPath("$[*].id", containsInAnyOrder(1, 2)));
+     }
+ 
++    @Test
++    void paymentAllowanceReportsTodaysPaymentsOnly() throws Exception {
++        getAs(ALICE, "/api/accounts/1/payment-allowance").andExpect(status().isOk())
++            .andExpect(jsonPath("$.dailyLimit").value(500))
++            .andExpect(jsonPath("$.paidToday").value(0.0))
++            .andExpect(jsonPath("$.remaining").value(500.0));
++    }
++
++    @Test
++    void paymentAllowanceUsesTheSameAccountVisibilityRules() throws Exception {
++        getAs(BOB, "/api/accounts/1/payment-allowance").andExpect(status().isNotFound());
++        getAs(SAM, "/api/accounts/1/payment-allowance").andExpect(status().isOk());
++        getAs(ADA, "/api/accounts/1/payment-allowance").andExpect(status().isOk());
++    }
++
+     @Test
+     void adminSeesEveryAccountInTheirTenant() throws Exception {
+         getAs(ADA, "/api/accounts").andExpect(jsonPath("$", hasSize(4)));

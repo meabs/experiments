@@ -1,0 +1,85 @@
+diff --git a/src/main/java/com/example/accounts/payment/PaymentDispatcher.java b/src/main/java/com/example/accounts/payment/PaymentDispatcher.java
+index 8b2ba6a..252ff9a 100644
+--- a/src/main/java/com/example/accounts/payment/PaymentDispatcher.java
++++ b/src/main/java/com/example/accounts/payment/PaymentDispatcher.java
+@@ -21,6 +21,7 @@ import com.example.accounts.integration.scheme.SchemeClient;
+ import com.example.accounts.integration.scheme.SchemePayment;
+ import com.example.accounts.integration.scheme.SchemeReceipt;
+ import com.example.accounts.integration.scheme.SchemeRejectedException;
++import com.example.accounts.integration.scheme.SchemeTimeoutException;
+ 
+ /** Sends a payment to the scheme, posts it to the ledger and tells the customer. */
+ @Component
+@@ -59,8 +60,26 @@ public class PaymentDispatcher {
+             payment.setExecutionDate(today);
+             payment.setStatus(PaymentStatus.SUBMITTED);
+         } catch (SchemeRejectedException e) {
+-            payment.setStatus(PaymentStatus.REJECTED);
+-            payment.setReasonCode(e.getCode());
++            if (payment.getStatus() == PaymentStatus.RECEIVED && "DUPL".equals(e.getCode())) {
++                SchemeReceipt receipt = scheme.find("P" + payment.getId()).orElse(null);
++                if (receipt != null) {
++                    payment.setSchemeId(receipt.schemeId());
++                    payment.setExecutionDate(today);
++                    payment.setStatus(PaymentStatus.SUBMITTED);
++                } else {
++                    payment.setStatus(PaymentStatus.REJECTED);
++                    payment.setReasonCode(e.getCode());
++                    return payments.save(payment);
++                }
++            } else {
++                payment.setStatus(PaymentStatus.REJECTED);
++                payment.setReasonCode(e.getCode());
++                return payments.save(payment);
++            }
++        } catch (SchemeTimeoutException e) {
++            // The gateway may have accepted the instruction even though it did not answer.
++            // Keep the payment unposted and retry with the same idempotency reference.
++            payment.setStatus(PaymentStatus.RECEIVED);
+             return payments.save(payment);
+         }
+         account.debit(payment.getAmount());
+diff --git a/src/main/java/com/example/accounts/payment/PaymentRepository.java b/src/main/java/com/example/accounts/payment/PaymentRepository.java
+index 309df33..e7c2aee 100644
+--- a/src/main/java/com/example/accounts/payment/PaymentRepository.java
++++ b/src/main/java/com/example/accounts/payment/PaymentRepository.java
+@@ -10,5 +10,7 @@ public interface PaymentRepository extends JpaRepository<Payment, Long> {
+ 
+     List<Payment> findByAccountIdAndCreatedAtGreaterThanEqual(Long accountId, Instant from);
+ 
++    List<Payment> findByStatusOrderById(String status);
++
+     List<Payment> findByStatusAndExecutionDateLessThanEqualOrderById(String status, LocalDate date);
+ }
+diff --git a/src/main/java/com/example/accounts/payment/SchemeRetryJob.java b/src/main/java/com/example/accounts/payment/SchemeRetryJob.java
+new file mode 100644
+index 0000000..8b943ae
+--- /dev/null
++++ b/src/main/java/com/example/accounts/payment/SchemeRetryJob.java
+@@ -0,0 +1,26 @@
++package com.example.accounts.payment;
++
++import org.springframework.scheduling.annotation.Scheduled;
++import org.springframework.stereotype.Component;
++import org.springframework.transaction.annotation.Transactional;
++
++/** Resubmits payments whose scheme submission timed out, every five minutes. */
++@Component
++public class SchemeRetryJob {
++
++    private final PaymentRepository payments;
++    private final PaymentDispatcher dispatcher;
++
++    public SchemeRetryJob(PaymentRepository payments, PaymentDispatcher dispatcher) {
++        this.payments = payments;
++        this.dispatcher = dispatcher;
++    }
++
++    @Scheduled(cron = "0 */5 * * * *", zone = "Europe/London")
++    @Transactional
++    public void resubmit() {
++        for (Payment payment : payments.findByStatusOrderById(PaymentStatus.RECEIVED.name())) {
++            dispatcher.dispatch(payment);
++        }
++    }
++}

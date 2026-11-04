@@ -1,0 +1,138 @@
+diff --git a/src/main/java/com/example/accounts/payment/Payment.java b/src/main/java/com/example/accounts/payment/Payment.java
+index 707379f..e4a3741 100644
+--- a/src/main/java/com/example/accounts/payment/Payment.java
++++ b/src/main/java/com/example/accounts/payment/Payment.java
+@@ -51,6 +51,10 @@ public class Payment {
+     /** Id the scheme gave the instruction. */
+     private String schemeId;
+ 
++    /** Number of resubmissions made after a scheme timeout. */
++    @Column(nullable = false)
++    private int schemeRetries;
++
+     /** Reference sent with the ledger posting. */
+     private String ledgerReference;
+ 
+@@ -93,6 +97,10 @@ public class Payment {
+     public void setExecutionDate(LocalDate executionDate) { this.executionDate = executionDate; }
+     public String getSchemeId() { return schemeId; }
+     public void setSchemeId(String schemeId) { this.schemeId = schemeId; }
++    public String nextSchemeReference() {
++        schemeRetries++;
++        return "P" + id + "-R" + schemeRetries;
++    }
+     public String getLedgerReference() { return ledgerReference; }
+     public void setLedgerReference(String ledgerReference) { this.ledgerReference = ledgerReference; }
+     public String getCreatedBy() { return createdBy; }
+diff --git a/src/main/java/com/example/accounts/payment/PaymentDispatcher.java b/src/main/java/com/example/accounts/payment/PaymentDispatcher.java
+index 8b2ba6a..755b391 100644
+--- a/src/main/java/com/example/accounts/payment/PaymentDispatcher.java
++++ b/src/main/java/com/example/accounts/payment/PaymentDispatcher.java
+@@ -21,6 +21,7 @@ import com.example.accounts.integration.scheme.SchemeClient;
+ import com.example.accounts.integration.scheme.SchemePayment;
+ import com.example.accounts.integration.scheme.SchemeReceipt;
+ import com.example.accounts.integration.scheme.SchemeRejectedException;
++import com.example.accounts.integration.scheme.SchemeTimeoutException;
+ 
+ /** Sends a payment to the scheme, posts it to the ledger and tells the customer. */
+ @Component
+@@ -49,10 +50,18 @@ public class PaymentDispatcher {
+     }
+ 
+     public Payment dispatch(Payment payment) {
++        return dispatch(payment, "P" + payment.getId());
++    }
++
++    public Payment resubmit(Payment payment) {
++        return dispatch(payment, payment.nextSchemeReference());
++    }
++
++    private Payment dispatch(Payment payment, String schemeReference) {
+         Account account = accounts.findById(payment.getAccountId()).orElseThrow();
+         LocalDate today = LocalDate.now(clock);
+         try {
+-            SchemeReceipt receipt = scheme.submit(new SchemePayment("P" + payment.getId(), account.getSortCode(),
++            SchemeReceipt receipt = scheme.submit(new SchemePayment(schemeReference, account.getSortCode(),
+                 account.getAccountNumber(), payment.getPayeeName(), payment.getPayeeSortCode(),
+                 payment.getPayeeAccountNumber(), payment.getAmount(), payment.getReference(), today));
+             payment.setSchemeId(receipt.schemeId());
+@@ -62,6 +71,10 @@ public class PaymentDispatcher {
+             payment.setStatus(PaymentStatus.REJECTED);
+             payment.setReasonCode(e.getCode());
+             return payments.save(payment);
++        } catch (SchemeTimeoutException e) {
++            log.warn("Scheme timed out for payment {}; will retry", payment.getId(), e);
++            payment.setStatus(PaymentStatus.RECEIVED);
++            return payments.save(payment);
+         }
+         account.debit(payment.getAmount());
+         payment.setLedgerReference(UUID.randomUUID().toString());
+diff --git a/src/main/java/com/example/accounts/payment/PaymentRepository.java b/src/main/java/com/example/accounts/payment/PaymentRepository.java
+index 309df33..a85d15f 100644
+--- a/src/main/java/com/example/accounts/payment/PaymentRepository.java
++++ b/src/main/java/com/example/accounts/payment/PaymentRepository.java
+@@ -10,5 +10,7 @@ public interface PaymentRepository extends JpaRepository<Payment, Long> {
+ 
+     List<Payment> findByAccountIdAndCreatedAtGreaterThanEqual(Long accountId, Instant from);
+ 
++    List<Payment> findByStatus(String status);
++
+     List<Payment> findByStatusAndExecutionDateLessThanEqualOrderById(String status, LocalDate date);
+ }
+diff --git a/src/main/java/com/example/accounts/payment/SchemeRetryJob.java b/src/main/java/com/example/accounts/payment/SchemeRetryJob.java
+new file mode 100644
+index 0000000..6492385
+--- /dev/null
++++ b/src/main/java/com/example/accounts/payment/SchemeRetryJob.java
+@@ -0,0 +1,26 @@
++package com.example.accounts.payment;
++
++import org.springframework.scheduling.annotation.Scheduled;
++import org.springframework.stereotype.Component;
++import org.springframework.transaction.annotation.Transactional;
++
++/** Resubmits payments whose scheme submission timed out, every five minutes. */
++@Component
++public class SchemeRetryJob {
++
++    private final PaymentRepository payments;
++    private final PaymentDispatcher dispatcher;
++
++    public SchemeRetryJob(PaymentRepository payments, PaymentDispatcher dispatcher) {
++        this.payments = payments;
++        this.dispatcher = dispatcher;
++    }
++
++    @Scheduled(fixedRate = 300_000)
++    @Transactional
++    public void resubmit() {
++        for (Payment payment : payments.findByStatus(PaymentStatus.RECEIVED.name())) {
++            dispatcher.resubmit(payment);
++        }
++    }
++}
+diff --git a/src/main/resources/data.sql b/src/main/resources/data.sql
+index 54c2c08..89baf19 100644
+--- a/src/main/resources/data.sql
++++ b/src/main/resources/data.sql
+@@ -67,12 +67,12 @@ INSERT INTO closure_requests (id, tenant_id, account_id, requested_by, status, d
+ ALTER TABLE closure_requests ALTER COLUMN id RESTART WITH 100;
+ 
+ -- Payments made before the fixtures' "today". Statuses: see PaymentStatus.
+-INSERT INTO payments (id, tenant_id, account_id, payee_name, payee_sort_code, payee_account_number, amount, reference, status, reason_code, execution_date, scheme_id, ledger_reference, created_by, created_at) VALUES
+- (1, 'acme',   1, 'Northern Power', '601234', '11223344',  64.20, 'ELEC-8812',  'COMPLETED',      NULL,     '2026-09-15', 'S-90001', 'a6f1c2d0-1111-4c1e-9a01-000000000001', 'u-alice', '2026-09-15T09:12:00Z'),
+- (2, 'acme',   1, 'J Smith',        '309912', '55667788', 120.00, 'RENT SEPT',  'COMPLETED',      NULL,     '2026-09-28', 'S-90002', 'a6f1c2d0-1111-4c1e-9a01-000000000002', 'u-alice', '2026-09-28T08:40:00Z'),
+- (3, 'acme',   1, 'City Council',   '601299', '90001234',  98.00, 'CTAX 4471',  'REJECTED',       'AC04',   '2026-10-01', NULL,      NULL,                                   'u-alice', '2026-10-01T10:05:00Z'),
+- (4, 'acme',   1, 'J Smith',        '309912', '55667788', 120.00, 'RENT OCT',   'QUEUED',         NULL,     '2026-10-07', NULL,      NULL,                                   'u-alice', '2026-10-05T17:20:00Z'),
+- (5, 'acme',   2, 'Alice Archer',   '401122', '31926819', 200.00, 'TOP UP',     'COMPLETED',      NULL,     '2026-09-20', 'S-90005', 'a6f1c2d0-1111-4c1e-9a01-000000000005', 'u-alice', '2026-09-20T12:00:00Z'),
+- (6, 'acme',   3, 'Phone Co',       '207733', '41234567',  25.00, 'MOBILE',     'POSTING_FAILED', NULL,     '2026-09-30', 'S-90006', 'a6f1c2d0-1111-4c1e-9a01-000000000006', 'u-bob',   '2026-09-30T11:30:00Z'),
+- (7, 'globex', 4, 'Landlord Ltd',   '404040', '12121212', 300.00, 'RENT',       'COMPLETED',      NULL,     '2026-09-30', 'S-90007', 'a6f1c2d0-1111-4c1e-9a01-000000000007', 'u-carol', '2026-09-30T09:00:00Z');
++INSERT INTO payments (id, tenant_id, account_id, payee_name, payee_sort_code, payee_account_number, amount, reference, status, reason_code, execution_date, scheme_id, scheme_retries, ledger_reference, created_by, created_at) VALUES
++ (1, 'acme',   1, 'Northern Power', '601234', '11223344',  64.20, 'ELEC-8812',  'COMPLETED',      NULL,     '2026-09-15', 'S-90001', 0, 'a6f1c2d0-1111-4c1e-9a01-000000000001', 'u-alice', '2026-09-15T09:12:00Z'),
++ (2, 'acme',   1, 'J Smith',        '309912', '55667788', 120.00, 'RENT SEPT',  'COMPLETED',      NULL,     '2026-09-28', 'S-90002', 0, 'a6f1c2d0-1111-4c1e-9a01-000000000002', 'u-alice', '2026-09-28T08:40:00Z'),
++ (3, 'acme',   1, 'City Council',   '601299', '90001234',  98.00, 'CTAX 4471',  'REJECTED',       'AC04',   '2026-10-01', NULL,      0, NULL, 'u-alice', '2026-10-01T10:05:00Z'),
++ (4, 'acme',   1, 'J Smith',        '309912', '55667788', 120.00, 'RENT OCT',   'QUEUED',         NULL,     '2026-10-07', NULL,      0, NULL, 'u-alice', '2026-10-05T17:20:00Z'),
++ (5, 'acme',   2, 'Alice Archer',   '401122', '31926819', 200.00, 'TOP UP',     'COMPLETED',      NULL,     '2026-09-20', 'S-90005', 0, 'a6f1c2d0-1111-4c1e-9a01-000000000005', 'u-alice', '2026-09-20T12:00:00Z'),
++ (6, 'acme',   3, 'Phone Co',       '207733', '41234567',  25.00, 'MOBILE',     'POSTING_FAILED', NULL,     '2026-09-30', 'S-90006', 0, 'a6f1c2d0-1111-4c1e-9a01-000000000006', 'u-bob',   '2026-09-30T11:30:00Z'),
++ (7, 'globex', 4, 'Landlord Ltd',   '404040', '12121212', 300.00, 'RENT',       'COMPLETED',      NULL,     '2026-09-30', 'S-90007', 0, 'a6f1c2d0-1111-4c1e-9a01-000000000007', 'u-carol', '2026-09-30T09:00:00Z');
+ ALTER TABLE payments ALTER COLUMN id RESTART WITH 100;

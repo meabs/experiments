@@ -1,0 +1,93 @@
+diff --git a/src/main/java/com/example/accounts/payment/PaymentController.java b/src/main/java/com/example/accounts/payment/PaymentController.java
+index eff06a2..548b64d 100644
+--- a/src/main/java/com/example/accounts/payment/PaymentController.java
++++ b/src/main/java/com/example/accounts/payment/PaymentController.java
+@@ -22,6 +22,12 @@ public class PaymentController {
+         this.service = service;
+     }
+ 
++    /** Shows the amount available under the account's daily payment limit. */
++    @GetMapping("/api/accounts/{accountId}/payment-allowance")
++    public PaymentService.PaymentAllowance allowance(@PathVariable Long accountId) {
++        return service.allowance(accountId);
++    }
++
+     /** Pay someone from one of the caller's accounts. Needs the accounts:write scope. */
+     @PostMapping("/api/accounts/{accountId}/payments")
+     @ResponseStatus(HttpStatus.CREATED)
+diff --git a/src/main/java/com/example/accounts/payment/PaymentService.java b/src/main/java/com/example/accounts/payment/PaymentService.java
+index 5d41980..5953d72 100644
+--- a/src/main/java/com/example/accounts/payment/PaymentService.java
++++ b/src/main/java/com/example/accounts/payment/PaymentService.java
+@@ -22,6 +22,9 @@ import com.example.accounts.web.NotFoundException;
+ @Transactional
+ public class PaymentService {
+ 
++    public record PaymentAllowance(BigDecimal dailyLimit, BigDecimal paidToday, BigDecimal remaining) {
++    }
++
+     private final PaymentRepository payments;
+     private final AccountService accounts;
+     private final PaymentDispatcher dispatcher;
+@@ -54,7 +57,7 @@ public class PaymentService {
+         if (req.amount().compareTo(account.getBalance()) > 0) {
+             throw new ConflictException("Insufficient funds");
+         }
+-        if (paidToday(accountId).add(req.amount()).compareTo(BigDecimal.valueOf(account.getDailyLimit())) > 0) {
++        if (paidToday(accountId).add(req.amount()).compareTo(dailyLimit(account)) > 0) {
+             throw new ConflictException("Daily limit exceeded");
+         }
+         Payment payment = payments.save(new Payment(account.getTenantId(), accountId, req.payeeName().trim(),
+@@ -70,6 +73,15 @@ public class PaymentService {
+         return dispatcher.dispatch(payment);
+     }
+ 
++    /** The amount still available under the same daily-limit rules used when creating a payment. */
++    @Transactional(readOnly = true)
++    public PaymentAllowance allowance(Long accountId) {
++        Account account = accounts.getVisible(accountId);
++        BigDecimal dailyLimit = dailyLimit(account);
++        BigDecimal paidToday = paidToday(account.getId());
++        return new PaymentAllowance(dailyLimit, paidToday, dailyLimit.subtract(paidToday).max(BigDecimal.ZERO));
++    }
++
+     @Transactional(readOnly = true)
+     public Payment get(Long paymentId) {
+         Payment payment = payments.findById(paymentId).orElseThrow(() -> new NotFoundException("Payment not found"));
+@@ -87,4 +99,8 @@ public class PaymentService {
+             .filter(p -> p.getStatus() != PaymentStatus.REJECTED && p.getStatus() != PaymentStatus.CANCELLED)
+             .map(Payment::getAmount).reduce(BigDecimal.ZERO, BigDecimal::add);
+     }
++
++    private BigDecimal dailyLimit(Account account) {
++        return BigDecimal.valueOf(account.getDailyLimit());
++    }
+ }
+diff --git a/src/test/java/com/example/accounts/PaymentApiTest.java b/src/test/java/com/example/accounts/PaymentApiTest.java
+index f5adf40..d2dab1f 100644
+--- a/src/test/java/com/example/accounts/PaymentApiTest.java
++++ b/src/test/java/com/example/accounts/PaymentApiTest.java
+@@ -56,6 +56,23 @@ class PaymentApiTest extends ApiTest {
+         postAs(ALICE, "/api/accounts/1/payments", RENT.replace("120.00", "501.00")).andExpect(status().isConflict());
+     }
+ 
++    @Test
++    void allowanceShowsWhatCanStillBePaidToday() throws Exception {
++        postAs(ALICE, "/api/accounts/1/payments", RENT).andExpect(status().isCreated());
++
++        getAs(ALICE, "/api/accounts/1/payment-allowance").andExpect(status().isOk())
++            .andExpect(jsonPath("$.dailyLimit").value(500))
++            .andExpect(jsonPath("$.paidToday").value(120.0))
++            .andExpect(jsonPath("$.remaining").value(380.0));
++    }
++
++    @Test
++    void allowanceUsesAccountVisibility() throws Exception {
++        getAs(BOB, "/api/accounts/1/payment-allowance").andExpect(status().isNotFound());
++        getAs(SAM, "/api/accounts/1/payment-allowance").andExpect(status().isOk());
++        getAs(ADA, "/api/accounts/1/payment-allowance").andExpect(status().isOk());
++    }
++
+     @Test
+     void supportCannotPayFromAnAccount() throws Exception {
+         postAs(SAM, "/api/accounts/1/payments", RENT).andExpect(status().isForbidden());

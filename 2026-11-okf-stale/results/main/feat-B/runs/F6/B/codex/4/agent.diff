@@ -1,0 +1,221 @@
+diff --git a/README.md b/README.md
+index 0f576e2..1690c0f 100644
+--- a/README.md
++++ b/README.md
+@@ -17,7 +17,8 @@ clock by `MutableClock` (it starts on Tuesday 6 October 2026, 10:00 UK time).
+ ## Packages
+ 
+ - `account`, `customer`, `cases`, `closure`: accounts, customers, support cases, closure requests.
+-- `payment`: payments out of a customer's account (`PaymentService`, `PaymentDispatcher`, `QueuedPaymentJob`).
++- `payment`: payments out of a customer's account (`PaymentService`, `PaymentDispatcher`, `QueuedPaymentJob`,
++  `SchemeRetryJob`).
+ - `integration`: clients for the external systems: `scheme` (payment scheme gateway), `fraud` (fraud screening),
+   `ledger` (core ledger), `notify` (customer notifications). Their URLs and timeouts are in `application.yml`.
+ - `security`, `web`, `config`: authentication and access rules, error handling, the clock.
+diff --git a/okf/architecture.md b/okf/architecture.md
+index ce3f551..00c3260 100644
+--- a/okf/architecture.md
++++ b/okf/architecture.md
+@@ -19,7 +19,7 @@ sources:
+ | Package | What it does |
+ | --- | --- |
+ | `account`, `customer`, `cases`, `closure` | accounts, customers, support cases, closure requests (`AccountService.getVisible` applies the access rules) |
+-| `payment` | payments out: `PaymentService` (checks, cut-off, queueing), `PaymentDispatcher` (scheme, ledger, notification), `QueuedPaymentJob` (06:00 on working days) |
++| `payment` | payments out: `PaymentService` (checks, cut-off, queueing), `PaymentDispatcher` (scheme, ledger, notification), `QueuedPaymentJob` (06:00 on working days), `SchemeRetryJob` (scheme timeouts every five minutes) |
+ | `integration/scheme` | payment scheme gateway client |
+ | `integration/fraud` | fraud screening client (not yet called by payments) |
+ | `integration/ledger` | core ledger client |
+@@ -53,7 +53,8 @@ sources:
+    means.
+ 3. On a working day before 15:30: `PaymentDispatcher.dispatch`: submit to the scheme (reference `P` + id), take the
+    amount off the balance copy, post to the ledger with a new `ledgerReference`, then notify the customer.
+-   Otherwise: `QUEUED` with the next working day as `executionDate`; `QueuedPaymentJob.runDue()` dispatches it then.
++   Otherwise: `QUEUED` with the next working day as `executionDate`; `QueuedPaymentJob.runDue()` dispatches it then. A
++   scheme timeout is saved as `RECEIVED`; `SchemeRetryJob.resubmit()` retries it every five minutes.
+ 4. Statuses: `RECEIVED`, `QUEUED`, `SUBMITTED`, `COMPLETED`, `POSTING_FAILED` (sent, ledger posting failed),
+    `HELD_FOR_REVIEW` (fraud hold), `REJECTED` (scheme or fraud refused; `reasonCode`), `CANCELLED`.
+ 
+@@ -67,8 +68,8 @@ sources:
+ - **Reference** `P` + payment id, one per instruction.
+ - Reason codes: `AC01` wrong account number, `AC04` payee account closed, `DT01` invalid date, `DUPL` duplicate,
+   `RR04` regulatory (sanctions).
+-- **Timeout 10 s.** A timeout means the scheme did not take the instruction; resubmit it under a new reference
+-  (for example `P` + id + `-R1`). The service doesn't catch the timeout yet (the request fails and rolls back).
++- **Timeout 10 s.** A timeout means the scheme did not take the instruction; the payment is saved as `RECEIVED` and
++  resubmitted under a new reference (for example `P` + id + `-R1`) every five minutes.
+ 
+ ### Fraud screening
+ 
+diff --git a/okf/system.md b/okf/system.md
+index f8c8acf..fd8aa5e 100644
+--- a/okf/system.md
++++ b/okf/system.md
+@@ -49,10 +49,9 @@ It does **not** hold the money: the core ledger does. See [architecture](/archit
+ 4. **Never refuse a payment because of the time.** After the scheme's 15:30 cut-off, at weekends and on bank holidays,
+    payments are queued (`QUEUED`) for the next working day. `WorkingDays` doesn't know bank holidays yet (known gap: the
+    scheme rejects such payments with `DT01`).
+-5. **A scheme timeout means the scheme did not take the instruction.** Resubmit it under a new reference (the
+-   scheme reference is `P` + payment id; add a suffix such as `-R1`). Today a
+-   scheme timeout is not handled: the request fails and the transaction rolls back, losing the local record of a
+-   payment the scheme may have taken.
++5. **A scheme timeout means the scheme did not take the instruction.** The payment is kept as `RECEIVED` without
++   touching the balance or ledger, then `SchemeRetryJob` resubmits it every five minutes under a new reference (the
++   scheme reference is `P` + payment id; add a suffix such as `-R1`).
+ 6. **Notifications never contain a full account number or sort code**: last four digits only (`accountEnding`).
+    Notifications are best effort: a failure must never fail or undo a payment.
+ 7. **Times are UK time.** Use the injected `Clock`, never `now()` without it, or tests and the cut-off break.
+diff --git a/src/main/java/com/example/accounts/payment/Payment.java b/src/main/java/com/example/accounts/payment/Payment.java
+index 707379f..b211fa9 100644
+--- a/src/main/java/com/example/accounts/payment/Payment.java
++++ b/src/main/java/com/example/accounts/payment/Payment.java
+@@ -51,6 +51,9 @@ public class Payment {
+     /** Id the scheme gave the instruction. */
+     private String schemeId;
+ 
++    /** Number of scheme retry instructions attempted after the original instruction. */
++    private Integer schemeRetryCount;
++
+     /** Reference sent with the ledger posting. */
+     private String ledgerReference;
+ 
+@@ -75,6 +78,7 @@ public class Payment {
+         this.createdBy = createdBy;
+         this.createdAt = createdAt;
+         this.status = PaymentStatus.RECEIVED.name();
++        this.schemeRetryCount = 0;
+     }
+ 
+     public Long getId() { return id; }
+@@ -93,6 +97,8 @@ public class Payment {
+     public void setExecutionDate(LocalDate executionDate) { this.executionDate = executionDate; }
+     public String getSchemeId() { return schemeId; }
+     public void setSchemeId(String schemeId) { this.schemeId = schemeId; }
++    public int getSchemeRetryCount() { return schemeRetryCount == null ? 0 : schemeRetryCount; }
++    public void setSchemeRetryCount(int schemeRetryCount) { this.schemeRetryCount = schemeRetryCount; }
+     public String getLedgerReference() { return ledgerReference; }
+     public void setLedgerReference(String ledgerReference) { this.ledgerReference = ledgerReference; }
+     public String getCreatedBy() { return createdBy; }
+diff --git a/src/main/java/com/example/accounts/payment/PaymentDispatcher.java b/src/main/java/com/example/accounts/payment/PaymentDispatcher.java
+index 8b2ba6a..440ae7e 100644
+--- a/src/main/java/com/example/accounts/payment/PaymentDispatcher.java
++++ b/src/main/java/com/example/accounts/payment/PaymentDispatcher.java
+@@ -21,6 +21,7 @@ import com.example.accounts.integration.scheme.SchemeClient;
+ import com.example.accounts.integration.scheme.SchemePayment;
+ import com.example.accounts.integration.scheme.SchemeReceipt;
+ import com.example.accounts.integration.scheme.SchemeRejectedException;
++import com.example.accounts.integration.scheme.SchemeTimeoutException;
+ 
+ /** Sends a payment to the scheme, posts it to the ledger and tells the customer. */
+ @Component
+@@ -49,10 +50,21 @@ public class PaymentDispatcher {
+     }
+ 
+     public Payment dispatch(Payment payment) {
++        return dispatch(payment, "P" + payment.getId());
++    }
++
++    /** Resubmits a payment which was not acknowledged by the scheme. */
++    public Payment resubmit(Payment payment) {
++        int retry = payment.getSchemeRetryCount() + 1;
++        payment.setSchemeRetryCount(retry);
++        return dispatch(payment, "P" + payment.getId() + "-R" + retry);
++    }
++
++    private Payment dispatch(Payment payment, String schemeReference) {
+         Account account = accounts.findById(payment.getAccountId()).orElseThrow();
+         LocalDate today = LocalDate.now(clock);
+         try {
+-            SchemeReceipt receipt = scheme.submit(new SchemePayment("P" + payment.getId(), account.getSortCode(),
++            SchemeReceipt receipt = scheme.submit(new SchemePayment(schemeReference, account.getSortCode(),
+                 account.getAccountNumber(), payment.getPayeeName(), payment.getPayeeSortCode(),
+                 payment.getPayeeAccountNumber(), payment.getAmount(), payment.getReference(), today));
+             payment.setSchemeId(receipt.schemeId());
+@@ -62,6 +74,10 @@ public class PaymentDispatcher {
+             payment.setStatus(PaymentStatus.REJECTED);
+             payment.setReasonCode(e.getCode());
+             return payments.save(payment);
++        } catch (SchemeTimeoutException e) {
++            log.warn("Scheme timed out for payment {}, leaving it for retry", payment.getId(), e);
++            payment.setStatus(PaymentStatus.RECEIVED);
++            return payments.save(payment);
+         }
+         account.debit(payment.getAmount());
+         payment.setLedgerReference(UUID.randomUUID().toString());
+diff --git a/src/main/java/com/example/accounts/payment/PaymentRepository.java b/src/main/java/com/example/accounts/payment/PaymentRepository.java
+index 309df33..187e985 100644
+--- a/src/main/java/com/example/accounts/payment/PaymentRepository.java
++++ b/src/main/java/com/example/accounts/payment/PaymentRepository.java
+@@ -11,4 +11,6 @@ public interface PaymentRepository extends JpaRepository<Payment, Long> {
+     List<Payment> findByAccountIdAndCreatedAtGreaterThanEqual(Long accountId, Instant from);
+ 
+     List<Payment> findByStatusAndExecutionDateLessThanEqualOrderById(String status, LocalDate date);
++
++    List<Payment> findByStatusOrderById(String status);
+ }
+diff --git a/src/main/java/com/example/accounts/payment/SchemeRetryJob.java b/src/main/java/com/example/accounts/payment/SchemeRetryJob.java
+new file mode 100644
+index 0000000..207c4fa
+--- /dev/null
++++ b/src/main/java/com/example/accounts/payment/SchemeRetryJob.java
+@@ -0,0 +1,26 @@
++package com.example.accounts.payment;
++
++import org.springframework.scheduling.annotation.Scheduled;
++import org.springframework.stereotype.Component;
++import org.springframework.transaction.annotation.Transactional;
++
++/** Resubmits payments whose scheme submission timed out, every five minutes. */
++@Component
++public class SchemeRetryJob {
++
++    private final PaymentRepository payments;
++    private final PaymentDispatcher dispatcher;
++
++    public SchemeRetryJob(PaymentRepository payments, PaymentDispatcher dispatcher) {
++        this.payments = payments;
++        this.dispatcher = dispatcher;
++    }
++
++    @Scheduled(fixedRate = 300_000)
++    @Transactional
++    public void resubmit() {
++        for (Payment payment : payments.findByStatusOrderById(PaymentStatus.RECEIVED.name())) {
++            dispatcher.resubmit(payment);
++        }
++    }
++}
+diff --git a/src/test/java/com/example/accounts/PaymentApiTest.java b/src/test/java/com/example/accounts/PaymentApiTest.java
+index f5adf40..1d21455 100644
+--- a/src/test/java/com/example/accounts/PaymentApiTest.java
++++ b/src/test/java/com/example/accounts/PaymentApiTest.java
+@@ -43,6 +43,22 @@ class PaymentApiTest extends ApiTest {
+         assertThat(ledger.calls).isEmpty();
+     }
+ 
++    @Test
++    void schemeTimeoutIsReceivedAndCanBeRetried() throws Exception {
++        scheme.timeOutNext(false);
++        postAs(ALICE, "/api/accounts/1/payments", RENT).andExpect(status().isCreated())
++            .andExpect(jsonPath("$.status").value("RECEIVED"));
++        assertThat(ledger.calls).isEmpty();
++        assertThat(scheme.submitted).isEmpty();
++
++        schemeRetryJob.resubmit();
++
++        assertThat(scheme.calls).hasSize(2);
++        assertThat(scheme.calls.get(1).reference()).isEqualTo(scheme.calls.get(0).reference() + "-R1");
++        assertThat(ledger.bookedFor(1L)).hasSize(1);
++        assertThat(notifications.sent).hasSize(1);
++    }
++
+     @Test
+     void ledgerTimeoutLeavesThePaymentForOperations() throws Exception {
+         ledger.timeOutNext(1, false);
+@@ -83,4 +99,7 @@ class PaymentApiTest extends ApiTest {
+ 
+     @org.springframework.beans.factory.annotation.Autowired
+     com.example.accounts.payment.QueuedPaymentJob queuedJob;
++
++    @org.springframework.beans.factory.annotation.Autowired
++    com.example.accounts.payment.SchemeRetryJob schemeRetryJob;
+ }
