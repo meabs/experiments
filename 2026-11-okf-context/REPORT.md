@@ -73,7 +73,7 @@ fmea will be better with okf". Fixed before any run:
   answer key, leniently (same failure mode) and strictly (same mode and cause), and listed invented facts. I checked
   it by hand (amendment 12): every positive's matched row title (1,228), about 250 doubtful rows in full, and a random
   fifth of negatives; 24 positives and 2 negatives corrected, 10 of 16 "invented facts" removed. A second judge
-  (`anthropic/claude-sonnet-5.5`) graded 40 of the 75 reports before the judging credit ran out (amendment 11).
+  (`anthropic/claude-sonnet-5.5`) graded all 75 reports (the last 35 after a credit top-up; amendments 11 and 20).
 - **Statistics:** permutation tests (10,000, seed 1), bootstrap intervals, Holm correction across H2 to H7; H1 is a
   two-one-sided equivalence test on a 90% interval resampling tickets, then runs.
 
@@ -269,7 +269,7 @@ Where the context cost something (*exploratory*, added after seeing the results;
 | K14 a client retry creates a second payment | in code | 21 | 18 | 20 |
 
 On the 10 in-code entries, B found 8 points fewer than A (95% interval −13 to −3; two-sided p = 0.005, not
-Holm-adjusted); 7 of the 10 entries went down and none up. C was 4 points below A (−9 to +1; p = 0.16). A also wrote
+Holm-adjusted; the second judge gives −5 points, p = 0.08); 7 of the 10 entries went down and none up. C was 4 points below A (−9 to +1; p = 0.16). A also wrote
 more valid failure modes the key doesn't contain (3.2 per report, against B 1.5 and C 2.7; the judge's verdicts, not
 hand-checked), mostly code-level: notifications with no timeout, a queued payment dispatched twice by two instances,
 a race on closure requests.
@@ -350,9 +350,11 @@ B/12 did find it, folded into a wider "service unavailable or data lost on resta
 
 ### Robustness
 
-- **Second judge** (40 reports: 23 A, 10 B, 7 C): recall A 61%, B 76%, C 82%; B − A +15 points (p = 0.0001). It agreed
-  with the primary judge on 850 of 880 found / not-found decisions (97%). On its subset, in-code recall was A 80%, B 74%,
-  C 80%, and the same entries dropped (K21: A 23/23, B 6/10; K22: A 19/23, B 5/10).
+- **Second judge** (all 75 reports, without my hand-check overrides): recall A 61%, B 76%, C 80%; B − A +15 points
+  (p = 0.0001). It agreed with the primary judge on 1,597 of 1,650 found / not-found decisions (97%). Context-only
+  recall A 19%, B 69%, C 73%. In-code recall A 80%, B 75%, C 78%: the same entries dropped (K21 restart data loss: A 25,
+  B 19; K22 every call refused: A 20, B 13; of 25), but the in-code gap is smaller under this judge, B − A −5 points
+  (two-sided p = 0.08), so the crowding-out result rests on the primary judge and should be read as a lead.
 - **Strict matching** gives the same ordering (56%, 73%, 77%).
 - **Entry-level check** (each answer-key entry as the unit, in place of the planned mixed model, amendment 13): B − A
   +15 points over the 22 entries (95% interval +2 to +30); on the 7 context-only entries all 7 went up; on the 10 in-code
@@ -381,7 +383,8 @@ B/12 did find it, folded into a wider "service unavailable or data lost on resta
   show it (the pilot's F4 and F5), vanilla was perfect.
 - **Plain AGENTS.md did as well as OKF on the FMEA**, and was cheaper. The format didn't matter there; the facts did.
 - **The bundle crowded out code-level failure modes.** The report length stayed about the same (about 16 rows), so
-  the context-only entries B added took the place of in-code entries A had found.
+  the context-only entries B added took the place of in-code entries A had found. This is exploratory, and weaker
+  under the second judge (−5 points, p = 0.08, against −8, p = 0.005), though the same entries drop under both.
 - **`DUPL` in the prompt wasn't enough twice.** C had the sentence in its prompt from the start and still mishandled it
   in 2 of 5 runs; B, which opened the file for the task, handled it every time. With 5 runs that is not a significant
   difference (H5).
@@ -434,7 +437,7 @@ For Codex with gpt-5.6-luna on a repository like this one (the configuration tes
 - Five feature tickets, two of them chosen (after a pilot) because the code doesn't give their rules away. The feature
   result describes tickets like those, not a typical backlog.
 - No equivalence was shown anywhere: B against C, and the in-code tickets, are "no difference found", not "equal".
-- The second judge covered 40 of 75 reports; the "extra failure modes" verdicts were not hand-checked.
+- The second judge's verdicts were not hand-checked, and neither were the "extra failure modes" verdicts.
 - The bundle's authoring time was not measured (written by me in minutes); the payback figure rests on an assumption.
 
 ## 9. What I'd test next
@@ -463,6 +466,6 @@ Raw agent transcripts are not published.
 
 All amendments are in the [README's amendment log](README.md#amendment-log). Before the main run: F4 and F5 replaced
 by F6 and F7 (the user's choice), the fakes, the network and AGENTS.md loading, the judges, K03 re-tagged. After it:
-the second judge on a subset (credit), the hand check as done, mixed models replaced by an entry-level check, an
+the second judge on a subset (credit; later completed on all 75), the hand check as done, mixed models replaced by an entry-level check, an
 exploratory section added, an H5 display bug fixed, my pilot description of F6's failure corrected, and the payback
 assumption.

@@ -409,3 +409,7 @@ answer key.
     the changes requested for the features and also the end state OKF structure with samples". The quoted scope message
     is replaced by a summary of its content (the scope itself is unchanged), and REPORT.md gains the ticket texts, the
     bundle's structure with excerpts, and real FMEA rows. No result changes.
+20. **Second judge completed** (4 November 2026). After the user topped up the credit ("I added openrouter credits"),
+    the second judge graded the remaining 35 reports, so it now covers all 75 (amendment 11 is superseded on coverage).
+    All 75: recall A 61%, B 76%, C 80%; agreement with the primary judge 97% (1,597/1,650). On the exploratory in-code
+    check it gives B − A −5 points (two-sided p = 0.08), against the primary judge's −8 (p = 0.005).

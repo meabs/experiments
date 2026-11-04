@@ -252,4 +252,4 @@ Entry-level check: each answer-key entry is the unit (its share of reports that 
 
 ## 6. Robustness
 
-Second judge `anthropic/claude-sonnet-5.5`: FMEA recall A 61%, B 76%, C 82%; B - A +15 points, one-sided permutation p = 0.0001. Agreement with the primary judge on found / not found: 850/880 entry decisions (97%).
+Second judge `anthropic/claude-sonnet-5.5`: FMEA recall A 61%, B 76%, C 80%; B - A +15 points, one-sided permutation p = 0.0001. Agreement with the primary judge on found / not found: 1597/1650 entry decisions (97%).
