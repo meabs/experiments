@@ -188,6 +188,11 @@ Arm C got the same text, without front matter or links, as a "System knowledge" 
 | B, OKF | **100%** (25/25) | 77% | 0.00 |
 | C, AGENTS.md | 92% (23/25) | **81%** | 0.08 |
 
+The feature column mixes two kinds of ticket, and two of the five were chosen after a pilot because the code doesn't
+give their rules away (section 4). It is not an estimate of how much context helps on a typical backlog. Split by
+ticket: where the rule was in the code, every arm got all 15 runs right; where the decisive fact was missing from the
+repository, A got 1 of 10 right, B 10 and C 8.
+
 ### Hypotheses
 
 Differences are B − A in percentage points unless stated. H2 to H7 are Holm-adjusted together.
@@ -495,14 +500,18 @@ For Codex with gpt-5.6-luna on a repository like this one (the configuration tes
    outages, client retries, concurrency), or review a context run alongside a code-only one. With context, those
    entries were found less often. That either fix works is untested.
 4. **Don't expect the format to do the work.** OKF and plain AGENTS.md weren't distinguishable here; choose by what a
-   team will keep up to date.
+   team will keep up to date. B and C differed in two ways at once (OKF's structure and metadata, and files opened on
+   demand against text loaded up front), so this experiment can't say whether OKF's format adds anything over the
+   same content as ordinary linked Markdown files.
 
 ### Risks this exposes
 
 - **Silent, plausible integration errors** when the context is missing: the code builds, tests pass, the summary says
   done, and the external system's rule is broken.
-- **Attention is finite.** Adding context shifted the FMEA towards the service's role and away from its internals; a
-  reviewer who assumes "more context, strictly better" would miss that.
+- **More context isn't strictly better.** Adding context shifted the FMEA towards the service's role and away from its
+  internals; a reviewer who assumes otherwise would miss that. Why is untested: the prompt set no length, and the
+  reports stayed about the same length in every arm, which fits the agent deciding when a report is complete as well as
+  a limit on what it attends to.
 - **Stale context** was not tested. A bundle that is wrong about a reason code would presumably be followed as
   faithfully as this one was (B used `PAYMENT_FAILED` in every run); earlier OKF work here found stale facts repeated.
 - **Having a fact in context isn't the same as using it** (C's two `DUPL` failures).
@@ -513,6 +522,16 @@ For Codex with gpt-5.6-luna on a repository like this one (the configuration tes
   also mine, and I did the hand check. A real bank system is bigger and messier, and a team's bundle may be better or
   worse.
 - One agent and model at one effort level.
+- **B against C is not a test of the OKF format alone.** It compares two packages: OKF files opened on demand, and a
+  plain section loaded into the prompt. A fourth arm, the same text as ordinary Markdown files linked from AGENTS.md,
+  would separate the format from the delivery.
+- **The bundle's provenance metadata is synthetic.** Its front matter says `generated.by: human:accounts-squad`; I
+  (Claude) wrote it for this test. No arm was told who wrote it, and nothing here tests whether provenance fields
+  affect trust, but a provenance field is a claim, not evidence of who wrote a file.
+- **F6 is graded on the simulated contract.** In the fake, the scheme answers `DUPL` only to a reference it has
+  accepted, so `DUPL` on a resubmission means the payment went. The bundle also documents a status query
+  (`GET /v2/instructions/{reference}`) that reports the outcome; a real integration would be safer confirming with it
+  than inferring acceptance from `DUPL`. No F6 run used the status query, so no run was marked down for doing so.
 - Five feature tickets, two of them chosen (after a pilot) because the code doesn't give their rules away. The feature
   result describes tickets like those, not a typical backlog.
 - No equivalence was shown anywhere: B against C, and the in-code tickets, are "no difference found", not "equal".
@@ -522,8 +541,10 @@ For Codex with gpt-5.6-luna on a repository like this one (the configuration tes
 ## 9. What I'd test next
 
 - **Stale context:** the same bundle with three facts made wrong, to measure how often the agent follows the wrong
-  fact over the code.
-- **A combined FMEA prompt:** context plus an explicit code-level checklist, to see if it keeps both halves.
+  fact over the code, detects the conflict or checks an authoritative source.
+- **Format against delivery:** the same text as ordinary Markdown files linked from AGENTS.md, beside the OKF bundle,
+  to see whether OKF's structure and metadata add anything.
+- **A two-pass FMEA:** separate technical and business passes, to see if it keeps both halves.
 - **A bigger, real service** with a team-written bundle, and a stronger model.
 
 ## 10. How to reproduce the results
@@ -547,4 +568,5 @@ All amendments are in the [README's amendment log](README.md#amendment-log). Bef
 by F6 and F7 (the user's choice), the fakes, the network and AGENTS.md loading, the judges, K03 re-tagged. After it:
 the second judge on a subset (credit; later completed on all 75), the hand check as done, mixed models replaced by an entry-level check, an
 exploratory section added, an H5 display bug fixed, my pilot description of F6's failure corrected, and the payback
-assumption.
+assumption. After an external review: the headline's ticket mix, the B-against-C confound, the bundle's synthetic
+provenance and the F6 status query are stated, and "attention is finite" is softened (amendment 21).

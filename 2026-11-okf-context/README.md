@@ -413,3 +413,10 @@ answer key.
     the second judge graded the remaining 35 reports, so it now covers all 75 (amendment 11 is superseded on coverage).
     All 75: recall A 61%, B 76%, C 80%; agreement with the primary judge 97% (1,597/1,650). On the exploratory in-code
     check it gives B − A −5 points (two-sided p = 0.08), against the primary judge's −8 (p = 0.005).
+21. **External review** (4 November 2026). The user shared a reviewer's feedback and asked: "review this feedback and
+    see if it changes [your] view". Checked against the files, four points are added to REPORT.md, with no result
+    changed: the feature headline depends on two tickets chosen for missing facts; B against C changes format and
+    delivery together, so H5 is not a test of OKF's format alone; the bundle's `generated.by: human:accounts-squad` is
+    synthetic (I wrote it); and F6 is graded on the simulated contract although the bundle documents a status query. The
+    risk "attention is finite" is reworded, because the FMEA prompt set no length and the data fit the agent deciding a
+    report is complete just as well. Section 9 gains a format-against-delivery arm and a two-pass FMEA.
