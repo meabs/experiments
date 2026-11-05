@@ -2,6 +2,10 @@
 
 *Site title: Can an AI agent turn experimental evidence into a better coding setup?*
 
+**This experiment was written by an AI agent** (Claude Code, working for me): tickets, hidden tests, reference fixes,
+D's routine and skills, and E's settings from my published findings. I chose the options and approved the design. In
+the follow-on I write the configuration, AGENTS.md and skills myself.
+
 5 November 2026. Design: [README.md](README.md), pushed before any measured run (d902d92a). The amendments made while
 analysing (README section 10) don't change a hypothesis, a measure, a ticket or a test. Full numbers:
 [results/main/analysis.json](results/main/analysis.json), per run [results/main/runs.csv](results/main/runs.csv),
@@ -194,8 +198,8 @@ Bounded to the configuration tested: Codex 0.157, gpt-5.6-luna at medium effort,
 
 ## 9. What I'd test next
 
-- **A follow-on, separate from ELC: can I do better than the agent?** I build an evidence-led configuration
-  myself from the same findings, with the reason for each choice, freeze it, and compare it with V, D and E v1 on fresh
+- **A follow-on, separate from ELC: can I do better than the agent?** I write an evidence-led configuration
+  myself (AGENTS.md, skills and settings) from the same findings, with the reason for each choice, freeze it, and compare it with V, D and E v1 on fresh
   held-out tickets, with cost. ELC itself continues under its original rules.
 - **Round 2**, as designed: E changes only when a newly published finding supports it. This round's result is not a
   finding E may use (that would tune E to these tickets). It becomes a question for a separate experiment.
