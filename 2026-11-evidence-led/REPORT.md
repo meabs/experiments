@@ -4,7 +4,7 @@
 
 **This experiment was written by an AI agent** (Claude Code, working for me): tickets, hidden tests, reference fixes,
 D's routine and skills, and E's settings from my published findings. I chose the options and approved the design. E is
-therefore the agent's interpretation of my findings. The follow-on tests how I would interpret the same findings: I
+therefore the agent's interpretation of my findings. A separate experiment, ELC-H1 (Human vs Agent Evidence Interpretation), tests how I would interpret the same findings: I
 write the configuration, AGENTS.md and skills myself and run them against the agent's version.
 
 5 November 2026. Design: [README.md](README.md), pushed before any measured run (d902d92a). The amendments made while
@@ -153,8 +153,10 @@ reference fix, and piloting it took far longer than running it.
 
 - For this agent and model on hard bug reports in a Java codebase, a short general AGENTS.md with three small skills
   raised the share of the ticket's acceptance tests passed from 36% to 53%, at about twice the tokens and time per run.
-- My single-setting findings did not combine into a setup that beat that. Settings tested on easy tasks (count the
-  tests, run the suite, gate on the suite) mostly guard against failures these tickets don't produce.
+- An agent-generated configuration based on previously supported findings did not outperform common-sense engineering
+  practice on these harder tickets. This evaluates the agent's selection and combination of the findings, not the
+  findings themselves: the settings it chose (count the tests, run the suite, gate on the suite) mostly guard against
+  failures these tickets don't produce.
 - Even the best arm passed every hidden test in only 4 of 30 runs. On tickets like these, the agent's change still
   needs a person or a real acceptance test.
 
@@ -199,10 +201,12 @@ Bounded to the configuration tested: Codex 0.157, gpt-5.6-luna at medium effort,
 
 ## 9. What I'd test next
 
-- **A follow-on, separate from ELC: my interpretation of the evidence against the agent's.** I write an evidence-led configuration
-  myself (AGENTS.md, skills and settings) from the same findings, with the reason for each choice, freeze it, and compare it with V, D and E v1 on fresh
-  held-out tickets, with cost. ELC itself continues under its original rules.
-- **Round 2**, as designed: E changes only when a newly published finding supports it. This round's result is not a
+- **ELC-H1: Human vs Agent Evidence Interpretation, a separate experiment.** I write an evidence-led configuration
+  myself (AGENTS.md, skills and settings) from the same findings, with the reason for each choice, freeze it, and
+  compare it with V, D and E v1 on fresh held-out tickets, with cost. Because the agent wrote this round's tests and
+  D, an independent review of ELC-H1's tickets and hidden tests is required before it runs. It compares outcomes; it
+  can't isolate why one interpretation wins (experience, design choices, preparation time). ELC keeps its own rounds.
+- **ELC round 2**, as designed: E changes only when a newly published finding supports it. This round's result is not a
   finding E may use (that would tune E to these tickets). It becomes a question for a separate experiment.
 - **Which part of D helps**: the requirements checklist, the "add tests" line, or the self-review, each on its own on
   these tickets.
