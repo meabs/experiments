@@ -1,0 +1,185 @@
+diff --git a/sm-core/src/main/java/com/salesmanager/core/business/services/shoppingcart/ShoppingCartServiceImpl.java b/sm-core/src/main/java/com/salesmanager/core/business/services/shoppingcart/ShoppingCartServiceImpl.java
+index e0d1ce8d1..fa56711f7 100755
+--- a/sm-core/src/main/java/com/salesmanager/core/business/services/shoppingcart/ShoppingCartServiceImpl.java
++++ b/sm-core/src/main/java/com/salesmanager/core/business/services/shoppingcart/ShoppingCartServiceImpl.java
+@@ -75,7 +75,16 @@ public class ShoppingCartServiceImpl extends SalesManagerEntityServiceImpl<Long,
+ 			List<ShoppingCart> shoppingCarts = shoppingCartRepository.findByCustomer(customer.getId());
+ 
+ 			// elect valid shopping cart
+-			List<ShoppingCart> validCart = shoppingCarts.stream().filter((cart) -> cart.getOrderId() == null)
++			// one entry per cart (the query joins line items), most recently created or changed first
++			java.util.Map<Long, ShoppingCart> byId = new java.util.LinkedHashMap<>();
++			for (ShoppingCart c : shoppingCarts) {
++				byId.putIfAbsent(c.getId(), c);
++			}
++			List<ShoppingCart> validCart = byId.values().stream().filter((cart) -> cart.getOrderId() == null)
++					.sorted(java.util.Comparator.comparing((ShoppingCart c) -> c.getAuditSection() == null
++							|| c.getAuditSection().getDateModified() == null ? new java.util.Date(0)
++									: c.getAuditSection().getDateModified())
++							.thenComparing(ShoppingCart::getId).reversed())
+ 					.collect(Collectors.toList());
+ 
+ 			ShoppingCart shoppingCart = null;
+diff --git a/sm-shop/src/main/java/com/salesmanager/shop/store/api/v1/order/OrderApi.java b/sm-shop/src/main/java/com/salesmanager/shop/store/api/v1/order/OrderApi.java
+index b0ca07457..6d3a2f5ea 100755
+--- a/sm-shop/src/main/java/com/salesmanager/shop/store/api/v1/order/OrderApi.java
++++ b/sm-shop/src/main/java/com/salesmanager/shop/store/api/v1/order/OrderApi.java
+@@ -383,6 +383,11 @@ public class OrderApi {
+ 
+ 		} catch (Exception e) {
+ 			LOGGER.error("Error while processing checkout", e);
++			for (Throwable c = e; c != null; c = c.getCause() == c ? null : c.getCause()) {
++				if (c.getMessage() != null && c.getMessage().contains("Payment.amount does not match")) {
++					throw new ServiceRuntimeException("Error during checkout [" + c.getMessage() + "]", e);
++				}
++			}
+ 			try {
+ 				response.sendError(503, "Error while processing checkout " + e.getMessage());
+ 			} catch (Exception ignore) {
+diff --git a/sm-shop/src/main/java/com/salesmanager/shop/store/api/v1/order/OrderTotalApi.java b/sm-shop/src/main/java/com/salesmanager/shop/store/api/v1/order/OrderTotalApi.java
+index 27f25e97a..01005d2df 100755
+--- a/sm-shop/src/main/java/com/salesmanager/shop/store/api/v1/order/OrderTotalApi.java
++++ b/sm-shop/src/main/java/com/salesmanager/shop/store/api/v1/order/OrderTotalApi.java
+@@ -59,6 +59,9 @@ public class OrderTotalApi {
+ 
+   @Inject private OrderService orderService;
+ 
++  @Inject
++  private com.salesmanager.core.business.services.shoppingcart.ShoppingCartService populatedCarts;
++
+   private static final Logger LOGGER = LoggerFactory.getLogger(OrderTotalApi.class);
+ 
+   /**
+@@ -128,8 +131,10 @@ public class OrderTotalApi {
+ 
+       OrderSummary orderSummary = new OrderSummary();
+       orderSummary.setShippingSummary(shippingSummary);
++      // the cart as checkout sees it: each line with its product and current price
++      ShoppingCart priced = populatedCarts.getByCode(shoppingCart.getShoppingCartCode(), merchantStore);
+       List<ShoppingCartItem> itemsSet =
+-          new ArrayList<ShoppingCartItem>(shoppingCart.getLineItems());
++          new ArrayList<ShoppingCartItem>((priced == null ? shoppingCart : priced).getLineItems());
+       orderSummary.setProducts(itemsSet);
+ 
+       orderTotalSummary =
+diff --git a/sm-shop/src/main/java/com/salesmanager/shop/store/api/v1/shoppingCart/ShoppingCartApi.java b/sm-shop/src/main/java/com/salesmanager/shop/store/api/v1/shoppingCart/ShoppingCartApi.java
+index 7c300f257..d0e296932 100755
+--- a/sm-shop/src/main/java/com/salesmanager/shop/store/api/v1/shoppingCart/ShoppingCartApi.java
++++ b/sm-shop/src/main/java/com/salesmanager/shop/store/api/v1/shoppingCart/ShoppingCartApi.java
+@@ -80,8 +80,10 @@ public class ShoppingCartApi {
+ 	public @ResponseBody ReadableShoppingCart addToCart(
+ 			@Valid @RequestBody PersistableShoppingCartItem shoppingCartItem,
+ 			@ApiIgnore MerchantStore merchantStore,
+-			@ApiIgnore Language language) {
+-		return shoppingCartFacade.addToCart(shoppingCartItem, merchantStore, language);
++			@ApiIgnore Language language, HttpServletRequest request) {
++		ReadableShoppingCart cart = shoppingCartFacade.addToCart(shoppingCartItem, merchantStore, language);
++		claim(cart, request, merchantStore);
++		return cart;
+ 	}
+ 
+ 	@PutMapping(value = "/cart/{code}")
+@@ -93,7 +95,7 @@ public class ShoppingCartApi {
+ 			@Valid @RequestBody PersistableShoppingCartItem shoppingCartItem, 
+ 			@ApiIgnore MerchantStore merchantStore,
+ 			@ApiIgnore Language language, 
+-			HttpServletResponse response) {
++			HttpServletResponse response, HttpServletRequest request) {
+ 
+ 		try {
+ 			ReadableShoppingCart cart = shoppingCartFacade.modifyCart(code, shoppingCartItem, merchantStore, language);
+@@ -101,6 +103,7 @@ public class ShoppingCartApi {
+ 			if (cart == null) {
+ 				return new ResponseEntity<>(HttpStatus.NOT_FOUND);
+ 			}
++			claim(cart, request, merchantStore);
+ 
+ 			return new ResponseEntity<>(cart, HttpStatus.CREATED);
+ 
+@@ -154,11 +157,12 @@ public class ShoppingCartApi {
+ 			@PathVariable String code,
+ 			@Valid @RequestBody PersistableShoppingCartItem[] shoppingCartItems, 
+ 			@ApiIgnore MerchantStore merchantStore,
+-			@ApiIgnore Language language) {
++			@ApiIgnore Language language, HttpServletRequest request) {
+ 
+ 		try {
+ 			ReadableShoppingCart cart = shoppingCartFacade.modifyCartMulti(code, Arrays.asList(shoppingCartItems),
+ 					merchantStore, language);
++			claim(cart, request, merchantStore);
+ 
+ 			return new ResponseEntity<>(cart, HttpStatus.CREATED);
+ 
+@@ -300,4 +304,40 @@ public class ShoppingCartApi {
+ 		}
+ 		return new ResponseEntity<>(updatedCart, HttpStatus.NO_CONTENT);
+ 	}
++
++	@Inject
++	private com.salesmanager.shop.store.security.JWTTokenUtil jwtTokenUtil;
++
++	@Inject
++	private com.salesmanager.core.business.services.shoppingcart.ShoppingCartService shoppingCartServiceForOwner;
++
++	/**
++	 * If the request carries a customer's token, the cart becomes (or stays) that customer's, and is marked as changed
++	 * now. A cart that already belongs to another customer is left alone.
++	 */
++	private void claim(ReadableShoppingCart cart, HttpServletRequest request, MerchantStore store) {
++		if (cart == null || cart.getCode() == null || request == null) {
++			return;
++		}
++		String header = request.getHeader("Authorization");
++		if (header == null || !header.startsWith("Bearer ")) {
++			return;
++		}
++		try {
++			String userName = jwtTokenUtil.getUsernameFromToken(header.substring(7));
++			Customer customer = userName == null ? null : customerService.getByNick(userName, store.getId());
++			if (customer == null) {
++				return;
++			}
++			com.salesmanager.core.model.shoppingcart.ShoppingCart model = shoppingCartServiceForOwner.getByCode(cart.getCode(), store);
++			if (model == null || (model.getCustomerId() != null && !model.getCustomerId().equals(customer.getId()))) {
++				return;
++			}
++			model.setCustomerId(customer.getId());
++			model.getAuditSection().setDateModified(new java.util.Date());
++			shoppingCartServiceForOwner.saveOrUpdate(model);
++		} catch (Exception e) {
++			LOGGER.warn("Could not link cart " + cart.getCode() + " to its customer", e);
++		}
++	}
+ }
+diff --git a/sm-shop/src/main/java/com/salesmanager/shop/store/controller/order/facade/OrderFacadeImpl.java b/sm-shop/src/main/java/com/salesmanager/shop/store/controller/order/facade/OrderFacadeImpl.java
+index 0da643be2..26f635308 100755
+--- a/sm-shop/src/main/java/com/salesmanager/shop/store/controller/order/facade/OrderFacadeImpl.java
++++ b/sm-shop/src/main/java/com/salesmanager/shop/store/controller/order/facade/OrderFacadeImpl.java
+@@ -1075,20 +1075,15 @@ public class OrderFacadeImpl implements OrderFacade {
+ 
+ 		if (CollectionUtils.isEmpty(orders)) {
+ 			returnList.setRecordsTotal(0);
+-			// returnList.setMessage("No results for store code " + store);
+-			return null;
+-		}
+-
+-		List<com.salesmanager.shop.model.order.v0.ReadableOrder> readableOrders = new ArrayList<com.salesmanager.shop.model.order.v0.ReadableOrder>();
+-		for (Order order : orders) {
+-			com.salesmanager.shop.model.order.v0.ReadableOrder readableOrder = new com.salesmanager.shop.model.order.v0.ReadableOrder();
+-			readableOrderPopulator.populate(order, readableOrder, store, language);
+-			readableOrders.add(readableOrder);
+-
++			returnList.setTotalPages(0);
++			return returnList;
+ 		}
+ 
+-		returnList.setRecordsTotal(orderList.getTotalCount());
+-		return this.populateOrderList(orderList, store, language);
++		com.salesmanager.shop.model.order.v0.ReadableOrderList list = this.populateOrderList(orderList, store, language);
++		list.setRecordsTotal(orderList.getTotalCount());
++		int size = criteria.getMaxCount() > 0 ? criteria.getMaxCount() : Math.max(1, orders.size());
++		list.setTotalPages((int) ((orderList.getTotalCount() + size - 1) / size));
++		return list;
+ 
+ 	}
+ 

@@ -1,0 +1,131 @@
+diff --git a/sm-core/src/main/java/com/salesmanager/core/business/services/catalog/category/CategoryServiceImpl.java b/sm-core/src/main/java/com/salesmanager/core/business/services/catalog/category/CategoryServiceImpl.java
+index 36a1aebe9..042aaab6a 100755
+--- a/sm-core/src/main/java/com/salesmanager/core/business/services/catalog/category/CategoryServiceImpl.java
++++ b/sm-core/src/main/java/com/salesmanager/core/business/services/catalog/category/CategoryServiceImpl.java
+@@ -31,6 +31,10 @@ import com.salesmanager.core.model.reference.language.Language;
+ @Service("categoryService")
+ public class CategoryServiceImpl extends SalesManagerEntityServiceImpl<Long, Category> implements CategoryService {
+ 
++	@javax.persistence.PersistenceContext
++	private javax.persistence.EntityManager entityManager;
++
++
+ 
+   private CategoryRepository categoryRepository;
+ 
+@@ -230,15 +234,21 @@ public class CategoryServiceImpl extends SalesManagerEntityServiceImpl<Long, Cat
+ 	// @Override
+ 	public void delete(Category category) throws ServiceException {
+ 
+-		// get category with lineage (subcategories)
+-		StringBuilder lineage = new StringBuilder();
+-		lineage.append(category.getLineage()).append(category.getId()).append(Constants.SLASH);
+-		List<Category> categories = this.getListByLineage(category.getMerchantStore(), lineage.toString());
+-
+ 		Category dbCategory = getById(category.getId(), category.getMerchantStore().getId());
+ 
+ 		if (dbCategory != null && dbCategory.getId().longValue() == category.getId().longValue()) {
+ 
++			// the category and every category below it: their lineage starts with this category's own lineage
++			// (which already ends with its id)
++			List<Category> categories = new ArrayList<Category>();
++			if (dbCategory.getLineage() != null) {
++				for (Category c : this.getListByLineage(category.getMerchantStore(), dbCategory.getLineage())) {
++					if (c.getLineage() != null && c.getLineage().startsWith(dbCategory.getLineage())
++							&& c.getId().longValue() != dbCategory.getId().longValue()) {
++						categories.add(c);
++					}
++				}
++			}
+ 			categories.add(dbCategory);
+ 
+ 			Collections.reverse(categories);
+@@ -256,30 +266,30 @@ public class CategoryServiceImpl extends SalesManagerEntityServiceImpl<Long, Cat
+ 			// all product
+ 			// categories
+ 
++			// the products stay; they are only taken out of the deleted categories. They were loaded with only the
++			// matching categories joined, so each is read again in full before it is saved.
++			List<Long> productIds = new ArrayList<Long>();
+ 			for (Product product : products) {
+-				// session.evict(product);// refresh product so we get all
+-				// product categories
+-				Product dbProduct = productService.getById(product.getId());
+-				Set<Category> productCategories = dbProduct.getCategories();
+-				if (productCategories.size() > 1) {
+-					for (Category c : categories) {
+-						productCategories.remove(c);
+-						productService.update(dbProduct);
+-					}
+-
+-					if (product.getCategories() == null || product.getCategories().size() == 0) {
+-						productService.delete(dbProduct);
+-					}
++				productIds.add(product.getId());
++			}
++			entityManager.flush();
++			entityManager.clear();
++			for (Long productId : productIds) {
++				Product dbProduct = productService.getById(productId);
++				dbProduct.getCategories().removeIf(c -> categoryIds.contains(c.getId()));
++				productService.update(dbProduct);
++			}
+ 
+-				} else {
+-					productService.delete(dbProduct);
++			// the deepest categories first, so that no category is deleted before the ones below it
++			categories.sort((x, y) -> Integer.compare(
++					y.getLineage() == null ? 0 : y.getLineage().length(), x.getLineage() == null ? 0 : x.getLineage().length()));
++			for (Category c : categories) {
++				Category categ = getById(c.getId(), category.getMerchantStore().getId());
++				if (categ != null) {
++					categoryRepository.delete(categ);
+ 				}
+-
+ 			}
+ 
+-			Category categ = getById(category.getId(), category.getMerchantStore().getId());
+-			categoryRepository.delete(categ);
+-
+ 		}
+ 
+ 	}
+diff --git a/sm-shop/src/main/java/com/salesmanager/shop/store/api/v1/category/CategoryApi.java b/sm-shop/src/main/java/com/salesmanager/shop/store/api/v1/category/CategoryApi.java
+index 6c3ace248..d6bfcabec 100755
+--- a/sm-shop/src/main/java/com/salesmanager/shop/store/api/v1/category/CategoryApi.java
++++ b/sm-shop/src/main/java/com/salesmanager/shop/store/api/v1/category/CategoryApi.java
+@@ -69,14 +69,16 @@ public class CategoryApi {
+ 	@ApiImplicitParams({ @ApiImplicitParam(name = "store", dataType = "string", defaultValue = "DEFAULT"),
+ 			@ApiImplicitParam(name = "lang", dataType = "string", defaultValue = "en") })
+ 	public ReadableCategory get(
+-			@PathVariable(name = "id") Long categoryId, 
++			@PathVariable(name = "id") String idOrFriendlyUrl, 
+ 			@ApiIgnore MerchantStore merchantStore,
+-			@ApiIgnore Language language) {
+-		ReadableCategory category = categoryFacade.getById(merchantStore, categoryId, language);
+-		return category;
++			@ApiIgnore Language language) throws Exception {
++		if (idOrFriendlyUrl.matches("\\d+")) {
++			return categoryFacade.getById(merchantStore, Long.valueOf(idOrFriendlyUrl), language);
++		}
++		return categoryFacade.getCategoryByFriendlyUrl(merchantStore, idOrFriendlyUrl, language);
+ 	}
+ 
+-	@GetMapping(value = "/category/{friendlyUrl}", produces = { APPLICATION_JSON_VALUE })
++	@GetMapping(value = "/category/name/{friendlyUrl}", produces = { APPLICATION_JSON_VALUE })
+ 	@ApiOperation(httpMethod = "GET", value = "Get category list for an given Category code", notes = "List current Category and child category")
+ 	@ApiResponses(value = {
+ 			@ApiResponse(code = 200, message = "List of category found", response = ReadableCategory.class) })
+diff --git a/sm-shop/src/main/java/com/salesmanager/shop/store/facade/category/CategoryFacadeImpl.java b/sm-shop/src/main/java/com/salesmanager/shop/store/facade/category/CategoryFacadeImpl.java
+index 3d9067d23..0046a3f5c 100755
+--- a/sm-shop/src/main/java/com/salesmanager/shop/store/facade/category/CategoryFacadeImpl.java
++++ b/sm-shop/src/main/java/com/salesmanager/shop/store/facade/category/CategoryFacadeImpl.java
+@@ -363,7 +363,7 @@ public class CategoryFacadeImpl implements CategoryFacade {
+ 	}
+ 
+ 	private Category getOne(Long categoryId, int storeId) {
+-		return Optional.ofNullable(categoryService.getById(categoryId)).orElseThrow(
++		return Optional.ofNullable(categoryService.getById(categoryId, storeId)).orElseThrow(
+ 				() -> new ResourceNotFoundException(String.format("No Category found for ID : %s", categoryId)));
+ 	}
+ 

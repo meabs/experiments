@@ -1,0 +1,296 @@
+diff --git a/sm-core-model/src/main/java/com/salesmanager/core/business/exception/ServiceException.java b/sm-core-model/src/main/java/com/salesmanager/core/business/exception/ServiceException.java
+index 2452c45c5..5ed7b55c0 100755
+--- a/sm-core-model/src/main/java/com/salesmanager/core/business/exception/ServiceException.java
++++ b/sm-core-model/src/main/java/com/salesmanager/core/business/exception/ServiceException.java
+@@ -15,6 +15,7 @@ public class ServiceException extends Exception {
+ 	public final static int EXCEPTION_PAYMENT_DECLINED = 100;
+ 	public final static int EXCEPTION_TRANSACTION_DECLINED = 101;
+ 	public final static int EXCEPTION_INVENTORY_MISMATCH = 120;
++	public final static int EXCEPTION_QUANTITY_LIMITS = 121;
+ 	
+ 	private String messageCode = null;
+ 
+diff --git a/sm-core/src/main/java/com/salesmanager/core/business/services/order/OrderServiceImpl.java b/sm-core/src/main/java/com/salesmanager/core/business/services/order/OrderServiceImpl.java
+index b6bac5202..55bbfe519 100755
+--- a/sm-core/src/main/java/com/salesmanager/core/business/services/order/OrderServiceImpl.java
++++ b/sm-core/src/main/java/com/salesmanager/core/business/services/order/OrderServiceImpl.java
+@@ -143,6 +143,30 @@ public class OrderServiceImpl  extends SalesManagerEntityServiceImpl<Long, Order
+     	}
+ 
+ 
++    	// each product's quantity must be within its current order limits (they can change after it was put in the cart)
++    	Map<String, Integer> ordered = new java.util.LinkedHashMap<String, Integer>();
++    	for (OrderProduct orderProduct : order.getOrderProducts()) {
++    		ordered.merge(orderProduct.getSku(), orderProduct.getProductQuantity(), Integer::sum);
++    	}
++    	for (Map.Entry<String, Integer> o : ordered.entrySet()) {
++    		Product p = productService.getBySku(o.getKey(), store);
++    		if (p == null) {
++    			continue;
++    		}
++    		for (ProductAvailability a : p.getAvailabilities()) {
++    			if (a.getProductVariant() != null) {
++    				continue;
++    			}
++    			Integer min = a.getProductQuantityOrderMin();
++    			Integer max = a.getProductQuantityOrderMax();
++    			if ((min != null && o.getValue() < min) || (max != null && max != -1 && o.getValue() > max)) {
++    				throw new ServiceException(ServiceException.EXCEPTION_QUANTITY_LIMITS,
++    						o.getValue() + " of " + o.getKey() + " is outside its order limits");
++    			}
++    			break;
++    		}
++    	}
++
+     	//first process payment
+     	Transaction processTransaction = paymentService.processPayment(customer, store, payment, items, order);
+ 
+diff --git a/sm-shop/src/main/java/com/salesmanager/shop/mapper/catalog/product/PersistableProductMapper.java b/sm-shop/src/main/java/com/salesmanager/shop/mapper/catalog/product/PersistableProductMapper.java
+index 6c78dec13..95e8b025a 100644
+--- a/sm-shop/src/main/java/com/salesmanager/shop/mapper/catalog/product/PersistableProductMapper.java
++++ b/sm-shop/src/main/java/com/salesmanager/shop/mapper/catalog/product/PersistableProductMapper.java
+@@ -246,9 +246,24 @@ public class PersistableProductMapper implements Mapper<PersistableProduct, Prod
+ 			 */
+ 			
+ 			if(source.getInventory() != null) {
+-				ProductAvailability productAvailability = persistableProductAvailabilityMapper.convert(source.getInventory(), store, language);
+-				productAvailability.setProduct(destination);
+-				destination.getAvailabilities().add(productAvailability);
++				ProductAvailability existing = null;
++				for (ProductAvailability a : destination.getAvailabilities()) {
++					if (a.getId() != null && a.getProductVariant() == null) {
++						existing = a;
++						break;
++					}
++				}
++				if (existing != null) {
++					existing.setProductQuantity(source.getInventory().getQuantity());
++					existing.setProductQuantityOrderMin(source.getQuantityOrderMinimum());
++					existing.setProductQuantityOrderMax(source.getQuantityOrderMaximum());
++				} else {
++					ProductAvailability productAvailability = persistableProductAvailabilityMapper.convert(source.getInventory(), store, language);
++					productAvailability.setProductQuantityOrderMin(source.getQuantityOrderMinimum());
++					productAvailability.setProductQuantityOrderMax(source.getQuantityOrderMaximum());
++					productAvailability.setProduct(destination);
++					destination.getAvailabilities().add(productAvailability);
++				}
+ 			} else {
+ 				//need an inventory to create a Product
+ 				if(!CollectionUtils.isEmpty(destination.getVariants())) {
+diff --git a/sm-shop/src/main/java/com/salesmanager/shop/mapper/catalog/product/ReadableProductMapper.java b/sm-shop/src/main/java/com/salesmanager/shop/mapper/catalog/product/ReadableProductMapper.java
+index 89bd5eacf..dac7e4c8f 100644
+--- a/sm-shop/src/main/java/com/salesmanager/shop/mapper/catalog/product/ReadableProductMapper.java
++++ b/sm-shop/src/main/java/com/salesmanager/shop/mapper/catalog/product/ReadableProductMapper.java
+@@ -357,7 +357,7 @@ public class ReadableProductMapper implements Mapper<Product, ReadableProduct> {
+ 			availability = a;
+ 			destination.setQuantity(availability.getProductQuantity() == null ? 1 : availability.getProductQuantity());
+ 			destination.setQuantityOrderMaximum(
+-					availability.getProductQuantityOrderMax() == null ? 1 : availability.getProductQuantityOrderMax());
++					availability.getProductQuantityOrderMax() == null ? -1 : availability.getProductQuantityOrderMax());
+ 			destination.setQuantityOrderMinimum(
+ 					availability.getProductQuantityOrderMin() == null ? 1 : availability.getProductQuantityOrderMin());
+ 			if (availability.getProductQuantity().intValue() > 0 && destination.isAvailable()) {
+diff --git a/sm-shop/src/main/java/com/salesmanager/shop/store/api/exception/ConflictException.java b/sm-shop/src/main/java/com/salesmanager/shop/store/api/exception/ConflictException.java
+new file mode 100644
+index 000000000..1b13ea83a
+--- /dev/null
++++ b/sm-shop/src/main/java/com/salesmanager/shop/store/api/exception/ConflictException.java
+@@ -0,0 +1,21 @@
++package com.salesmanager.shop.store.api.exception;
++
++/** The request can't be done in the current state (for example, not enough stock): HTTP 409 Conflict. */
++public class ConflictException extends RuntimeException {
++
++	private static final long serialVersionUID = 1L;
++
++	public ConflictException(String message) {
++		super(message);
++	}
++
++	/** The ConflictException in the cause chain of t, or null. */
++	public static ConflictException in(Throwable t) {
++		for (Throwable c = t; c != null; c = c.getCause() == c ? null : c.getCause()) {
++			if (c instanceof ConflictException) {
++				return (ConflictException) c;
++			}
++		}
++		return null;
++	}
++}
+diff --git a/sm-shop/src/main/java/com/salesmanager/shop/store/api/exception/RestErrorHandler.java b/sm-shop/src/main/java/com/salesmanager/shop/store/api/exception/RestErrorHandler.java
+index 054ea331d..817da12f7 100755
+--- a/sm-shop/src/main/java/com/salesmanager/shop/store/api/exception/RestErrorHandler.java
++++ b/sm-shop/src/main/java/com/salesmanager/shop/store/api/exception/RestErrorHandler.java
+@@ -37,6 +37,13 @@ public class RestErrorHandler {
+     }
+ 
+ 
++    @RequestMapping(produces = "application/json")
++    @ExceptionHandler(ConflictException.class)
++    @ResponseStatus(HttpStatus.CONFLICT)
++    public @ResponseBody ErrorEntity handleConflict(ConflictException exception) {
++        return createErrorEntity("409", exception.getMessage(), null);
++    }
++
+     /**
+      * Generic exception serviceException handler
+      */
+diff --git a/sm-shop/src/main/java/com/salesmanager/shop/store/api/v1/order/OrderApi.java b/sm-shop/src/main/java/com/salesmanager/shop/store/api/v1/order/OrderApi.java
+index b0ca07457..0999b7e06 100755
+--- a/sm-shop/src/main/java/com/salesmanager/shop/store/api/v1/order/OrderApi.java
++++ b/sm-shop/src/main/java/com/salesmanager/shop/store/api/v1/order/OrderApi.java
+@@ -455,6 +455,9 @@ public class OrderApi {
+ 
+ 
+ 		} catch (Exception e) {
++			if (outsideLimits(e)) {
++				throw new com.salesmanager.shop.store.api.exception.ConflictException("The cart is outside a product's order limits");
++			}
+ 			if(e instanceof CredentialsException) {
+ 				throw new GenericRuntimeException("412","Credentials creation Failed [" + e.getMessage() + "]");
+ 			}
+@@ -517,4 +520,15 @@ public class OrderApi {
+ 		orderFacade.updateOrderStatus(order, statusEnum, merchantStore);
+ 		return;
+ 	}
++
++	private static boolean outsideLimits(Throwable e) {
++		for (Throwable c = e; c != null; c = c.getCause() == c ? null : c.getCause()) {
++			if (c instanceof com.salesmanager.core.business.exception.ServiceException
++					&& ((com.salesmanager.core.business.exception.ServiceException) c).getExceptionType()
++							== com.salesmanager.core.business.exception.ServiceException.EXCEPTION_QUANTITY_LIMITS) {
++				return true;
++			}
++		}
++		return false;
++	}
+ }
+diff --git a/sm-shop/src/main/java/com/salesmanager/shop/store/api/v1/product/ProductApi.java b/sm-shop/src/main/java/com/salesmanager/shop/store/api/v1/product/ProductApi.java
+index 2352a424f..dab459a5e 100755
+--- a/sm-shop/src/main/java/com/salesmanager/shop/store/api/v1/product/ProductApi.java
++++ b/sm-shop/src/main/java/com/salesmanager/shop/store/api/v1/product/ProductApi.java
+@@ -109,6 +109,10 @@ public class ProductApi {
+ 			@ApiImplicitParam(name = "lang", dataType = "String", defaultValue = "en") })
+ 	public @ResponseBody Entity create(@Valid @RequestBody PersistableProduct product,
+ 			@ApiIgnore MerchantStore merchantStore, @ApiIgnore Language language) {
++		String invalid = invalidLimits(product);
++		if (invalid != null) {
++			throw new com.salesmanager.shop.store.api.exception.RestApiException("400", invalid);
++		}
+ 	
+ 		Long id = productCommonFacade.saveProduct(merchantStore, product, language);
+ 		Entity returnEntity = new Entity();
+@@ -130,6 +134,12 @@ public class ProductApi {
+ 			// Make sure we have consistency in this request
+ 			if (!id.equals(product.getId())) {
+ 				response.sendError(400, "Error url id does not match object id");
++				return;
++			}
++			String invalid = invalidLimits(product);
++			if (invalid != null) {
++				response.sendError(400, invalid);
++				return;
+ 			}
+ 
+ 			productCommonFacade.saveProduct(merchantStore, product,
+@@ -513,4 +523,16 @@ public class ProductApi {
+ 		}
+ 	}
+ 
++	/** Why the product's order limits are invalid, or null if they are fine (-1 is no maximum). */
++	private static String invalidLimits(PersistableProduct product) {
++		int min = product.getQuantityOrderMinimum();
++		int max = product.getQuantityOrderMaximum();
++		if (min < 1) {
++			return "quantityOrderMinimum must be at least 1";
++		}
++		if (max != -1 && max < min) {
++			return "quantityOrderMaximum must be -1 (no maximum) or at least quantityOrderMinimum";
++		}
++		return null;
++	}
+ }
+diff --git a/sm-shop/src/main/java/com/salesmanager/shop/store/controller/shoppingCart/facade/ShoppingCartFacadeImpl.java b/sm-shop/src/main/java/com/salesmanager/shop/store/controller/shoppingCart/facade/ShoppingCartFacadeImpl.java
+index 7fdc13915..5f2ac2e8a 100755
+--- a/sm-shop/src/main/java/com/salesmanager/shop/store/controller/shoppingCart/facade/ShoppingCartFacadeImpl.java
++++ b/sm-shop/src/main/java/com/salesmanager/shop/store/controller/shoppingCart/facade/ShoppingCartFacadeImpl.java
+@@ -11,6 +11,7 @@ import java.util.ArrayList;
+ import java.util.Date;
+ import java.util.HashSet;
+ import java.util.List;
++import java.util.Collections;
+ import java.util.Optional;
+ import java.util.Set;
+ import java.util.UUID;
+@@ -756,6 +757,7 @@ public class ShoppingCartFacadeImpl implements ShoppingCartFacade {
+ 	public ReadableShoppingCart addToCart(PersistableShoppingCartItem item, MerchantStore store, Language language) {
+ 
+ 		Validate.notNull(item, "PersistableShoppingCartItem cannot be null");
++		checkLimits(Collections.singletonList(item), store);
+ 
+ 		// if cart does not exist create a new one
+ 
+@@ -1054,6 +1056,7 @@ public class ShoppingCartFacadeImpl implements ShoppingCartFacade {
+ 		if (cartModel == null) {
+ 			throw new ResourceNotFoundException("Cart code [" + cartCode + "] not found");
+ 		}
++		checkLimits(Collections.singletonList(item), store);
+ 
+ 		return modifyCart(cartModel, item, store, language);
+ 	}
+@@ -1069,6 +1072,7 @@ public class ShoppingCartFacadeImpl implements ShoppingCartFacade {
+ 		if (cartModel == null) {
+ 			throw new IllegalArgumentException("Cart code not valid");
+ 		}
++		checkLimits(items, store);
+ 
+ 		return modifyCartMulti(cartModel, items, store, language);
+ 	}
+@@ -1161,4 +1165,47 @@ public class ShoppingCartFacadeImpl implements ShoppingCartFacade {
+ 
+ 	}
+ 
++	/** A cart can't hold a product below its minimum or above its maximum order quantity (0 removes it). */
++	private void checkLimits(List<PersistableShoppingCartItem> items, MerchantStore store) {
++		if (items == null) {
++			return;
++		}
++		for (PersistableShoppingCartItem i : items) {
++			if (i == null || i.getProduct() == null || i.getQuantity() <= 0) {
++				continue;
++			}
++			Product product;
++			try {
++				product = productService.getBySku(i.getProduct(), store);
++			} catch (Exception e) {
++				continue;
++			}
++			if (product == null) {
++				continue;
++			}
++			String broken = brokenLimit(product, i.getQuantity());
++			if (broken != null) {
++				throw new ServiceRuntimeException(broken, new IllegalArgumentException(broken));
++			}
++		}
++	}
++
++	/** Why this quantity breaks the product's limits, or null. */
++	public static String brokenLimit(Product product, int quantity) {
++		for (ProductAvailability a : product.getAvailabilities()) {
++			if (a.getProductVariant() != null) {
++				continue;
++			}
++			Integer min = a.getProductQuantityOrderMin();
++			Integer max = a.getProductQuantityOrderMax();
++			if (min != null && quantity < min) {
++				return "At least " + min + " of " + product.getSku() + " must be ordered";
++			}
++			if (max != null && max != -1 && quantity > max) {
++				return "At most " + max + " of " + product.getSku() + " can be ordered";
++			}
++			return null;
++		}
++		return null;
++	}
+ }
