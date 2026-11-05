@@ -1,0 +1,179 @@
+diff --git a/sm-core/src/main/java/com/salesmanager/core/business/services/catalog/category/CategoryServiceImpl.java b/sm-core/src/main/java/com/salesmanager/core/business/services/catalog/category/CategoryServiceImpl.java
+index 36a1aeb..ea588c4 100755
+--- a/sm-core/src/main/java/com/salesmanager/core/business/services/catalog/category/CategoryServiceImpl.java
++++ b/sm-core/src/main/java/com/salesmanager/core/business/services/catalog/category/CategoryServiceImpl.java
+@@ -1,11 +1,11 @@
+ package com.salesmanager.core.business.services.catalog.category;
+ 
+ import java.util.ArrayList;
+-import java.util.Collections;
+ import java.util.HashSet;
+ import java.util.List;
+ import java.util.Optional;
+ import java.util.Set;
++import java.util.stream.Collectors;
+ 
+ import javax.inject.Inject;
+ 
+@@ -230,49 +230,29 @@ public class CategoryServiceImpl extends SalesManagerEntityServiceImpl<Long, Cat
+ 	// @Override
+ 	public void delete(Category category) throws ServiceException {
+ 
+-		// get category with lineage (subcategories)
+-		StringBuilder lineage = new StringBuilder();
+-		lineage.append(category.getLineage()).append(category.getId()).append(Constants.SLASH);
+-		List<Category> categories = this.getListByLineage(category.getMerchantStore(), lineage.toString());
++		// A category's lineage includes the category itself. Therefore, all categories
++		// whose lineage starts with this category's lineage are in its subtree.
++		List<Category> categories = new ArrayList<>(
++				this.getListByLineage(category.getMerchantStore(), category.getLineage()));
+ 
+ 		Category dbCategory = getById(category.getId(), category.getMerchantStore().getId());
+ 
+ 		if (dbCategory != null && dbCategory.getId().longValue() == category.getId().longValue()) {
+ 
+-			categories.add(dbCategory);
+-
+-			Collections.reverse(categories);
+-
+-			List<Long> categoryIds = new ArrayList<Long>();
+-
+-			for (Category c : categories) {
+-				categoryIds.add(c.getId());
++			if (categories.stream().noneMatch(c -> c.getId().equals(dbCategory.getId()))) {
++				categories.add(dbCategory);
+ 			}
+ 
++			List<Long> categoryIds = categories.stream().map(Category::getId).collect(Collectors.toList());
++
+ 			List<Product> products = productService.getProducts(categoryIds);
+-			// org.hibernate.Session session =
+-			// em.unwrap(org.hibernate.Session.class);// need to refresh the
+-			// session to update
+-			// all product
+-			// categories
+ 
+ 			for (Product product : products) {
+-				// session.evict(product);// refresh product so we get all
+-				// product categories
+ 				Product dbProduct = productService.getById(product.getId());
+ 				Set<Category> productCategories = dbProduct.getCategories();
+-				if (productCategories.size() > 1) {
+-					for (Category c : categories) {
+-						productCategories.remove(c);
+-						productService.update(dbProduct);
+-					}
+-
+-					if (product.getCategories() == null || product.getCategories().size() == 0) {
+-						productService.delete(dbProduct);
+-					}
+-
+-				} else {
+-					productService.delete(dbProduct);
++				if (productCategories != null) {
++					productCategories.removeIf(productCategory -> categoryIds.contains(productCategory.getId()));
++					productService.update(dbProduct);
+ 				}
+ 
+ 			}
+diff --git a/sm-core/src/test/java/com/salesmanager/test/catalog/CategoryServiceDeleteTest.java b/sm-core/src/test/java/com/salesmanager/test/catalog/CategoryServiceDeleteTest.java
+new file mode 100644
+index 0000000..84d3c90
+--- /dev/null
++++ b/sm-core/src/test/java/com/salesmanager/test/catalog/CategoryServiceDeleteTest.java
+@@ -0,0 +1,74 @@
++package com.salesmanager.test.catalog;
++
++import static org.junit.Assert.assertTrue;
++import static org.mockito.ArgumentMatchers.any;
++import static org.mockito.ArgumentMatchers.anyList;
++import static org.mockito.Mockito.never;
++import static org.mockito.Mockito.verify;
++import static org.mockito.Mockito.when;
++
++import java.util.Arrays;
++import java.util.HashSet;
++
++import org.junit.Test;
++import org.springframework.test.util.ReflectionTestUtils;
++
++import com.salesmanager.core.business.repositories.catalog.category.CategoryDescriptionRepository;
++import com.salesmanager.core.business.repositories.catalog.category.CategoryRepository;
++import com.salesmanager.core.business.repositories.catalog.category.PageableCategoryRepository;
++import com.salesmanager.core.business.services.catalog.category.CategoryServiceImpl;
++import com.salesmanager.core.business.services.catalog.product.ProductService;
++import com.salesmanager.core.model.catalog.category.Category;
++import com.salesmanager.core.model.catalog.product.Product;
++import com.salesmanager.core.model.merchant.MerchantStore;
++
++import static org.mockito.Mockito.mock;
++
++public class CategoryServiceDeleteTest {
++
++    @Test
++    public void deleteRemovesCategoryLinksButKeepsProducts() throws Exception {
++        CategoryRepository categoryRepository = mock(CategoryRepository.class);
++        CategoryDescriptionRepository descriptionRepository = mock(CategoryDescriptionRepository.class);
++        PageableCategoryRepository pageableCategoryRepository = mock(PageableCategoryRepository.class);
++        ProductService productService = mock(ProductService.class);
++
++        CategoryServiceImpl service = new CategoryServiceImpl(categoryRepository);
++        ReflectionTestUtils.setField(service, "categoryDescriptionRepository", descriptionRepository);
++        ReflectionTestUtils.setField(service, "pageableCategoryRepository", pageableCategoryRepository);
++        ReflectionTestUtils.setField(service, "productService", productService);
++
++        MerchantStore store = new MerchantStore();
++        store.setId(7);
++
++        Category root = category(10L, "/10/", store);
++        Category child = category(11L, "/10/11/", store);
++        Category other = category(20L, "/20/", store);
++        Product product = new Product();
++        product.setId(30L);
++        product.setCategories(new HashSet<>(Arrays.asList(root, child, other)));
++
++        when(categoryRepository.findByLineage(store.getId(), root.getLineage())).thenReturn(Arrays.asList(child));
++        when(categoryRepository.findByIdAndStore(root.getId(), store.getId())).thenReturn(root);
++        when(descriptionRepository.listByCategoryId(root.getId())).thenReturn(Arrays.asList());
++        when(productService.getProducts(anyList())).thenReturn(Arrays.asList(product));
++        when(productService.getById(product.getId())).thenReturn(product);
++
++        service.delete(root);
++
++        assertTrue(product.getCategories().contains(other));
++        assertTrue(!product.getCategories().contains(root));
++        assertTrue(!product.getCategories().contains(child));
++        verify(productService).update(product);
++        verify(productService, never()).delete(any(Product.class));
++        verify(categoryRepository).delete(root);
++    }
++
++    private Category category(Long id, String lineage, MerchantStore store) {
++        Category category = new Category();
++        category.setId(id);
++        category.setLineage(lineage);
++        category.setMerchantStore(store);
++        return category;
++    }
++}
+diff --git a/sm-shop/src/main/java/com/salesmanager/shop/store/facade/category/CategoryFacadeImpl.java b/sm-shop/src/main/java/com/salesmanager/shop/store/facade/category/CategoryFacadeImpl.java
+index 3d9067d..a91fc11 100755
+--- a/sm-shop/src/main/java/com/salesmanager/shop/store/facade/category/CategoryFacadeImpl.java
++++ b/sm-shop/src/main/java/com/salesmanager/shop/store/facade/category/CategoryFacadeImpl.java
+@@ -358,15 +358,10 @@ public class CategoryFacadeImpl implements CategoryFacade {
+ 
+ 	@Override
+ 	public void deleteCategory(Long categoryId, MerchantStore store) {
+-		Category category = getOne(categoryId, store.getId());
++		Category category = getById(store, categoryId);
+ 		deleteCategory(category);
+ 	}
+ 
+-	private Category getOne(Long categoryId, int storeId) {
+-		return Optional.ofNullable(categoryService.getById(categoryId)).orElseThrow(
+-				() -> new ResourceNotFoundException(String.format("No Category found for ID : %s", categoryId)));
+-	}
+-
+ 	@Override
+ 	public List<ReadableProductVariant> categoryProductVariants(Long categoryId, MerchantStore store,
+ 			Language language) {

@@ -1,0 +1,203 @@
+diff --git a/sm-core/src/main/java/com/salesmanager/core/business/repositories/catalog/product/ProductRepositoryImpl.java b/sm-core/src/main/java/com/salesmanager/core/business/repositories/catalog/product/ProductRepositoryImpl.java
+index 754c86d..c617134 100755
+--- a/sm-core/src/main/java/com/salesmanager/core/business/repositories/catalog/product/ProductRepositoryImpl.java
++++ b/sm-core/src/main/java/com/salesmanager/core/business/repositories/catalog/product/ProductRepositoryImpl.java
+@@ -378,7 +378,11 @@ public class ProductRepositoryImpl implements ProductRepositoryCustom {
+ 		//qs.append("left join fetch p.owner owner ");
+ 
+ 		// qs.append("where pa.region in (:lid) ");
+-		qs.append("where categs.id in (:cid)");
++		// Filter products by category without restricting the fetched category
++		// collection. Category deletion must be able to remove only the deleted
++		// links and preserve every other category link on the product.
++		qs.append("where p.id in (select filteredProduct.id from Product filteredProduct ");
++		qs.append("join filteredProduct.categories filteredCategory where filteredCategory.id in (:cid))");
+ 
+ 		String hql = qs.toString();
+ 		Query q = this.em.createQuery(hql);
+diff --git a/sm-core/src/main/java/com/salesmanager/core/business/services/catalog/category/CategoryServiceImpl.java b/sm-core/src/main/java/com/salesmanager/core/business/services/catalog/category/CategoryServiceImpl.java
+index 36a1aeb..a86fc98 100755
+--- a/sm-core/src/main/java/com/salesmanager/core/business/services/catalog/category/CategoryServiceImpl.java
++++ b/sm-core/src/main/java/com/salesmanager/core/business/services/catalog/category/CategoryServiceImpl.java
+@@ -1,7 +1,6 @@
+ package com.salesmanager.core.business.services.catalog.category;
+ 
+ import java.util.ArrayList;
+-import java.util.Collections;
+ import java.util.HashSet;
+ import java.util.List;
+ import java.util.Optional;
+@@ -230,24 +229,23 @@ public class CategoryServiceImpl extends SalesManagerEntityServiceImpl<Long, Cat
+ 	// @Override
+ 	public void delete(Category category) throws ServiceException {
+ 
+-		// get category with lineage (subcategories)
+-		StringBuilder lineage = new StringBuilder();
+-		lineage.append(category.getLineage()).append(category.getId()).append(Constants.SLASH);
+-		List<Category> categories = this.getListByLineage(category.getMerchantStore(), lineage.toString());
+-
+ 		Category dbCategory = getById(category.getId(), category.getMerchantStore().getId());
+ 
+ 		if (dbCategory != null && dbCategory.getId().longValue() == category.getId().longValue()) {
+-
+-			categories.add(dbCategory);
+-
+-			Collections.reverse(categories);
++			// A category's lineage already contains its own id. Querying with the
++			// lineage therefore returns the category and all of its descendants,
++			// including descendants of a root category.
++			List<Category> categories = this.getListByLineage(category.getMerchantStore(), dbCategory.getLineage());
++			if (categories.stream().noneMatch(c -> c.getId().equals(dbCategory.getId()))) {
++				categories.add(dbCategory);
++			}
+ 
+ 			List<Long> categoryIds = new ArrayList<Long>();
+ 
+ 			for (Category c : categories) {
+ 				categoryIds.add(c.getId());
+ 			}
++			Set<Long> deletedCategoryIds = new HashSet<Long>(categoryIds);
+ 
+ 			List<Product> products = productService.getProducts(categoryIds);
+ 			// org.hibernate.Session session =
+@@ -257,28 +255,14 @@ public class CategoryServiceImpl extends SalesManagerEntityServiceImpl<Long, Cat
+ 			// categories
+ 
+ 			for (Product product : products) {
+-				// session.evict(product);// refresh product so we get all
+-				// product categories
+-				Product dbProduct = productService.getById(product.getId());
+-				Set<Category> productCategories = dbProduct.getCategories();
+-				if (productCategories.size() > 1) {
+-					for (Category c : categories) {
+-						productCategories.remove(c);
+-						productService.update(dbProduct);
+-					}
+-
+-					if (product.getCategories() == null || product.getCategories().size() == 0) {
+-						productService.delete(dbProduct);
+-					}
+-
+-				} else {
+-					productService.delete(dbProduct);
+-				}
+-
++				Set<Category> productCategories = product.getCategories();
++				productCategories.removeIf(productCategory -> deletedCategoryIds.contains(productCategory.getId()));
++				productService.update(product);
+ 			}
+ 
+-			Category categ = getById(category.getId(), category.getMerchantStore().getId());
+-			categoryRepository.delete(categ);
++			// Product-category links have been removed above. Deleting the root
++			// cascades to its child categories without touching products.
++			categoryRepository.delete(dbCategory);
+ 
+ 		}
+ 
+diff --git a/sm-core/src/test/java/com/salesmanager/test/catalog/CategoryTest.java b/sm-core/src/test/java/com/salesmanager/test/catalog/CategoryTest.java
+index 95f92c7..50c017c 100755
+--- a/sm-core/src/test/java/com/salesmanager/test/catalog/CategoryTest.java
++++ b/sm-core/src/test/java/com/salesmanager/test/catalog/CategoryTest.java
+@@ -4,6 +4,8 @@ import static org.junit.Assert.assertNotNull;
+ 
+ import java.util.HashSet;
+ import java.util.Set;
++import java.util.Date;
++import java.util.UUID;
+ 
+ import org.junit.Assert;
+ import org.junit.Test;
+@@ -11,6 +13,10 @@ import org.junit.Test;
+ import com.salesmanager.core.business.exception.ServiceException;
+ import com.salesmanager.core.model.catalog.category.Category;
+ import com.salesmanager.core.model.catalog.category.CategoryDescription;
++import com.salesmanager.core.model.catalog.product.Product;
++import com.salesmanager.core.model.catalog.product.availability.ProductAvailability;
++import com.salesmanager.core.model.catalog.product.description.ProductDescription;
++import com.salesmanager.core.model.catalog.product.type.ProductType;
+ import com.salesmanager.core.model.merchant.MerchantStore;
+ import com.salesmanager.core.model.reference.language.Language;
+ 
+@@ -62,6 +68,66 @@ public class CategoryTest extends com.salesmanager.test.common.AbstractSalesMana
+ 
+ 	}
+ 
++	@Test
++	public void deleteCategoryTreeKeepsProductsAndOtherCategoryLinks() throws Exception {
++		Language en = languageService.getByCode("en");
++		MerchantStore store = merchantService.getByCode(MerchantStore.DEFAULT_STORE);
++
++		Category root = category("delete-root-" + UUID.randomUUID(), "Delete root", store, en);
++		Category child = category("delete-child-" + UUID.randomUUID(), "Delete child", store, en);
++		child.setParent(root);
++		categoryService.create(child);
++		categoryService.addChild(root, child);
++		Category other = category("keep-category-" + UUID.randomUUID(), "Keep category", store, en);
++
++		Product product = new Product();
++		product.setSku("delete-category-product-" + UUID.randomUUID());
++		product.setMerchantStore(store);
++		product.setType(productTypeService.getProductType(ProductType.GENERAL_TYPE));
++		ProductDescription productDescription = new ProductDescription();
++		productDescription.setName("Product kept after category deletion");
++		productDescription.setLanguage(en);
++		productDescription.setProduct(product);
++		product.getDescriptions().add(productDescription);
++		product.getCategories().add(root);
++		product.getCategories().add(child);
++		product.getCategories().add(other);
++		ProductAvailability availability = new ProductAvailability();
++		availability.setProduct(product);
++		availability.setProductDateAvailable(new Date());
++		availability.setProductQuantity(10);
++		availability.setRegion("*");
++		product.getAvailabilities().add(availability);
++		productService.saveProduct(product);
++
++		categoryService.delete(root);
++
++		Product kept = productService.getBySku(product.getSku(), store, en);
++		Assert.assertNotNull(kept);
++		Assert.assertEquals(1, kept.getCategories().size());
++		Assert.assertEquals(other.getId(), kept.getCategories().iterator().next().getId());
++		Assert.assertNull(categoryService.getById(root.getId(), store.getId()));
++		Assert.assertNull(categoryService.getById(child.getId(), store.getId()));
++
++		productService.delete(kept);
++		categoryService.delete(other);
++	}
++
++	private Category category(String code, String name, MerchantStore store, Language language) throws Exception {
++		Category category = new Category();
++		category.setMerchantStore(store);
++		category.setCode(code);
++		CategoryDescription description = new CategoryDescription();
++		description.setName(name);
++		description.setCategory(category);
++		description.setLanguage(language);
++		Set<CategoryDescription> descriptions = new HashSet<CategoryDescription>();
++		descriptions.add(description);
++		category.setDescriptions(descriptions);
++		categoryService.create(category);
++		return category;
++	}
++
+ 
+ 
+-}
+\ No newline at end of file
++}
+diff --git a/sm-shop/src/main/java/com/salesmanager/shop/store/facade/category/CategoryFacadeImpl.java b/sm-shop/src/main/java/com/salesmanager/shop/store/facade/category/CategoryFacadeImpl.java
+index 3d9067d..0046a3f 100755
+--- a/sm-shop/src/main/java/com/salesmanager/shop/store/facade/category/CategoryFacadeImpl.java
++++ b/sm-shop/src/main/java/com/salesmanager/shop/store/facade/category/CategoryFacadeImpl.java
+@@ -363,7 +363,7 @@ public class CategoryFacadeImpl implements CategoryFacade {
+ 	}
+ 
+ 	private Category getOne(Long categoryId, int storeId) {
+-		return Optional.ofNullable(categoryService.getById(categoryId)).orElseThrow(
++		return Optional.ofNullable(categoryService.getById(categoryId, storeId)).orElseThrow(
+ 				() -> new ResourceNotFoundException(String.format("No Category found for ID : %s", categoryId)));
+ 	}
+ 

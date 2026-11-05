@@ -1,7 +1,7 @@
 # Does an evidence-led setup beat good practice on very hard tickets? (experiment ELC)
 
-**Status: design draft, not yet pushed.** No measured run has been made. This README is the pre-registration. After
-it is pushed it changes only through the amendment log at the end, which quotes the user.
+**Status: round 1 done** ([REPORT.md](REPORT.md)). This README is the pre-registration, pushed before any measured
+run (d902d92a). It changes only through the amendment log at the end, which quotes the user.
 
 **A running experiment.** This one is not run once. It is re-run in rounds as more experiments are published on
 [programmingtheloop.com](https://programmingtheloop.com/experiments/). One arm, the evidence-led setup, is rebuilt from
@@ -274,3 +274,19 @@ counts equally.
 - 2026-11-05 (before any measured run): **arm D smoke run** (one run, STOCK, not counted). Codex listed the three
   skills from `.agents/skills` and the agent read all three before starting; 546 s. The smoke runs' scores (E 2 of 15,
   D 11 of 15) are single runs and are not results.
+- 2026-11-05 (after the design push, d902d92a, at the start of the main run; no design change): the user said "Go".
+  The three arms run at the same time, each one run at a time (`parallel = 1`), so time of day and API load fall on
+  every arm alike; three test suites at once fit the machine (32 cores, 30 GB).
+- 2026-11-05 (while analysing round 1; no hypothesis, measure, ticket or test changed):
+  - **The VERIFICATION request.** The rig's `claim = true` setting, in every arm's trial file, appends one sentence to
+    every prompt asking the agent to end with a `VERIFICATION:` line (commands run, result, what it could not check).
+    It is the instrument behind the false-claim count and was the same in all three arms, but this README did not say
+    so. It is a small nudge to check the work and may narrow the differences between arms (REPORT section 8).
+  - **False success claim, as computed:** some hidden test fails, the VERIFICATION line reports "passed", and the
+    summary admits nothing unfinished (`scripts/analyse.py`, `false_claim`).
+  - **List price:** gpt-5.6-luna at $0.20 per million new input tokens, $0.02 cached, $1.20 output, read from OpenAI's
+    pricing page on 2026-11-05. Section 8's estimate used a higher price.
+  - **Gate's effect:** E's gate never blocked (30 of 30 runs stopped green with 40 tests run), so the secondary
+    "scores before and after a block" has nothing to compare.
+  - **Tools for the mechanism checks:** `scripts/mechanisms.py` reads the agents' commands and diffs; sub-agent use,
+    model and effort come from the Codex session files (90 of 90: gpt-5.6-luna, medium, Codex 0.157.0, no sub-agents).

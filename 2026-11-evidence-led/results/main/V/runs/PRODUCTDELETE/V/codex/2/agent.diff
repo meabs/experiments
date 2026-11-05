@@ -1,0 +1,145 @@
+diff --git a/sm-core/src/main/java/com/salesmanager/core/business/services/shoppingcart/ShoppingCartServiceImpl.java b/sm-core/src/main/java/com/salesmanager/core/business/services/shoppingcart/ShoppingCartServiceImpl.java
+index e0d1ce8..0815b6d 100755
+--- a/sm-core/src/main/java/com/salesmanager/core/business/services/shoppingcart/ShoppingCartServiceImpl.java
++++ b/sm-core/src/main/java/com/salesmanager/core/business/services/shoppingcart/ShoppingCartServiceImpl.java
+@@ -232,35 +232,35 @@ public class ShoppingCartServiceImpl extends SalesManagerEntityServiceImpl<Long,
+ 
+ 		try {
+ 
+-			boolean cartIsObsolete = false;
+ 			if (shoppingCart != null) {
+ 
+ 				Set<ShoppingCartItem> items = shoppingCart.getLineItems();
+ 				if (items == null || items.size() == 0) {
+-					shoppingCart.setObsolete(true);
++					// An empty cart is still valid after its last product is deleted.
++					shoppingCart.setObsolete(false);
+ 					return shoppingCart;
+ 
+ 				}
+ 
+-				// Set<ShoppingCartItem> shoppingCartItems = new
+-				// HashSet<ShoppingCartItem>();
++				Set<ShoppingCartItem> deletedItems = new HashSet<>();
+ 				for (ShoppingCartItem item : items) {
+ 					LOGGER.debug("Populate item " + item.getId());
+ 					getPopulatedItem(item, store);
+ 					LOGGER.debug("Obsolete item ? " + item.isObsolete());
+ 					if (item.isObsolete()) {
+-						cartIsObsolete = true;
++						deletedItems.add(item);
+ 					}
+ 				}
+ 
++				for (ShoppingCartItem deletedItem : deletedItems) {
++					deleteShoppingCartItem(deletedItem.getId());
++				}
++				items.removeAll(deletedItems);
+ 				Set<ShoppingCartItem> refreshedItems = new HashSet<>(items);
+ 
+ 				shoppingCart.setLineItems(refreshedItems);
+ 				update(shoppingCart);
+ 
+-				if (cartIsObsolete) {
+-					shoppingCart.setObsolete(true);
+-				}
+ 				return shoppingCart;
+ 			}
+ 
+@@ -292,7 +292,14 @@ public class ShoppingCartServiceImpl extends SalesManagerEntityServiceImpl<Long,
+ 	@Transactional
+ 	private void getPopulatedItem(final ShoppingCartItem item, MerchantStore store) throws Exception {
+ 
+-		Product product = productService.getBySku(item.getSku(), store, store.getDefaultLanguage());
++		Product product;
++		try {
++			product = productService.getBySku(item.getSku(), store, store.getDefaultLanguage());
++		} catch (ServiceException e) {
++			// A missing SKU is a stale cart line, not a broken cart.
++			item.setObsolete(true);
++			return;
++		}
+ 
+ 		if (product == null) {
+ 			item.setObsolete(true);
+diff --git a/sm-shop/src/main/java/com/salesmanager/shop/mapper/cart/ReadableShoppingCartMapper.java b/sm-shop/src/main/java/com/salesmanager/shop/mapper/cart/ReadableShoppingCartMapper.java
+index ba56548..befe260 100644
+--- a/sm-shop/src/main/java/com/salesmanager/shop/mapper/cart/ReadableShoppingCartMapper.java
++++ b/sm-shop/src/main/java/com/salesmanager/shop/mapper/cart/ReadableShoppingCartMapper.java
+@@ -130,6 +130,10 @@ public class ReadableShoppingCartMapper implements Mapper<ShoppingCart, Readable
+ 			if (items != null) {
+ 
+ 				for (com.salesmanager.core.model.shoppingcart.ShoppingCartItem item : items) {
++					if (item.getProduct() == null) {
++						// Defensive guard for carts loaded before stale lines were cleaned.
++						continue;
++					}
+ 					ReadableShoppingCartItem shoppingCartItem = new ReadableShoppingCartItem();
+ 					readableMinimalProductMapper.merge(item.getProduct(), shoppingCartItem, store, language);
+ 					
+diff --git a/sm-shop/src/main/java/com/salesmanager/shop/mapper/order/ReadableOrderProductMapper.java b/sm-shop/src/main/java/com/salesmanager/shop/mapper/order/ReadableOrderProductMapper.java
+index f0bec6f..2c29844 100644
+--- a/sm-shop/src/main/java/com/salesmanager/shop/mapper/order/ReadableOrderProductMapper.java
++++ b/sm-shop/src/main/java/com/salesmanager/shop/mapper/order/ReadableOrderProductMapper.java
+@@ -26,7 +26,6 @@ import com.salesmanager.shop.model.catalog.product.ReadableProduct;
+ import com.salesmanager.shop.model.order.ReadableOrderProduct;
+ import com.salesmanager.shop.model.order.ReadableOrderProductAttribute;
+ import com.salesmanager.shop.store.api.exception.ConversionRuntimeException;
+-import com.salesmanager.shop.store.api.exception.ServiceRuntimeException;
+ import com.salesmanager.shop.utils.ImageFilePath;
+ 
+ @Component
+@@ -105,7 +104,9 @@ public class ReadableOrderProductMapper implements Mapper<OrderProduct, Readable
+ 			try {
+ 				product = productService.getBySku(productSku, store, language);
+ 			} catch (ServiceException e) {
+-				throw new ServiceRuntimeException(e);
++				// OrderProduct stores the purchased SKU/name/price snapshot. The
++				// current catalog product is optional after product deletion.
++				product = null;
+ 			}
+ 			if (product != null) {
+ 				
+diff --git a/sm-shop/src/main/java/com/salesmanager/shop/populator/order/ReadableOrderProductPopulator.java b/sm-shop/src/main/java/com/salesmanager/shop/populator/order/ReadableOrderProductPopulator.java
+index 54bb5f9..998823a 100755
+--- a/sm-shop/src/main/java/com/salesmanager/shop/populator/order/ReadableOrderProductPopulator.java
++++ b/sm-shop/src/main/java/com/salesmanager/shop/populator/order/ReadableOrderProductPopulator.java
+@@ -15,7 +15,6 @@ import com.salesmanager.shop.model.catalog.product.ReadableProduct;
+ import com.salesmanager.shop.model.order.ReadableOrderProduct;
+ import com.salesmanager.shop.model.order.ReadableOrderProductAttribute;
+ import com.salesmanager.shop.populator.catalog.ReadableProductPopulator;
+-import com.salesmanager.shop.store.api.exception.ServiceRuntimeException;
+ import com.salesmanager.shop.utils.ImageFilePath;
+ import org.apache.commons.lang3.StringUtils;
+ import org.apache.commons.lang3.Validate;
+@@ -102,7 +101,8 @@ public class ReadableOrderProductPopulator extends
+ 				try {
+ 					product = productService.getBySku(productSku, store, language);
+ 				} catch (ServiceException e) {
+-					throw new ServiceRuntimeException(e);
++					// The order snapshot below remains readable without the catalog row.
++					product = null;
+ 				}
+ 				if(product!=null) {
+ 					
+diff --git a/sm-shop/src/main/java/com/salesmanager/shop/store/facade/product/ProductFacadeV2Impl.java b/sm-shop/src/main/java/com/salesmanager/shop/store/facade/product/ProductFacadeV2Impl.java
+index fad03cc..02a43a8 100644
+--- a/sm-shop/src/main/java/com/salesmanager/shop/store/facade/product/ProductFacadeV2Impl.java
++++ b/sm-shop/src/main/java/com/salesmanager/shop/store/facade/product/ProductFacadeV2Impl.java
+@@ -37,7 +37,6 @@ import com.salesmanager.shop.model.catalog.product.ReadableProductList;
+ import com.salesmanager.shop.model.catalog.product.product.variant.ReadableProductVariant;
+ import com.salesmanager.shop.populator.catalog.ReadableProductPopulator;
+ import com.salesmanager.shop.store.api.exception.ResourceNotFoundException;
+-import com.salesmanager.shop.store.api.exception.ServiceRuntimeException;
+ import com.salesmanager.shop.store.controller.product.facade.ProductFacade;
+ import com.salesmanager.shop.utils.ImageFilePath;
+ import com.salesmanager.shop.utils.LocaleUtils;
+@@ -94,7 +93,7 @@ public class ProductFacadeV2Impl implements ProductFacade {
+ 		try {
+ 			product = productService.getBySku(sku, store, language);
+ 		} catch (ServiceException e) {
+-			throw new ServiceRuntimeException(e);
++			throw new ResourceNotFoundException("Product [" + sku + "] not found for merchant [" + store.getCode() + "]");
+ 		}
+ 
+ 		if (product == null) {
