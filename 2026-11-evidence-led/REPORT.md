@@ -1,5 +1,7 @@
 # Does an evidence-led setup beat good practice on very hard tickets? Report, round 1
 
+*Site title: Can an AI agent turn experimental evidence into a better coding setup?*
+
 5 November 2026. Design: [README.md](README.md), pushed before any measured run (d902d92a). The amendments made while
 analysing (README section 10) don't change a hypothesis, a measure, a ticket or a test. Full numbers:
 [results/main/analysis.json](results/main/analysis.json), per run [results/main/runs.csv](results/main/runs.csv),
@@ -181,13 +183,20 @@ Bounded to the configuration tested: Codex 0.157, gpt-5.6-luna at medium effort,
 - **"No measurable difference" is not "the same".** E against V was +10 points with an interval from −0.3 to +19.8;
   a larger round could show a real gain.
 - **D's lead can't be traced to one part.** D differs from V in six AGENTS.md lines, three skills and twice the spend.
-- **I wrote the tickets, the tests, the references, D's skills and E's settings**, knowing E. The tickets follow the
-  pre-registered criteria, contain only real defects and were frozen after a pilot on V only.
+- **An AI agent (Claude Code, working for me) wrote the tickets, the hidden tests, the references, D's routine and
+  E's settings**; I chose the options and approved the design before any run. For E it was given my published
+  findings and asked to choose settings from them, so this round tests the findings and the agent's selection and
+  combination of them together, and can't separate the two. The configurations were known when the tickets were
+  written; the tickets follow the pre-registered criteria, contain only real defects and were frozen after a pilot on
+  V only.
 - **Every arm got the rig's request to end with a VERIFICATION line** (the tool behind the false-claim count). It is a
   small nudge to check the work, the same in all arms, and it may narrow the differences between them.
 
 ## 9. What I'd test next
 
+- **A follow-on, separate from ELC: can I do better than the agent?** I build an evidence-led configuration
+  myself from the same findings, with the reason for each choice, freeze it, and compare it with V, D and E v1 on fresh
+  held-out tickets, with cost. ELC itself continues under its original rules.
 - **Round 2**, as designed: E changes only when a newly published finding supports it. This round's result is not a
   finding E may use (that would tune E to these tickets). It becomes a question for a separate experiment.
 - **Which part of D helps**: the requirements checklist, the "add tests" line, or the self-review, each on its own on
