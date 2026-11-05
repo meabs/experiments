@@ -75,12 +75,12 @@ Mean per run: input (of which new, not cached) / output tokens; seconds; list-pr
 
 | Arm | F7 | F6 | F3 | Seconds | Cost per run | Cost per fully correct run |
 | --- | --- | --- | --- | --- | --- | --- |
-| A, correct | 255k (32k new) / 3.2k | 298k (42k new) / 4.2k | 307k (35k new) / 3.6k | 90 | $0.114 | $0.124 |
-| B, stale | 242k (32k new) / 3.0k | 723k (55k new) / 6.6k | 339k (43k new) / 3.6k | 109 | $0.147 | $0.220 |
-| D, stale + metadata | 242k (38k new) / 3.3k | 437k (44k new) / 5.2k | 325k (42k new) / 3.5k | 97 | $0.128 | $0.205 |
-| E, stale + instruction | 317k (40k new) / 3.9k | 546k (54k new) / 5.5k | 270k (35k new) / 3.5k | 104 | $0.138 | $0.151 |
-| F, correct + instruction | 315k (37k new) / 3.7k | 442k (41k new) / 5.0k | 291k (40k new) / 3.6k | 100 | $0.129 | $0.129 |
-| V, no bundle | 218k (31k new) / 3.0k | 282k (34k new) / 4.2k | 250k (35k new) / 3.4k | 86 | $0.104 | $0.139 |
+| A, correct | 255k (32k new) / 3.2k | 298k (42k new) / 4.2k | 307k (35k new) / 3.6k | 90 | $0.017 | $0.018 |
+| B, stale | 242k (32k new) / 3.0k | 723k (55k new) / 6.6k | 339k (43k new) / 3.6k | 109 | $0.022 | $0.033 |
+| D, stale + metadata | 242k (38k new) / 3.3k | 437k (44k new) / 5.2k | 325k (42k new) / 3.5k | 97 | $0.019 | $0.030 |
+| E, stale + instruction | 317k (40k new) / 3.9k | 546k (54k new) / 5.5k | 270k (35k new) / 3.5k | 104 | $0.020 | $0.022 |
+| F, correct + instruction | 315k (37k new) / 3.7k | 442k (41k new) / 5.0k | 291k (40k new) / 3.6k | 100 | $0.019 | $0.019 |
+| V, no bundle | 218k (31k new) / 3.0k | 282k (34k new) / 4.2k | 250k (35k new) / 3.4k | 86 | $0.015 | $0.020 |
 
 ## Robustness
 

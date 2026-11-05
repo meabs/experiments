@@ -19,7 +19,7 @@ NAME = {"A": "A, correct", "B": "B, stale", "D": "D, stale + metadata", "E": "E,
         "F": "F, correct + instruction", "V": "V, no bundle"}
 PRIMARY = "google/gemini-4-argon"
 N_PERM, N_BOOT = 10000, 10000
-PRICE = (1.25, 0.125, 10.0)  # gpt-5.6-luna list price per million tokens: input, cached input, output (as OKC)
+PRICE = (0.20, 0.02, 1.20)  # gpt-5.6-luna list price per million tokens: input, cached input, output (OpenAI pricing page, 2026-11-05)
 
 
 def cost(tok):

@@ -213,12 +213,12 @@ Cost per run at list price (lower is better). Last column: cost per correct resu
 
 | Task | Arm | Runs | Input tokens | Output tokens | Seconds | Cost per run | Cost per correct result |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| features | A | 25 | 232k | 3.2k | 74 | $0.094 | $0.147 |
-| features | B | 25 | 352k | 3.8k | 91 | $0.124 | $0.124 |
-| features | C | 25 | 263k | 3.1k | 74 | $0.100 | $0.109 |
-| FMEA | A | 25 | 329k | 5.8k | 121 | $0.154 | $0.011 |
-| FMEA | B | 25 | 300k | 5.6k | 119 | $0.145 | $0.009 |
-| FMEA | C | 25 | 308k | 6.0k | 126 | $0.149 | $0.008 |
+| features | A | 25 | 232k | 3.2k | 74 | $0.014 | $0.022 |
+| features | B | 25 | 352k | 3.8k | 91 | $0.018 | $0.018 |
+| features | C | 25 | 263k | 3.1k | 74 | $0.015 | $0.016 |
+| FMEA | A | 25 | 329k | 5.8k | 121 | $0.022 | $1.64 per 1,000 |
+| FMEA | B | 25 | 300k | 5.6k | 119 | $0.021 | $1.24 per 1,000 |
+| FMEA | C | 25 | 308k | 6.0k | 126 | $0.021 | $1.21 per 1,000 |
 
 ## 6a. Exploratory checks (not pre-registered as hypotheses; not Holm-adjusted)
 

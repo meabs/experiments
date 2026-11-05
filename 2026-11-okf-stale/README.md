@@ -229,3 +229,9 @@ direction is better, a token chart, and real artefacts (stale statements, summar
    recommendations; "no run asked" qualified (one-turn runs, nobody to answer); the passing-tests finding promoted;
    the reviewer's next experiment (generic verify against a named source against an enforced check, several tasks)
    added. No hypothesis, measure or number changed.
+4. **Cost correction** (5 November 2026, after publication). The user asked: "Fix OKF cost figures: the okf-context
+   and okf-stale reports still show costs about 6 times too high (they used $1.25, $0.125 and $10 per million tokens
+   instead of $0.20, $0.02 and $1.20)". The analysis used a wrong list price for gpt-5.6-luna (copied from OKC).
+   Re-priced at $0.20 per million new input tokens, $0.02 cached and $1.20 output (OpenAI's pricing page, 5 November
+   2026). Token counts, times, grades and every other number are unchanged. The design's cost estimate is left as
+   written.

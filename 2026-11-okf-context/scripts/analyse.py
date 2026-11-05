@@ -197,7 +197,7 @@ def table(head, body):
 
 def cost_usd(tok):
     # gpt-5.6-luna list price per million tokens (input, cached input, output): see README "Cost".
-    PRICE = (1.25, 0.125, 10.0)
+    PRICE = (0.20, 0.02, 1.20)  # gpt-5.6-luna list price, OpenAI pricing page 2026-11-05
     inp, cached, out = tok.get("input", 0), tok.get("cache_read", 0), tok.get("output", 0)
     return ((inp - cached) * PRICE[0] + cached * PRICE[1] + out * PRICE[2]) / 1e6
 
@@ -465,7 +465,7 @@ def main(stage, judge_model, second_model):
             good = sum(r["pass"] for r in x) if kind == "features" else sum(sum(r["found"].values()) for r in x)
             rows.append([kind, a, len(x), f"{mean([r['tokens'].get('input', 0) for r in x]) / 1000:.0f}k",
                          f"{mean([r['tokens'].get('output', 0) for r in x]) / 1000:.1f}k", f"{mean([r['seconds'] or 0 for r in x]):.0f}",
-                         f"${mean(c):.3f}", f"${sum(c) / good:.3f}" if good else "-"])
+                         f"${mean(c):.3f}", (f"${sum(c) / good:.3f}" if kind == "features" else f"${sum(c) / good * 1000:.2f} per 1,000") if good else "-"])
     md += ["Cost per run at list price (lower is better). Last column: cost per correct result (per fully correct "
            "feature change; per answer-key entry found).", "",
            table(["Task", "Arm", "Runs", "Input tokens", "Output tokens", "Seconds", "Cost per run", "Cost per correct result"], rows), ""]

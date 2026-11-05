@@ -2,7 +2,8 @@
 
 4 November 2026. Design: [README.md](README.md), pushed before any measured run (e3d8458e). The build, the pilot and
 amendments 1 to 10 were pushed before the main run (9d1069e1); amendments 11 to 18 were made afterwards, while analysing,
-and none changes a hypothesis, a measure or the answer key. Full numbers: [results/main/analysis.md](results/main/analysis.md).
+and none changes a hypothesis, a measure or the answer key. Amendment 22 (5 November) corrects the list price, so
+every cost figure is about one-seventh of the first version's. Full numbers: [results/main/analysis.md](results/main/analysis.md).
 Hand-check overrides: [results/main/judge-overrides.json](results/main/judge-overrides.json). Failure taxonomy:
 [results/main/taxonomy.md](results/main/taxonomy.md).
 
@@ -396,16 +397,17 @@ B/12 did find it, folded into a wider "service unavailable or data lost on resta
 
 - **Consistency:** B was the only arm where every ticket's 5 runs agreed. FMEA recall spread (standard deviation over
   reports; lower is steadier): A 6.6, B 7.1, C 7.0 points.
-- **Cost** (list price per run; lower is better):
+- **Cost** (list price per run, gpt-5.6-luna at $0.20 per million new input tokens, $0.02 cached, $1.20 output; lower is
+  better; corrected 2026-11-05, see README amendment log):
 
 | Task | A | B | C |
 | --- | --- | --- | --- |
-| feature change | $0.094 (74 s) | $0.124 (91 s) | $0.100 (74 s) |
-| per fully correct feature change | $0.147 | $0.124 | **$0.109** |
-| FMEA | $0.154 | $0.145 | $0.149 |
-| per answer-key entry found | $0.011 | $0.009 | **$0.008** |
+| feature change | $0.014 (74 s) | $0.018 (91 s) | $0.015 (74 s) |
+| per fully correct feature change | $0.022 | $0.018 | **$0.016** |
+| FMEA | $0.022 | $0.021 | $0.021 |
+| per 1,000 answer-key entries found | $1.64 | $1.24 | **$1.21** |
 
-  B's feature runs cost about 32% more than A's (reading the bundle: 352k input tokens against 232k); C's cost 6% more.
+  B's feature runs cost about 34% more than A's (reading the bundle: 352k input tokens against 232k); C's cost 8% more.
 - **Payback** (an estimate on a stated assumption, amendment 17): if a person takes about 4 hours to write and review
   a bundle like this, and an integration bug that passes every test costs at least an hour to find and fix, the bundle
   pays back after about 5 tickets that touch an external system's behaviour (it prevented 0.9 such bugs per ticket

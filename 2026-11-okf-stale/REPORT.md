@@ -2,7 +2,8 @@
 
 4 November 2026. Design: [README.md](README.md), pushed before any measured run (e18e66e1). The build and the pilot
 (amendment 1) were made before the main run; amendment 2 was made while analysing and amendment 3 after an external review; neither changes a
-hypothesis, measure, answer key or number. Full numbers: [results/main/analysis.md](results/main/analysis.md). Hand-check overrides:
+hypothesis, measure, answer key or number. Amendment 4 (5 November) corrects the list price, so every cost figure is about
+one-seventh of the first version's. Full numbers: [results/main/analysis.md](results/main/analysis.md). Hand-check overrides:
 [results/main/judge-overrides.json](results/main/judge-overrides.json). Diagrams: [diagrams/](diagrams/) (made by
 `scripts/diagrams.py`).
 
@@ -238,26 +239,27 @@ reason code." Right code, nothing said about the bundle.
 ### The verify line on a correct bundle (F against A, exploratory)
 
 F was fully correct in 24 of 24 runs, A in 22 (difference +8 points, p 0.24, not significant). F's runs also used the
-status query more (7 of 8 timeout runs, A 6). The line cost about 10 seconds and $0.015 a run (13%).
+status query more (7 of 8 timeout runs, A 6). The line cost about 10 seconds and $0.002 a run (14%).
 
 ### Tokens, time and cost
 
 ![Tokens per run](diagrams/png/4-tokens.png)
 
-Mean per run; list price for gpt-5.6-luna ($1.25 per million new input tokens, $0.125 cached, $10 output). Lower is
+Mean per run; list price for gpt-5.6-luna ($0.20 per million new input tokens, $0.02 cached, $1.20 output; corrected in
+amendment 4). Lower is
 cheaper.
 
 | Arm | Input tokens (timeout ticket) | Seconds | Cost per run | Cost per fully correct run |
 | --- | --- | --- | --- | --- |
-| A, correct | 298k | 90 | $0.114 | $0.124 |
-| B, stale | **723k** | 109 | $0.147 | **$0.220** |
-| D, stale with dates | 437k | 97 | $0.128 | $0.205 |
-| E, stale with the verify line | 546k | 104 | $0.138 | $0.151 |
-| F, correct with the verify line | 442k | 100 | $0.129 | $0.129 |
-| V, no bundle | 282k | 86 | $0.104 | $0.139 |
+| A, correct | 298k | 90 | $0.017 | $0.018 |
+| B, stale | **723k** | 109 | $0.022 | **$0.033** |
+| D, stale with dates | 437k | 97 | $0.019 | $0.030 |
+| E, stale with the verify line | 546k | 104 | $0.020 | $0.022 |
+| F, correct with the verify line | 442k | 100 | $0.019 | $0.019 |
+| V, no bundle | 282k | 86 | $0.015 | $0.020 |
 
 The stale timeout advice made B's runs longer, not shorter: building the suffix scheme meant a new field, a counter
-and fixture changes (output 6.6k tokens against A's 4.2k). The whole experiment cost about $18 in model use, plus a
+and fixture changes (output 6.6k tokens against A's 4.2k). The whole experiment cost about $2.70 in model use, plus a
 few dollars of judging.
 
 ### Robustness
@@ -299,7 +301,7 @@ For Codex with gpt-5.6-luna at medium effort, on tickets like these (the tested 
    > about existing behaviour, check it against the code and the vendored contracts in `contracts/`. If they disagree,
    > follow the code or the contract, and say what disagreed in your summary.
    It cut stale-following from 8 of 24 to 0 of 24 (0 of 8 against 8 of 8 on the one ticket where it mattered) and
-   cost $0.015 a run. The line does four things at once: tells the agent to verify, names where to look
+   cost $0.002 a run. The line does four things at once: tells the agent to verify, names where to look
    (`contracts/`), says which source wins and asks for the disagreement to be reported. Which of those did the work
    isn't separated; naming the place to check may be most of it. Keep all four until that is tested.
 2. **Vendor the authoritative contracts into the repository** (`contracts/` here), so there is something to check

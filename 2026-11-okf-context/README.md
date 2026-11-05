@@ -420,3 +420,10 @@ answer key.
     synthetic (I wrote it); and F6 is graded on the simulated contract although the bundle documents a status query. The
     risk "attention is finite" is reworded, because the FMEA prompt set no length and the data fit the agent deciding a
     report is complete just as well. Section 9 gains a format-against-delivery arm and a two-pass FMEA.
+22. **Cost correction** (5 November 2026, after publication). The user asked: "Fix OKF cost figures: the okf-context
+    and okf-stale reports still show costs about 6 times too high (they used $1.25, $0.125 and $10 per million tokens
+    instead of $0.20, $0.02 and $1.20)". The analysis used a wrong list price for gpt-5.6-luna. Re-priced at $0.20 per
+    million new input tokens, $0.02 cached and $1.20 output (OpenAI's pricing page, 5 November 2026); the cost per
+    answer-key entry is now shown per 1,000 entries, as the per-entry figures round to the same cent fraction. Token
+    counts, times, grades and every other number are unchanged. The design's cost estimate (section above) is left as
+    written.
