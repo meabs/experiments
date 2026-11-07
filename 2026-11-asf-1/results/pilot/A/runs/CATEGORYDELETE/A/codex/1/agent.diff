@@ -1,0 +1,146 @@
+diff --git a/sm-core/src/main/java/com/salesmanager/core/business/repositories/catalog/product/ProductRepositoryImpl.java b/sm-core/src/main/java/com/salesmanager/core/business/repositories/catalog/product/ProductRepositoryImpl.java
+index 754c86d..79fd0a5 100755
+--- a/sm-core/src/main/java/com/salesmanager/core/business/repositories/catalog/product/ProductRepositoryImpl.java
++++ b/sm-core/src/main/java/com/salesmanager/core/business/repositories/catalog/product/ProductRepositoryImpl.java
+@@ -212,7 +212,7 @@ public class ProductRepositoryImpl implements ProductRepositoryCustom {
+ 
+ 		StringBuilder qs = new StringBuilder();
+ 		qs.append("select distinct p from Product as p ");
+-		qs.append("join fetch p.availabilities pa ");
++		qs.append("left join fetch p.availabilities pa ");
+ 		qs.append("join fetch p.descriptions pd ");
+ 		qs.append("join fetch p.merchantStore pm ");
+ 		qs.append("left join fetch pa.prices pap ");
+@@ -354,8 +354,10 @@ public class ProductRepositoryImpl implements ProductRepositoryCustom {
+ 		qs.append("join fetch p.availabilities pa ");
+ 		qs.append("left join fetch pa.prices pap ");
+ 
+-		qs.append("join fetch p.descriptions pd ");
+-		qs.append("join fetch p.categories categs ");
++		qs.append("left join fetch p.descriptions pd ");
++		// Do not fetch the filtered category collection here. The deletion
++		// service must initialize all product categories before removing links.
++		qs.append("join p.categories categs ");
+ 
+ 		qs.append("left join fetch pap.descriptions papd ");
+ 
+diff --git a/sm-core/src/main/java/com/salesmanager/core/business/services/catalog/category/CategoryServiceImpl.java b/sm-core/src/main/java/com/salesmanager/core/business/services/catalog/category/CategoryServiceImpl.java
+index 36a1aeb..a28da26 100755
+--- a/sm-core/src/main/java/com/salesmanager/core/business/services/catalog/category/CategoryServiceImpl.java
++++ b/sm-core/src/main/java/com/salesmanager/core/business/services/catalog/category/CategoryServiceImpl.java
+@@ -1,7 +1,6 @@
+ package com.salesmanager.core.business.services.catalog.category;
+ 
+ import java.util.ArrayList;
+-import java.util.Collections;
+ import java.util.HashSet;
+ import java.util.List;
+ import java.util.Optional;
+@@ -13,6 +12,7 @@ import org.springframework.data.domain.Page;
+ import org.springframework.data.domain.PageRequest;
+ import org.springframework.data.domain.Pageable;
+ import org.springframework.stereotype.Service;
++import org.springframework.transaction.annotation.Transactional;
+ import org.springframework.util.Assert;
+ 
+ import com.salesmanager.core.business.constants.Constants;
+@@ -227,61 +227,38 @@ public class CategoryServiceImpl extends SalesManagerEntityServiceImpl<Long, Cat
+ 
+ 	}
+ 
+-	// @Override
++	@Override
++	@Transactional
+ 	public void delete(Category category) throws ServiceException {
+-
+-		// get category with lineage (subcategories)
+-		StringBuilder lineage = new StringBuilder();
+-		lineage.append(category.getLineage()).append(category.getId()).append(Constants.SLASH);
+-		List<Category> categories = this.getListByLineage(category.getMerchantStore(), lineage.toString());
+-
+ 		Category dbCategory = getById(category.getId(), category.getMerchantStore().getId());
++		if (dbCategory == null) {
++			return;
++		}
+ 
+-		if (dbCategory != null && dbCategory.getId().longValue() == category.getId().longValue()) {
+-
+-			categories.add(dbCategory);
+-
+-			Collections.reverse(categories);
+-
+-			List<Long> categoryIds = new ArrayList<Long>();
+-
+-			for (Category c : categories) {
+-				categoryIds.add(c.getId());
+-			}
+-
+-			List<Product> products = productService.getProducts(categoryIds);
+-			// org.hibernate.Session session =
+-			// em.unwrap(org.hibernate.Session.class);// need to refresh the
+-			// session to update
+-			// all product
+-			// categories
+-
+-			for (Product product : products) {
+-				// session.evict(product);// refresh product so we get all
+-				// product categories
+-				Product dbProduct = productService.getById(product.getId());
+-				Set<Category> productCategories = dbProduct.getCategories();
+-				if (productCategories.size() > 1) {
+-					for (Category c : categories) {
+-						productCategories.remove(c);
+-						productService.update(dbProduct);
+-					}
+-
+-					if (product.getCategories() == null || product.getCategories().size() == 0) {
+-						productService.delete(dbProduct);
+-					}
+-
+-				} else {
+-					productService.delete(dbProduct);
+-				}
++		// A category lineage already contains the category itself. The old code
++		// appended the id a second time and consequently missed descendants.
++		List<Category> categories = this.getListByLineage(category.getMerchantStore(), dbCategory.getLineage());
++		Set<Long> categoryIds = new HashSet<>();
++		categoryIds.add(dbCategory.getId());
++		for (Category descendant : categories) {
++			categoryIds.add(descendant.getId());
++		}
+ 
++		// Keep products and remove only their category associations.
++		List<Product> products = productService.getProducts(new ArrayList<>(categoryIds));
++		for (Product product : products) {
++			Product dbProduct = productService.getById(product.getId());
++			if (dbProduct != null && dbProduct.getCategories() != null
++					&& dbProduct.getCategories().removeIf(c -> categoryIds.contains(c.getId()))) {
++				productService.update(dbProduct);
+ 			}
+-
+-			Category categ = getById(category.getId(), category.getMerchantStore().getId());
+-			categoryRepository.delete(categ);
+-
+ 		}
+ 
++		// Category.categories is CascadeType.REMOVE, so this removes the whole
++		// subtree after its product links have been detached.
++		categoryRepository.delete(dbCategory);
++		categoryRepository.flush();
++
+ 	}
+ 
+ 	@Override
+diff --git a/sm-shop/src/main/java/com/salesmanager/shop/store/facade/category/CategoryFacadeImpl.java b/sm-shop/src/main/java/com/salesmanager/shop/store/facade/category/CategoryFacadeImpl.java
+index 3d9067d..0046a3f 100755
+--- a/sm-shop/src/main/java/com/salesmanager/shop/store/facade/category/CategoryFacadeImpl.java
++++ b/sm-shop/src/main/java/com/salesmanager/shop/store/facade/category/CategoryFacadeImpl.java
+@@ -363,7 +363,7 @@ public class CategoryFacadeImpl implements CategoryFacade {
+ 	}
+ 
+ 	private Category getOne(Long categoryId, int storeId) {
+-		return Optional.ofNullable(categoryService.getById(categoryId)).orElseThrow(
++		return Optional.ofNullable(categoryService.getById(categoryId, storeId)).orElseThrow(
+ 				() -> new ResourceNotFoundException(String.format("No Category found for ID : %s", categoryId)));
+ 	}
+ 

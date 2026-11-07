@@ -1,0 +1,177 @@
+diff --git a/sm-core-model/src/main/java/com/salesmanager/core/model/common/EntityList.java b/sm-core-model/src/main/java/com/salesmanager/core/model/common/EntityList.java
+index 119df97..6d10ddd 100755
+--- a/sm-core-model/src/main/java/com/salesmanager/core/model/common/EntityList.java
++++ b/sm-core-model/src/main/java/com/salesmanager/core/model/common/EntityList.java
+@@ -20,7 +20,7 @@ public class EntityList implements Serializable {
+ 		this.totalCount = totalCount;
+ 	}*/
+ 	public int getTotalPages() {
+-		return totalPages == 0 ? totalPages+1:totalPages;
++		return totalPages;
+ 	}
+ 	public void setTotalPages(int totalPage) {
+ 		this.totalPages = totalPage;
+diff --git a/sm-core/src/main/java/com/salesmanager/core/business/repositories/order/OrderRepository.java b/sm-core/src/main/java/com/salesmanager/core/business/repositories/order/OrderRepository.java
+index 8b61989..020e827 100755
+--- a/sm-core/src/main/java/com/salesmanager/core/business/repositories/order/OrderRepository.java
++++ b/sm-core/src/main/java/com/salesmanager/core/business/repositories/order/OrderRepository.java
+@@ -8,15 +8,15 @@ import com.salesmanager.core.model.order.Order;
+ public interface OrderRepository extends JpaRepository<Order, Long>, OrderRepositoryCustom {
+ 
+     @Query("select o from Order o join fetch o.merchant om "
+-    		+ "join fetch o.orderProducts op "
+-    		+ "left join fetch o.delivery od left join fetch od.country left join fetch od.zone "
+-    		+ "left join fetch o.billing ob left join fetch ob.country left join fetch ob.zone "
+-    		+ "left join fetch o.orderAttributes oa "
+-    		+ "join fetch o.orderTotal ot left "
+-    		+ "join fetch o.orderHistory oh left "
+-    		+ "join fetch op.downloads opd left "
+-    		+ "join fetch op.orderAttributes opa "
+-    		+ "left join fetch op.prices opp where o.id = ?1 and om.id = ?2")
++            + "left join fetch o.orderProducts op "
++            + "left join fetch o.delivery od left join fetch od.country left join fetch od.zone "
++            + "left join fetch o.billing ob left join fetch ob.country left join fetch ob.zone "
++            + "left join fetch o.orderAttributes oa "
++            + "left join fetch o.orderTotal ot "
++            + "left join fetch o.orderHistory oh "
++            + "left join fetch op.downloads opd "
++            + "left join fetch op.orderAttributes opa "
++            + "left join fetch op.prices opp where o.id = ?1 and om.id = ?2")
+ 	Order findOne(Long id, Integer merchantId);
+     
+ }
+diff --git a/sm-core/src/main/java/com/salesmanager/core/business/repositories/order/OrderRepositoryImpl.java b/sm-core/src/main/java/com/salesmanager/core/business/repositories/order/OrderRepositoryImpl.java
+index d96548c..cf9004f 100755
+--- a/sm-core/src/main/java/com/salesmanager/core/business/repositories/order/OrderRepositoryImpl.java
++++ b/sm-core/src/main/java/com/salesmanager/core/business/repositories/order/OrderRepositoryImpl.java
+@@ -149,7 +149,9 @@ public class OrderRepositoryImpl implements OrderRepositoryCustom {
+ 		}
+ 
+ 		
+-		String baseQuery = "select o from Order as o left join fetch o.delivery.country left join fetch o.delivery.zone left join fetch o.billing.country left join fetch o.billing.zone left join fetch o.orderTotal ot left join fetch o.orderProducts op left join fetch o.orderAttributes oa left join fetch op.orderAttributes opo left join fetch op.prices opp";
++		// Do not fetch collection-valued associations here. Fetch-joining them makes
++		// firstResult/maxResults paginate the cartesian join rows rather than orders.
++		String baseQuery = "select o from Order as o left join fetch o.delivery.country left join fetch o.delivery.zone left join fetch o.billing.country left join fetch o.billing.zone left join fetch o.orderTotal ot";
+ 		String countBaseQuery = "select count(o) from Order as o";
+ 		
+ 		countBuilderSelect.append(countBaseQuery);
+@@ -162,7 +164,7 @@ public class OrderRepositoryImpl implements OrderRepositoryCustom {
+ 		countBuilderSelect.append(storeQuery);
+ 		
+ 		if(!StringUtils.isEmpty(criteria.getCustomerName())) {
+-			String nameQuery =  " and o.billing.firstName like:name or o.billing.lastName like:name";
++			String nameQuery =  " and (o.billing.firstName like:name or o.billing.lastName like:name)";
+ 			objectBuilderWhere.append(nameQuery);
+ 			countBuilderSelect.append(nameQuery);
+ 		}
+diff --git a/sm-core/src/main/java/com/salesmanager/core/business/utils/RepositoryHelper.java b/sm-core/src/main/java/com/salesmanager/core/business/utils/RepositoryHelper.java
+index b71b1fa..636ca59 100644
+--- a/sm-core/src/main/java/com/salesmanager/core/business/utils/RepositoryHelper.java
++++ b/sm-core/src/main/java/com/salesmanager/core/business/utils/RepositoryHelper.java
+@@ -30,7 +30,8 @@ public class RepositoryHelper {
+ 			int firstResult = ((criteria.getStartPage()==0?0:criteria.getStartPage())) * criteria.getPageSize();
+ 			q.setFirstResult(firstResult);
+ 			q.setMaxResults(criteria.getPageSize());
+-			int lastPageNumber = (count.intValue() / criteria.getPageSize()) + 1;
++			int lastPageNumber = criteria.getPageSize() > 0
++					? (int) Math.ceil((double) count.longValue() / criteria.getPageSize()) : 0;
+ 			entityList.setTotalPages(lastPageNumber);
+ 			entityList.setTotalCount(count.intValue());
+ 		}
+diff --git a/sm-shop/src/main/java/com/salesmanager/shop/store/api/v1/order/OrderApi.java b/sm-shop/src/main/java/com/salesmanager/shop/store/api/v1/order/OrderApi.java
+index b0ca074..9493824 100755
+--- a/sm-shop/src/main/java/com/salesmanager/shop/store/api/v1/order/OrderApi.java
++++ b/sm-shop/src/main/java/com/salesmanager/shop/store/api/v1/order/OrderApi.java
+@@ -119,31 +119,24 @@ public class OrderApi {
+ 			@RequestParam(value = "count", required = false) Integer count, @ApiIgnore MerchantStore merchantStore,
+ 			@ApiIgnore Language language, HttpServletResponse response) throws Exception {
+ 
+-		Customer customer = customerService.getById(id);
+-
+-		if (customer == null) {
+-			LOGGER.error("Customer is null for id " + id);
+-			response.sendError(404, "Customer is null for id " + id);
+-			return null;
+-		}
+-
+ 		if (start == null) {
+-			start = new Integer(0);
++			start = 0;
+ 		}
+ 		if (count == null) {
+-			count = new Integer(100);
++			count = 100;
+ 		}
+ 
+-		ReadableCustomer readableCustomer = new ReadableCustomer();
+-		ReadableCustomerPopulator customerPopulator = new ReadableCustomerPopulator();
+-		customerPopulator.populate(customer, readableCustomer, merchantStore, language);
+-
+-		ReadableOrderList returnList = orderFacade.getReadableOrderList(merchantStore, customer, start, count,
+-				language);
++		Customer customer = customerService.getById(id);
++		boolean customerExists = customer != null;
++		ReadableOrderList returnList = orderFacade.getReadableOrderList(merchantStore,
++				customer == null ? customerWithId(id) : customer, start, count, language);
+ 
+ 		List<ReadableOrder> orders = returnList.getOrders();
+ 
+-		if (!CollectionUtils.isEmpty(orders)) {
++		if (customerExists && !CollectionUtils.isEmpty(orders)) {
++			ReadableCustomer readableCustomer = new ReadableCustomer();
++			ReadableCustomerPopulator customerPopulator = new ReadableCustomerPopulator();
++			customerPopulator.populate(customer, readableCustomer, merchantStore, language);
+ 			for (ReadableOrder order : orders) {
+ 				order.setCustomer(readableCustomer);
+ 			}
+@@ -152,6 +145,12 @@ public class OrderApi {
+ 		return returnList;
+ 	}
+ 
++	private Customer customerWithId(Long id) {
++		Customer customer = new Customer();
++		customer.setId(id);
++		return customer;
++	}
++
+ 	/**
+ 	 * List orders for authenticated customers
+ 	 *
+diff --git a/sm-shop/src/main/java/com/salesmanager/shop/store/controller/order/facade/OrderFacadeImpl.java b/sm-shop/src/main/java/com/salesmanager/shop/store/controller/order/facade/OrderFacadeImpl.java
+index 0da643b..3713717 100755
+--- a/sm-shop/src/main/java/com/salesmanager/shop/store/controller/order/facade/OrderFacadeImpl.java
++++ b/sm-shop/src/main/java/com/salesmanager/shop/store/controller/order/facade/OrderFacadeImpl.java
+@@ -946,6 +946,8 @@ public class OrderFacadeImpl implements OrderFacade {
+ 
+ 			if (CollectionUtils.isEmpty(orders)) {
+ 				returnList.setRecordsTotal(0);
++				returnList.setTotalPages(orderList.getTotalPages());
++				returnList.setOrders(new ArrayList<com.salesmanager.shop.model.order.v0.ReadableOrder>());
+ 				return returnList;
+ 			}
+ 
+@@ -1075,8 +1077,9 @@ public class OrderFacadeImpl implements OrderFacade {
+ 
+ 		if (CollectionUtils.isEmpty(orders)) {
+ 			returnList.setRecordsTotal(0);
+-			// returnList.setMessage("No results for store code " + store);
+-			return null;
++			returnList.setTotalPages(orderList.getTotalPages());
++			returnList.setOrders(new ArrayList<com.salesmanager.shop.model.order.v0.ReadableOrder>());
++			return returnList;
+ 		}
+ 
+ 		List<com.salesmanager.shop.model.order.v0.ReadableOrder> readableOrders = new ArrayList<com.salesmanager.shop.model.order.v0.ReadableOrder>();
+@@ -1088,7 +1091,11 @@ public class OrderFacadeImpl implements OrderFacade {
+ 		}
+ 
+ 		returnList.setRecordsTotal(orderList.getTotalCount());
+-		return this.populateOrderList(orderList, store, language);
++		returnList.setTotalPages(orderList.getTotalPages());
++		returnList.setOrders(readableOrders);
++		returnList.setNumber(readableOrders.size());
++		returnList.setRecordsFiltered(readableOrders.size());
++		return returnList;
+ 
+ 	}
+ 
