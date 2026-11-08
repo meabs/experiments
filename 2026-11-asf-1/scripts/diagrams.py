@@ -26,7 +26,9 @@ PRICE = {"input": 0.20, "cached": 0.02, "output": 1.20}
 def page(h, body):
     return (f'<link rel="stylesheet" href="style.css">\n<svg width="1800" height="{h}" viewBox="0 0 1800 {h}">\n'
             '<defs><marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" '
-            'orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#1d2a44"/></marker></defs>\n'
+            'orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#1d2a44"/></marker>'
+            '<marker id="ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" '
+            'orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#b4532a"/></marker></defs>\n'
             f'{body}</svg>\n')
 
 
@@ -121,7 +123,7 @@ def pipeline(an, re_):
     x = 960
     s.append(f'<rect x="{x}" y="150" width="800" height="300" rx="14" class="boxr"/>'
              f'<text x="{x + 30}" y="205" class="tb">Machinist\'s end state, 32 jobs</text>'
-             f'<text x="{x + 30}" y="260" class="t">blocked (repair rounds used up): {st.get("blocked", 0)}</text>'
+             f'<text x="{x + 30}" y="260" class="t">blocked (repairs used up, or review blocked): {st.get("blocked", 0)}</text>'
              f'<text x="{x + 30}" y="305" class="t">failed (reply rejected, time-out …): {st.get("failed", 0)}</text>'
              f'<text x="{x + 30}" y="350" class="t">complete, reviewer approved: 0</text>'
              f'<text x="{x + 30}" y="405" class="t red" font-weight="650">Yet {full} of the 32 PRs pass every hidden test.</text>')
@@ -185,13 +187,96 @@ def stage_tokens():
     return agg
 
 
+def box(x, y, w, h, cls, lines, title=None, col=None):
+    """A box with an optional coloured title bar and lines of text."""
+    out = []
+    if col:
+        out.append(f'<rect x="{x}" y="{y}" width="{w}" height="{h}" rx="14" fill="#fff" stroke="{col}" stroke-width="4"/>'
+                   f'<rect x="{x}" y="{y}" width="{w}" height="52" rx="14" fill="{col}"/>'
+                   f'<rect x="{x}" y="{y + 36}" width="{w}" height="16" fill="{col}"/>'
+                   f'<text x="{x + 20}" y="{y + 36}" class="tw" font-size="26">{title}</text>')
+        y0 = y + 92
+    else:
+        out.append(f'<rect x="{x}" y="{y}" width="{w}" height="{h}" rx="14" class="{cls}"/>')
+        if title:
+            out.append(f'<text x="{x + 20}" y="{y + 40}" class="tb" font-size="27">{title}</text>')
+        y0 = y + (82 if title else 44)
+    for i, l in enumerate(lines):
+        out.append(f'<text x="{x + 20}" y="{y0 + i * 34}" class="q">{l}</text>')
+    return "".join(out)
+
+
+def architecture():
+    """How the trial was wired: arm A's rig, Machinist's control plane, worker, GitHub and the grader, plus one real
+    job walked through (SUPPORTORDERS, C, run 4; quotes from its machinist-job.json)."""
+    s = ['<text x="40" y="62" class="th">How the trial was wired</text>',
+         '<text x="40" y="102" class="ts">Arm A on the left; Machinist (arms B and C) in the middle; one grader for '
+         'all three. Every Codex session ran in its own bubblewrap sandbox.</text>']
+    # arm A
+    s.append(box(40, 140, 400, 300, None, ["Our rig (trialrig) starts", "one Codex 0.157 run:",
+                                           "gpt-5.6-luna, medium effort", "Shopizer checkout, no GitHub",
+                                           "Delivers: the changed files"], "A  one agent", COL["A"]))
+    # Machinist
+    s.append('<rect x="480" y="140" width="900" height="580" rx="18" fill="none" stroke="#1d2a44" '
+             'stroke-width="3" stroke-dasharray="12 8"/>'
+             '<text x="500" y="178" class="tb" font-size="27">Machinist (commit 4d7d776), on this machine</text>')
+    s.append(box(500, 200, 420, 215, "box", ["Go foreman: checks each stage's", "reply, moves the job on",
+                                             "SQLite jobs.db: jobs, attempts", "Jobs API on 127.0.0.1"],
+                 "Control plane"))
+    s.append(box(950, 200, 410, 215, "box", ["Starts a fresh Codex process", "per stage, in the project's",
+                                             "own checkout, with GitHub", "token in the environment"],
+                 "Local worker"))
+    s.append('<path d="M920,305 L944,305" class="ln"/>')
+    stages = [("Triage", "read-only", "brief"), ("Spec", "if triage asks", "auto-approved"),
+              ("Implement", "commit, push", "open the PR"), ("Review", "read-only", "verdict")]
+    x = 500
+    for i, (n, a, b) in enumerate(stages):
+        c = COL["C"] if n != "Implement" else COL["B"]
+        s.append(f'<rect x="{x}" y="470" width="190" height="130" rx="12" fill="#fff" stroke="{c}" stroke-width="4"/>'
+                 f'<text x="{x + 95}" y="512" class="tb" font-size="27" text-anchor="middle">{n}</text>'
+                 f'<text x="{x + 95}" y="550" class="q" text-anchor="middle">{a}</text>'
+                 f'<text x="{x + 95}" y="582" class="q" text-anchor="middle">{b}</text>')
+        if i < 3:
+            s.append(f'<path d="M{x + 190},535 L{x + 222},535" class="ln"/>')
+        x += 225
+    s.append('<path d="M1270,600 C1270,670 1045,670 1045,606" class="lnr"/>'
+             '<text x="1125" y="694" class="q red" text-anchor="middle">changes asked: repair, up to 3 times</text>'
+             '<path d="M1150,415 L1150,464" class="ln"/>')
+    s.append('<text x="500" y="640" class="q">C runs all four stages.</text>'
+             '<text x="500" y="672" class="q">B runs Implement only.</text>')
+    # GitHub
+    s.append(box(1420, 140, 340, 300, "boxt", ["One fresh private repo", "per run: asf-run-NNN", "(64 in the main run)",
+                                               "Branch + pull request", "No CI checks (no arm had CI)"],
+                 "GitHub App"))
+    s.append('<path d="M1380,300 L1414,300" class="ln"/><path d="M1414,330 L1380,330" class="ln"/>')
+    # grader
+    s.append(box(1420, 500, 340, 220, "boxg", ["Hidden acceptance tests", "on A's files, or the PR head",
+                                               "for B and C. No agent", "ever saw them."], "Grader (ours)"))
+    s.append('<path d="M1590,440 L1590,494" class="ln"/>'
+             '<path d="M240,440 L240,760 L1590,760 L1590,726" class="ln"/>')
+    # one real job
+    s.append('<rect x="40" y="800" width="1720" height="270" rx="14" class="box"/>'
+             '<text x="70" y="846" class="tb" font-size="27">One real job, step by step (SUPPORTORDERS, arm C, run 4)</text>')
+    steps = ["1. Triage: “Researched the order retention and pagination defects and prepared an implementation brief.”",
+             "2. Implement: “Fixed deleted-customer order access and admin order pagination.” Pushed, PR opened.",
+             "3. Review: “The diff is consistent with the requested behavior, but acceptance cannot be confirmed:",
+             "    GitHub has zero check runs …”  Machinist ends the job: blocked.",
+             "4. Our hidden tests on the same PR head: 12 of 12 pass."]
+    for i, l in enumerate(steps):
+        cls = "q green" if i == 4 else "q"
+        s.append(f'<text x="70" y="{892 + i * 38}" class="{cls}" font-size="24">{l}</text>')
+    s.append(f'<text x="1760" y="1110" class="tsm" text-anchor="end">{SRC} (README.md; Machinist ARCHITECTURE.md; '
+             'results/main/runs/SUPPORTORDERS/C/codex/4/machinist-job.json)</text>')
+    return page(1130, "\n".join(s))
+
+
 def main():
     an = json.load(open(MAIN / "analysis.json"))
     re_ = json.load(open(MAIN / "review-effect.json"))
     st = stage_tokens()
     OUT.mkdir(exist_ok=True)
     for name, html in (("1-setup", setup()), ("2-scores", scores(an)), ("3-pipeline", pipeline(an, re_)),
-                       ("4-tokens", tokens(an, st))):
+                       ("4-tokens", tokens(an, st)), ("0-architecture", architecture())):
         (OUT / f"{name}.html").write_text(html)
         print(OUT / f"{name}.html")
 

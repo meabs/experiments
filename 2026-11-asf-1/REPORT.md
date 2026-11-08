@@ -40,7 +40,10 @@ Pre-registered design: `README.md`, pushed as 5e99976f before the main run. All 
   - Two are easier.
 - **Score:** the share of hidden acceptance tests passed (9 to 17 per ticket). Tests were run after each run, on what
   the run delivered: the PR's head for B and C, the changed files for A. The agents never saw the tests.
-- 4 runs per arm and ticket, 96 runs in all, in random order, one at a time.
+- 4 runs per arm and ticket, 96 runs in all, in random order, one at a time. The main run took 21.4 hours of
+  wall-clock time (2026-11-07 22:32 to 2026-11-08 19:57 UTC), most of it in the pipeline's jobs.
+
+![How the trial was wired](diagrams/png/0-architecture.png)
 
 ## Results
 
@@ -91,8 +94,8 @@ test in 4 of 8 runs, against 1 of 8 for A and 1 of 8 for B.
     rounds.
   - Repairs can also break working code. In two REVIEWS runs, the PR fell from 8 of 10 and 7 of 10 passing tests to
     1 of 10 after repairs the reviewer asked for.
-- **Nothing was ever approved.** Machinist ended all 32 jobs as "blocked" (18, repair rounds used up) or "failed"
-  (14). None ended "complete".
+- **Nothing was ever approved.** Machinist ended all 32 jobs as "blocked" (18: 15 after all three repair rounds,
+  3 earlier on a review's verdict) or "failed" (14). None ended "complete".
   - 10 of the 32 PRs pass every hidden test, and the reviewer rejected those too.
   - 49 of the 87 reviews give missing CI as a reason. The repository has no CI (true in every arm), and Machinist's
     reviewer asks for check runs that can never appear. A real example, on a PR that passes 12 of 12 hidden tests
