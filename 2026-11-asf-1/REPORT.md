@@ -90,8 +90,8 @@ test in 4 of 8 runs, against 1 of 8 for A and 1 of 8 for B.
   again at the end.
   - On hard tickets, the score went from 48% to 55%, across 22 runs.
   - Over all 30 runs that had a review, 16 improved, 4 got worse and 10 were unchanged.
-  - The pipeline's first draft scored the same as the single agent (49%). The small gain comes from the repair
-    rounds.
+  - The pipeline's first draft, at 48%, scored about the same as one agent (49%). The small gain comes from the
+    repair rounds.
   - Repairs can also break working code. In two REVIEWS runs, the PR fell from 8 of 10 and 7 of 10 passing tests to
     1 of 10 after repairs the reviewer asked for.
 - **Nothing was ever approved.** Machinist ended all 32 jobs as "blocked" (18: 15 after all three repair rounds,
