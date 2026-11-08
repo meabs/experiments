@@ -1,0 +1,550 @@
+diff --git a/sm-core-model/src/main/java/com/salesmanager/core/model/catalog/product/Product.java b/sm-core-model/src/main/java/com/salesmanager/core/model/catalog/product/Product.java
+index daac44370..460ad27ea 100755
+--- a/sm-core-model/src/main/java/com/salesmanager/core/model/catalog/product/Product.java
++++ b/sm-core-model/src/main/java/com/salesmanager/core/model/catalog/product/Product.java
+@@ -134,6 +134,9 @@ public class Product extends SalesManagerEntity<Long, Product> implements Audita
+ 	
+ 	@Column(name = "AVAILABLE")
+ 	private boolean available = true;
++
++	@Column(name = "VISIBLE", nullable = false, columnDefinition = "boolean default true")
++	private boolean visible = true;
+ 	
+ 
+ 	@Column(name = "PREORDER")
+@@ -546,6 +549,14 @@ public class Product extends SalesManagerEntity<Long, Product> implements Audita
+ 		this.available = available;
+ 	}
+ 
++	public boolean isVisible() {
++		return visible;
++	}
++
++	public void setVisible(boolean visible) {
++		this.visible = visible;
++	}
++
+ 	public void setProductShipeable(boolean productShipeable) {
+ 		this.productShipeable = productShipeable;
+ 	}
+diff --git a/sm-core/src/main/java/com/salesmanager/core/business/configuration/ProductVisibilityMigration.java b/sm-core/src/main/java/com/salesmanager/core/business/configuration/ProductVisibilityMigration.java
+new file mode 100644
+index 000000000..f9109dd11
+--- /dev/null
++++ b/sm-core/src/main/java/com/salesmanager/core/business/configuration/ProductVisibilityMigration.java
+@@ -0,0 +1,36 @@
++package com.salesmanager.core.business.configuration;
++
++import javax.annotation.PostConstruct;
++import javax.inject.Inject;
++
++import org.slf4j.Logger;
++import org.slf4j.LoggerFactory;
++import org.springframework.jdbc.core.JdbcTemplate;
++import org.springframework.jdbc.BadSqlGrammarException;
++import org.springframework.context.annotation.DependsOn;
++import org.springframework.stereotype.Component;
++
++/** Backfills the default-visible flag when upgrading an existing catalogue. */
++@Component
++@DependsOn("entityManagerFactory")
++public class ProductVisibilityMigration {
++
++	private static final Logger LOGGER = LoggerFactory.getLogger(ProductVisibilityMigration.class);
++
++	@Inject
++	private JdbcTemplate jdbcTemplate;
++
++	@PostConstruct
++	public void backfillExistingProducts() {
++		try {
++			int updated = jdbcTemplate.update("UPDATE PRODUCT SET VISIBLE = TRUE WHERE VISIBLE IS NULL");
++			if (updated > 0) {
++				LOGGER.info("Marked {} existing products visible during the visibility migration", updated);
++			}
++		} catch (BadSqlGrammarException exception) {
++			// On a fresh installation Shopizer creates the catalogue tables after
++			// application context initialization. The column default covers those rows.
++			LOGGER.debug("Product table is not available yet; skipping visibility backfill", exception);
++		}
++	}
++}
+diff --git a/sm-core/src/main/java/com/salesmanager/core/business/repositories/catalog/product/ProductRepositoryImpl.java b/sm-core/src/main/java/com/salesmanager/core/business/repositories/catalog/product/ProductRepositoryImpl.java
+index 754c86d53..1efd2af41 100755
+--- a/sm-core/src/main/java/com/salesmanager/core/business/repositories/catalog/product/ProductRepositoryImpl.java
++++ b/sm-core/src/main/java/com/salesmanager/core/business/repositories/catalog/product/ProductRepositoryImpl.java
+@@ -143,7 +143,7 @@ public class ProductRepositoryImpl implements ProductRepositoryCustom {
+ 			// RENTAL
+ 			//qs.append("left join fetch p.owner owner ");
+ 
+-			qs.append("where p.sku=:code ");
++			qs.append("where p.sku=:code and p.visible=true ");
+ 			qs.append("and pd.language.id=:lang and papd.language.id=:lang");
+ 			// this cannot be done on child elements from left join
+ 			// qs.append("and pod.languageId=:lang and povd.languageId=:lang");
+@@ -188,7 +188,7 @@ public class ProductRepositoryImpl implements ProductRepositoryCustom {
+ 			qs.append("left join fetch p.type type ");
+ 
+ 
+-			qs.append("where p.sku=:code and pm.id=:id");
++			qs.append("where p.sku=:code and pm.id=:id and p.visible=true");
+ 
+ 			String hql = qs.toString();
+ 			Query q = this.em.createQuery(hql);
+@@ -241,20 +241,22 @@ public class ProductRepositoryImpl implements ProductRepositoryCustom {
+ 
+ 		qs.append("where pa.region in (:lid) ");
+ 		qs.append("and pd.seUrl=:seUrl ");
+-		qs.append("and p.available=true and p.dateAvailable<=:dt ");
++		qs.append("and p.visible=true ");
+ 		qs.append("order by pattr.productOptionSortOrder ");
+ 
+ 		String hql = qs.toString();
+ 		Query q = this.em.createQuery(hql);
+ 
+ 		q.setParameter("lid", regionList);
+-		q.setParameter("dt", new Date());
+ 		q.setParameter("seUrl", seUrl);
+ 
+ 		Product p = null;
+ 
+ 		try {
+ 			List<Product> products = q.getResultList();
++			if (products.isEmpty()) {
++				return null;
++			}
+ 			if (products.size() > 1) {
+ 				LOGGER.error("Found multiple products for list of criterias with main criteria [" + seUrl + "]");
+ 			}
+@@ -312,7 +314,7 @@ public class ProductRepositoryImpl implements ProductRepositoryCustom {
+ 
+ 		qs.append("where p.id=:pid and pa.region in (:lid) ");
+ 		qs.append("and pd.language.id=:lang and papd.language.id=:lang ");
+-		qs.append("and p.available=true and p.dateAvailable<=:dt ");
++		qs.append("and p.visible=true and p.available=true and p.dateAvailable<=:dt ");
+ 		// this cannot be done on child elements from left join
+ 		// qs.append("and pod.languageId=:lang and povd.languageId=:lang");
+ 
+@@ -439,7 +441,7 @@ public class ProductRepositoryImpl implements ProductRepositoryCustom {
+ 		// qs.append("and pd.language.id=:lang and papd.language.id=:lang and
+ 		// manufd.language.id=:lang ");
+ 		qs.append("and pd.language.id=:lang and papd.language.id=:lang ");
+-		qs.append("and p.available=true and p.dateAvailable<=:dt ");
++		qs.append("and p.visible=true and p.available=true and p.dateAvailable<=:dt ");
+ 
+ 		String hql = qs.toString();
+ 		Query q = this.em.createQuery(hql);
+@@ -538,7 +540,7 @@ public class ProductRepositoryImpl implements ProductRepositoryCustom {
+ 		qs.append("where p.merchantStore.id=mId and categs.id in (:cid) and pa.region in (:lid) ");
+ 		// qs.append("and p.available=true and p.dateAvailable<=:dt and
+ 		// pd.language.id=:lang and manufd.language.id=:lang");
+-		qs.append("and p.available=true and p.dateAvailable<=:dt and pd.language.id=:lang");
++		qs.append("and p.visible=true and p.available=true and p.dateAvailable<=:dt and pd.language.id=:lang");
+ 		qs.append(" order by p.sortOrder asc");
+ 
+ 		String hql = qs.toString();
+@@ -672,6 +674,10 @@ public class ProductRepositoryImpl implements ProductRepositoryCustom {
+ 				countBuilderWhere.append(" and p.available=false or p.dateAvailable>:dt");
+ 			}
+ 		}
++
++		if (ProductCriteria.ORIGIN_SHOP.equals(criteria.getOrigin())) {
++			countBuilderWhere.append(" and p.visible=true");
++		}
+ 		
+ 		
+ 
+@@ -839,12 +845,16 @@ public class ProductRepositoryImpl implements ProductRepositoryCustom {
+ 
+ 		if (criteria.getAvailable() != null) {
+ 			if (criteria.getAvailable()) {
+-				qs.append(" and p.available=true and p.dateAvailable<=:dt");
++				qs.append(" and p.visible=true and p.available=true and p.dateAvailable<=:dt");
+ 			} else {
+ 				qs.append(" and p.available=false and p.dateAvailable>:dt");
+ 			}
+ 		}
+ 
++		if (ProductCriteria.ORIGIN_SHOP.equals(criteria.getOrigin())) {
++			qs.append(" and p.visible=true");
++		}
++
+ 		if (!StringUtils.isBlank(criteria.getProductName())) {
+ 			qs.append(" and lower(pd.name) like :nm");
+ 		}
+diff --git a/sm-shop/src/main/java/com/salesmanager/shop/mapper/catalog/product/PersistableProductDefinitionMapper.java b/sm-shop/src/main/java/com/salesmanager/shop/mapper/catalog/product/PersistableProductDefinitionMapper.java
+index 526432c5a..3a231d3b7 100644
+--- a/sm-shop/src/main/java/com/salesmanager/shop/mapper/catalog/product/PersistableProductDefinitionMapper.java
++++ b/sm-shop/src/main/java/com/salesmanager/shop/mapper/catalog/product/PersistableProductDefinitionMapper.java
+@@ -76,7 +76,8 @@ public class PersistableProductDefinitionMapper implements Mapper<PersistablePro
+ 			} else {
+ 				destination.setSku(source.getIdentifier());
+ 			}
+-			destination.setAvailable(source.isVisible());
++			destination.setVisible(source.isVisible());
++			destination.setAvailable(source.isCanBePurchased());
+ 			destination.setDateAvailable(new Date());
+ 
+ 			destination.setRefSku(source.getIdentifier());
+diff --git a/sm-shop/src/main/java/com/salesmanager/shop/mapper/catalog/product/PersistableProductMapper.java b/sm-shop/src/main/java/com/salesmanager/shop/mapper/catalog/product/PersistableProductMapper.java
+index 6c78dec13..a3c8b9ccc 100644
+--- a/sm-shop/src/main/java/com/salesmanager/shop/mapper/catalog/product/PersistableProductMapper.java
++++ b/sm-shop/src/main/java/com/salesmanager/shop/mapper/catalog/product/PersistableProductMapper.java
+@@ -97,7 +97,8 @@ public class PersistableProductMapper implements Mapper<PersistableProduct, Prod
+ 			//core properties
+ 			destination.setSku(source.getSku());
+ 
+-			destination.setAvailable(source.isVisible());
++			destination.setVisible(source.isVisible());
++			destination.setAvailable(source.isAvailable());
+ 			destination.setDateAvailable(new Date());
+ 
+ 			destination.setRefSku(source.getRefSku());
+diff --git a/sm-shop/src/main/java/com/salesmanager/shop/mapper/catalog/product/ReadableProductDefinitionMapper.java b/sm-shop/src/main/java/com/salesmanager/shop/mapper/catalog/product/ReadableProductDefinitionMapper.java
+index ce3677671..6fc4cbb4e 100644
+--- a/sm-shop/src/main/java/com/salesmanager/shop/mapper/catalog/product/ReadableProductDefinitionMapper.java
++++ b/sm-shop/src/main/java/com/salesmanager/shop/mapper/catalog/product/ReadableProductDefinitionMapper.java
+@@ -77,7 +77,8 @@ public class ReadableProductDefinitionMapper implements Mapper<Product, Readable
+ 
+ 		returnDestination.setIdentifier(source.getSku());
+ 		returnDestination.setId(source.getId());
+-		returnDestination.setVisible(source.isAvailable());
++		returnDestination.setVisible(source.isVisible());
++		returnDestination.setCanBePurchased(source.isAvailable());
+ 		returnDestination.setDateAvailable(DateUtil.formatDate(source.getDateAvailable()));
+ 		returnDestination.setSku(source.getSku());
+ 		ProductDescription description = null;
+diff --git a/sm-shop/src/main/java/com/salesmanager/shop/mapper/catalog/product/ReadableProductMapper.java b/sm-shop/src/main/java/com/salesmanager/shop/mapper/catalog/product/ReadableProductMapper.java
+index 89bd5eacf..19fa9bd90 100644
+--- a/sm-shop/src/main/java/com/salesmanager/shop/mapper/catalog/product/ReadableProductMapper.java
++++ b/sm-shop/src/main/java/com/salesmanager/shop/mapper/catalog/product/ReadableProductMapper.java
+@@ -119,6 +119,7 @@ public class ReadableProductMapper implements Mapper<Product, ReadableProduct> {
+ 		}
+ 		destination.setId(source.getId());
+ 		destination.setAvailable(source.isAvailable());
++		destination.setVisible(source.isVisible());
+ 		destination.setProductShipeable(source.isProductShipeable());
+ 
+ 		destination.setPreOrder(source.isPreOrder());
+diff --git a/sm-shop/src/main/java/com/salesmanager/shop/populator/catalog/ReadableProductPopulator.java b/sm-shop/src/main/java/com/salesmanager/shop/populator/catalog/ReadableProductPopulator.java
+index c53d2a0f6..b5e2a2b1d 100755
+--- a/sm-shop/src/main/java/com/salesmanager/shop/populator/catalog/ReadableProductPopulator.java
++++ b/sm-shop/src/main/java/com/salesmanager/shop/populator/catalog/ReadableProductPopulator.java
+@@ -120,6 +120,7 @@ public class ReadableProductPopulator extends
+ 
+ 			target.setId(source.getId());
+ 			target.setAvailable(source.isAvailable());
++			target.setVisible(source.isVisible());
+ 			target.setProductShipeable(source.isProductShipeable());
+ 
+ 			ProductSpecification specifications = new ProductSpecification();
+diff --git a/sm-shop/src/main/java/com/salesmanager/shop/store/api/exception/ConflictRuntimeException.java b/sm-shop/src/main/java/com/salesmanager/shop/store/api/exception/ConflictRuntimeException.java
+new file mode 100644
+index 000000000..bba6b045c
+--- /dev/null
++++ b/sm-shop/src/main/java/com/salesmanager/shop/store/api/exception/ConflictRuntimeException.java
+@@ -0,0 +1,10 @@
++package com.salesmanager.shop.store.api.exception;
++
++public class ConflictRuntimeException extends GenericRuntimeException {
++
++    private static final long serialVersionUID = 1L;
++
++    public ConflictRuntimeException(String errorMessage) {
++        super("409", errorMessage);
++    }
++}
+diff --git a/sm-shop/src/main/java/com/salesmanager/shop/store/api/exception/RestErrorHandler.java b/sm-shop/src/main/java/com/salesmanager/shop/store/api/exception/RestErrorHandler.java
+index 054ea331d..2116dc9f1 100755
+--- a/sm-shop/src/main/java/com/salesmanager/shop/store/api/exception/RestErrorHandler.java
++++ b/sm-shop/src/main/java/com/salesmanager/shop/store/api/exception/RestErrorHandler.java
+@@ -86,8 +86,16 @@ public class RestErrorHandler {
+         return errorEntity;
+     }
+ 
+-    @RequestMapping(produces = "application/json")
+-    @ExceptionHandler(RestApiException.class)
++    @RequestMapping(produces = "application/json")
++    @ExceptionHandler(ConflictRuntimeException.class)
++    @ResponseStatus(HttpStatus.CONFLICT)
++    public @ResponseBody ErrorEntity handleConflictException(ConflictRuntimeException exception) {
++        log.error(exception.getErrorMessage(), exception);
++        return createErrorEntity(exception.getErrorCode(), exception.getErrorMessage(), exception.getLocalizedMessage());
++    }
++
++    @RequestMapping(produces = "application/json")
++    @ExceptionHandler(RestApiException.class)
+     @ResponseStatus(HttpStatus.BAD_REQUEST)
+     public @ResponseBody ErrorEntity handleRestApiException(RestApiException exception) {
+         log.error(exception.getErrorMessage(), exception);
+diff --git a/sm-shop/src/main/java/com/salesmanager/shop/store/api/v1/order/OrderApi.java b/sm-shop/src/main/java/com/salesmanager/shop/store/api/v1/order/OrderApi.java
+index b0ca07457..d5fc25d24 100755
+--- a/sm-shop/src/main/java/com/salesmanager/shop/store/api/v1/order/OrderApi.java
++++ b/sm-shop/src/main/java/com/salesmanager/shop/store/api/v1/order/OrderApi.java
+@@ -47,6 +47,7 @@ import com.salesmanager.shop.model.order.v1.PersistableOrder;
+ import com.salesmanager.shop.model.order.v1.ReadableOrderConfirmation;
+ import com.salesmanager.shop.populator.customer.ReadableCustomerPopulator;
+ import com.salesmanager.shop.store.api.exception.GenericRuntimeException;
++import com.salesmanager.shop.store.api.exception.ConflictRuntimeException;
+ import com.salesmanager.shop.store.api.exception.ResourceNotFoundException;
+ import com.salesmanager.shop.store.api.exception.ServiceRuntimeException;
+ import com.salesmanager.shop.store.controller.customer.facade.CustomerFacade;
+@@ -369,6 +370,10 @@ public class OrderApi {
+ 				throw new ResourceNotFoundException("Cart code " + code + " does not exist");
+ 			}
+ 
++			if (cart.getLineItems().stream().anyMatch(item -> !item.getProduct().isVisible())) {
++				throw new ConflictRuntimeException("The cart contains a hidden product");
++			}
++
+ 			order.setShoppingCartId(cart.getId());
+ 			order.setCustomerId(customer.getId());//That is an existing customer purchasing
+ 
+@@ -421,6 +426,10 @@ public class OrderApi {
+ 				throw new ResourceNotFoundException("Cart code " + code + " does not exist");
+ 			}
+ 
++			if (cart.getLineItems().stream().anyMatch(item -> !item.getProduct().isVisible())) {
++				throw new ConflictRuntimeException("The cart contains a hidden product");
++			}
++
+ 			//security password validation
+ 			PersistableCustomer presistableCustomer = order.getCustomer();
+ 			if(!StringUtils.isBlank(presistableCustomer.getPassword())) { //validate customer password
+@@ -455,6 +464,9 @@ public class OrderApi {
+ 
+ 
+ 		} catch (Exception e) {
++			if (e instanceof GenericRuntimeException) {
++				throw (GenericRuntimeException) e;
++			}
+ 			if(e instanceof CredentialsException) {
+ 				throw new GenericRuntimeException("412","Credentials creation Failed [" + e.getMessage() + "]");
+ 			}
+diff --git a/sm-shop/src/main/java/com/salesmanager/shop/store/api/v1/product/ProductApi.java b/sm-shop/src/main/java/com/salesmanager/shop/store/api/v1/product/ProductApi.java
+index 2352a424f..f5cb88a63 100755
+--- a/sm-shop/src/main/java/com/salesmanager/shop/store/api/v1/product/ProductApi.java
++++ b/sm-shop/src/main/java/com/salesmanager/shop/store/api/v1/product/ProductApi.java
+@@ -289,6 +289,64 @@ public class ProductApi {
+ 		}
+ 	}
+ 
++	@RequestMapping(value = "/private/products", method = RequestMethod.GET)
++	@ResponseBody
++	public ReadableProductList privateList(
++			@RequestParam(value = "lang", required = false) String lang,
++			@RequestParam(value = "category", required = false) Long category,
++			@RequestParam(value = "name", required = false) String name,
++			@RequestParam(value = "sku", required = false) String sku,
++			@RequestParam(value = "manufacturer", required = false) Long manufacturer,
++			@RequestParam(value = "optionValues", required = false) List<Long> optionValueIds,
++			@RequestParam(value = "status", required = false) String status,
++			@RequestParam(value = "owner", required = false) Long owner,
++			@RequestParam(value = "page", required = false, defaultValue = "0") Integer page,
++			@RequestParam(value = "count", required = false, defaultValue = "100") Integer count,
++			@RequestParam(value = "slug", required = false) String slug,
++			@RequestParam(value = "available", required = false) Boolean available,
++			@ApiIgnore MerchantStore merchantStore, @ApiIgnore Language language) throws Exception {
++		ProductCriteria criteria = new ProductCriteria();
++		criteria.setOrigin(ProductCriteria.ORIGIN_ADMIN);
++		criteria.setLanguage(lang == null ? language.getCode() : lang);
++		if (!StringUtils.isBlank(status)) {
++			criteria.setStatus(status);
++		}
++		List<Long> categoryIds = new ArrayList<Long>();
++		if (slug != null) {
++			Category categoryBySlug = categoryService.getBySeUrl(merchantStore, slug, language);
++			categoryIds.add(categoryBySlug.getId());
++		}
++		if (category != null) {
++			categoryIds.add(category);
++		}
++		if (!categoryIds.isEmpty()) {
++			criteria.setCategoryIds(categoryIds);
++		}
++		if (available != null && available) {
++			criteria.setAvailable(available);
++		}
++		if (manufacturer != null) {
++			criteria.setManufacturerId(manufacturer);
++		}
++		if (CollectionUtils.isNotEmpty(optionValueIds)) {
++			criteria.setOptionValueIds(optionValueIds);
++		}
++		if (owner != null) {
++			criteria.setOwnerId(owner);
++		}
++		if (page != null) {
++			criteria.setStartPage(page);
++		}
++		criteria.setMaxCount(count);
++		if (!StringUtils.isBlank(name)) {
++			criteria.setProductName(name);
++		}
++		if (!StringUtils.isBlank(sku)) {
++			criteria.setCode(sku);
++		}
++		return productFacade.getProductListsByCriterias(merchantStore, language, criteria);
++	}
++
+ 	/**
+ 	 * API for getting a product
+ 	 * Removed in 3.2.5 in favor of /product/sku
+diff --git a/sm-shop/src/main/java/com/salesmanager/shop/store/controller/shoppingCart/facade/ShoppingCartFacadeImpl.java b/sm-shop/src/main/java/com/salesmanager/shop/store/controller/shoppingCart/facade/ShoppingCartFacadeImpl.java
+index 7fdc13915..063f1534b 100755
+--- a/sm-shop/src/main/java/com/salesmanager/shop/store/controller/shoppingCart/facade/ShoppingCartFacadeImpl.java
++++ b/sm-shop/src/main/java/com/salesmanager/shop/store/controller/shoppingCart/facade/ShoppingCartFacadeImpl.java
+@@ -192,7 +192,8 @@ public class ShoppingCartFacadeImpl implements ShoppingCartFacade {
+ 		Product product = productService.getBySku(shoppingCartItem.getSku(), store, store.getDefaultLanguage());
+ 
+ 		if (product == null) {
+-			throw new Exception("Item with sku " + shoppingCartItem.getSku() + " does not exist");
++			throw new ResourceNotFoundException(
++					"Item with sku " + shoppingCartItem.getSku() + " does not exist");
+ 		}
+ 
+ 		if (product.getMerchantStore().getId().intValue() != store.getId().intValue()) {
+@@ -266,6 +267,11 @@ public class ShoppingCartFacadeImpl implements ShoppingCartFacade {
+ 					"Product with sku " + shoppingCartItem.getProduct() + " does not exist");
+ 		}
+ 
++		if (!product.isVisible()) {
++			throw new ResourceNotFoundException(
++					"Product with sku " + shoppingCartItem.getProduct() + " does not exist");
++		}
++
+ 		if (product.getMerchantStore().getId().intValue() != store.getId().intValue()) {
+ 			throw new ResourceNotFoundException(
+ 					"Item with id " + shoppingCartItem.getProduct() + " does not belong to merchant " + store.getId());
+@@ -367,6 +373,9 @@ public class ShoppingCartFacadeImpl implements ShoppingCartFacade {
+ 		List<com.salesmanager.core.model.shoppingcart.ShoppingCartItem> items = new ArrayList<>();
+ 
+ 		for (Product p : products) {
++			if (!p.isVisible()) {
++				throw new ResourceNotFoundException("One or more products are not visible");
++			}
+ 			com.salesmanager.core.model.shoppingcart.ShoppingCartItem item = shoppingCartService
+ 					.populateShoppingCartItem(p, store);
+ 			Optional<PersistableShoppingCartItem> oShoppingCartItem = shoppingCartItems.stream()
+diff --git a/sm-shop/src/main/java/com/salesmanager/shop/store/facade/product/ProductFacadeImpl.java b/sm-shop/src/main/java/com/salesmanager/shop/store/facade/product/ProductFacadeImpl.java
+index ee0ee4bf0..c9a71041b 100755
+--- a/sm-shop/src/main/java/com/salesmanager/shop/store/facade/product/ProductFacadeImpl.java
++++ b/sm-shop/src/main/java/com/salesmanager/shop/store/facade/product/ProductFacadeImpl.java
+@@ -76,7 +76,7 @@ public class ProductFacadeImpl implements ProductFacade {
+ 
+ 		Product product = productService.getBySku(sku, store, language);
+ 
+-		if (product == null) {
++		if (product == null || !product.isVisible()) {
+ 			return null;
+ 		}
+ 
+@@ -164,6 +164,10 @@ public class ProductFacadeImpl implements ProductFacade {
+ 			throw new ServiceRuntimeException(e);
+ 		}
+ 
++		if (product == null || !product.isVisible()) {
++			return null;
++		}
++
+ 		ReadableProduct readableProduct = new ReadableProduct();
+ 
+ 		ReadableProductPopulator populator = new ReadableProductPopulator();
+diff --git a/sm-shop/src/main/java/com/salesmanager/shop/store/facade/product/ProductFacadeV2Impl.java b/sm-shop/src/main/java/com/salesmanager/shop/store/facade/product/ProductFacadeV2Impl.java
+index fad03cc92..278f03e27 100644
+--- a/sm-shop/src/main/java/com/salesmanager/shop/store/facade/product/ProductFacadeV2Impl.java
++++ b/sm-shop/src/main/java/com/salesmanager/shop/store/facade/product/ProductFacadeV2Impl.java
+@@ -97,7 +97,7 @@ public class ProductFacadeV2Impl implements ProductFacade {
+ 			throw new ServiceRuntimeException(e);
+ 		}
+ 
+-		if (product == null) {
++		if (product == null || !product.isVisible()) {
+ 			throw new ResourceNotFoundException("Product [" + sku + "] not found for merchant [" + store.getCode() + "]");
+ 		}
+ 		
+@@ -129,7 +129,7 @@ public class ProductFacadeV2Impl implements ProductFacade {
+ 		
+ 		Product product = productService.getBySeUrl(store, friendlyUrl, LocaleUtils.getLocale(language));
+ 
+-		if (product == null) {
++		if (product == null || !product.isVisible()) {
+ 			throw new ResourceNotFoundException("Product [" + friendlyUrl + "] not found for merchant [" + store.getCode() + "]");
+ 		}
+ 		
+diff --git a/sm-shop/src/test/java/com/salesmanager/test/shop/integration/product/ProductManagementAPIIntegrationTest.java b/sm-shop/src/test/java/com/salesmanager/test/shop/integration/product/ProductManagementAPIIntegrationTest.java
+index a623b18ea..69ef76274 100755
+--- a/sm-shop/src/test/java/com/salesmanager/test/shop/integration/product/ProductManagementAPIIntegrationTest.java
++++ b/sm-shop/src/test/java/com/salesmanager/test/shop/integration/product/ProductManagementAPIIntegrationTest.java
+@@ -3,7 +3,10 @@ package com.salesmanager.test.shop.integration.product;
+ import static org.hamcrest.core.Is.is;
+ import static org.junit.Assert.assertNotNull;
+ import static org.junit.Assert.assertThat;
++import static org.junit.Assert.assertTrue;
+ import static org.springframework.http.HttpStatus.CREATED;
++import static org.springframework.http.HttpStatus.NOT_FOUND;
++import static org.springframework.http.HttpStatus.OK;
+ 
+ import java.io.BufferedInputStream;
+ import java.io.File;
+@@ -37,6 +40,7 @@ import com.salesmanager.shop.model.catalog.product.PersistableProductPrice;
+ import com.salesmanager.shop.model.catalog.product.PersistableProductReview;
+ import com.salesmanager.shop.model.catalog.product.ProductDescription;
+ import com.salesmanager.shop.model.catalog.product.ReadableProduct;
++import com.salesmanager.shop.model.catalog.product.ReadableProductList;
+ import com.salesmanager.shop.model.catalog.product.attribute.PersistableProductOption;
+ import com.salesmanager.shop.model.catalog.product.attribute.PersistableProductOptionValue;
+ import com.salesmanager.shop.model.catalog.product.attribute.ProductOptionDescription;
+@@ -44,6 +48,8 @@ import com.salesmanager.shop.model.catalog.product.attribute.ProductOptionValueD
+ import com.salesmanager.shop.model.catalog.product.product.PersistableProduct;
+ import com.salesmanager.shop.model.catalog.product.product.PersistableProductInventory;
+ import com.salesmanager.shop.model.catalog.product.product.ProductSpecification;
++import com.salesmanager.shop.model.shoppingcart.PersistableShoppingCartItem;
++import com.salesmanager.shop.model.shoppingcart.ReadableShoppingCart;
+ import com.salesmanager.test.shop.common.ServicesTestSupport;
+ 
+ @SpringBootTest(classes = ShopApplication.class, webEnvironment = WebEnvironment.RANDOM_PORT)
+@@ -99,11 +105,36 @@ public class ProductManagementAPIIntegrationTest extends ServicesTestSupport {
+ 		product.setProductSpecifications(specifications);
+ 		product.setPrice(BigDecimal.TEN);
+ 		product.setSku("123ABC");
++		product.setVisible(false);
++		product.setAvailable(true);
+ 		final HttpEntity<PersistableProduct> entity = new HttpEntity<>(product, getHeader());
+ 
+ 		final ResponseEntity<PersistableProduct> response = testRestTemplate.postForEntity(
+ 				"/api/v1/private/product?store=" + Constants.DEFAULT_STORE, entity, PersistableProduct.class);
+ 		assertThat(response.getStatusCode(), is(CREATED));
++
++		ResponseEntity<ReadableProductList> privateProducts = testRestTemplate.exchange(
++				"/api/v1/private/products?store=" + Constants.DEFAULT_STORE + "&sku=123ABC",
++				HttpMethod.GET, new HttpEntity<>(getHeader()),
++				ReadableProductList.class);
++		assertThat(privateProducts.getStatusCode(), is(OK));
++		assertTrue(privateProducts.getBody().getProducts().stream()
++				.anyMatch(found -> "123ABC".equals(found.getSku()) && !found.isVisible()));
++
++		ResponseEntity<ReadableProductList> publicProducts = testRestTemplate.getForEntity(
++				"/api/v1/products?store=" + Constants.DEFAULT_STORE + "&sku=123ABC",
++				ReadableProductList.class);
++		assertThat(publicProducts.getStatusCode(), is(OK));
++		assertTrue(publicProducts.getBody().getProducts().stream()
++				.noneMatch(found -> "123ABC".equals(found.getSku())));
++
++		PersistableShoppingCartItem cartItem = new PersistableShoppingCartItem();
++		cartItem.setProduct("123ABC");
++		cartItem.setQuantity(1);
++		ResponseEntity<ReadableShoppingCart> cartResponse = testRestTemplate.exchange(
++				"/api/v1/cart?store=" + Constants.DEFAULT_STORE, HttpMethod.POST,
++				new HttpEntity<>(cartItem, getHeader()), ReadableShoppingCart.class);
++		assertThat(cartResponse.getStatusCode(), is(NOT_FOUND));
+ 	}
+ 
+ 	/**
+@@ -393,4 +424,4 @@ public class ProductManagementAPIIntegrationTest extends ServicesTestSupport {
+ 
+ 	}
+ 
+-}
+\ No newline at end of file
++}

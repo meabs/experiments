@@ -1,0 +1,656 @@
+diff --git a/sm-core/src/main/java/com/salesmanager/core/business/services/catalog/product/review/ProductReviewServiceImpl.java b/sm-core/src/main/java/com/salesmanager/core/business/services/catalog/product/review/ProductReviewServiceImpl.java
+index e4068ce24..308522ae9 100755
+--- a/sm-core/src/main/java/com/salesmanager/core/business/services/catalog/product/review/ProductReviewServiceImpl.java
++++ b/sm-core/src/main/java/com/salesmanager/core/business/services/catalog/product/review/ProductReviewServiceImpl.java
+@@ -1,12 +1,14 @@
+ package com.salesmanager.core.business.services.catalog.product.review;
+ 
+ import java.math.BigDecimal;
++import java.math.RoundingMode;
+ import java.util.List;
+ 
+ import javax.inject.Inject;
+ 
+ import org.apache.commons.lang3.Validate;
+ import org.springframework.stereotype.Service;
++import org.springframework.transaction.annotation.Transactional;
+ 
+ import com.salesmanager.core.business.exception.ServiceException;
+ import com.salesmanager.core.business.repositories.catalog.product.review.ProductReviewRepository;
+@@ -40,6 +42,11 @@ public class ProductReviewServiceImpl extends
+ 		return productReviewRepository.findByCustomer(customer.getId());
+ 	}
+ 
++	@Override
++	public ProductReview getById(Long id) {
++		return productReviewRepository.findOne(id);
++	}
++
+ 	@Override
+ 	public List<ProductReview> getByProduct(Product product) {
+ 		return productReviewRepository.findByProduct(product.getId());
+@@ -63,49 +70,45 @@ public class ProductReviewServiceImpl extends
+ 		Validate.notNull(review.getCustomer(),"ProductReview.customer cannot be null");
+ 		
+ 		
+-		//refresh product
+-		Product product = productService.getById(review.getProduct().getId());
+-		
+-		//ajust product rating
+-		Integer count = 0;
+-		if(product.getProductReviewCount()!=null) {
+-			count = product.getProductReviewCount();
+-		}
+-				
+-		
++		super.save(review);
++		recalculate(review.getProduct().getId());
+ 		
++	}
+ 
+-		BigDecimal averageRating = product.getProductReviewAvg();
+-		if(averageRating==null) {
+-			averageRating = new BigDecimal(0);
++	private void recalculate(Long productId) throws ServiceException {
++		Product product = productService.getById(productId);
++		List<ProductReview> reviews = productReviewRepository.findByProductNoCustomers(productId);
++		if (reviews.isEmpty()) {
++			product.setProductReviewAvg(BigDecimal.ZERO);
++			product.setProductReviewCount(0);
++		} else {
++			BigDecimal total = reviews.stream().map(ProductReview::getReviewRating)
++					.map(BigDecimal::valueOf).reduce(BigDecimal.ZERO, BigDecimal::add);
++			product.setProductReviewAvg(total.divide(BigDecimal.valueOf(reviews.size()), 1, RoundingMode.HALF_UP));
++			product.setProductReviewCount(reviews.size());
+ 		}
+-		//get reviews
+-
+-		
+-		BigDecimal totalRating = averageRating.multiply(new BigDecimal(count));
+-		totalRating = totalRating.add(new BigDecimal(review.getReviewRating()));
+-		
+-		count = count + 1;
+-		double avg = totalRating.doubleValue() / count;
+-		
+-		product.setProductReviewAvg(new BigDecimal(avg));
+-		product.setProductReviewCount(count);
+-		super.save(review);
+-		
+ 		productService.update(product);
+-		
+-		review.setProduct(product);
+-		
+ 	}
+ 	
++	@Transactional
+ 	public void update(ProductReview review) throws ServiceException {
+ 		this.saveOrUpdate(review);
+ 	}
+ 	
++	@Transactional
+ 	public void create(ProductReview review) throws ServiceException {
+ 		this.saveOrUpdate(review);
+ 	}
+ 
++	@Override
++	@Transactional
++	public void delete(ProductReview review) throws ServiceException {
++		Long productId = review.getProduct().getId();
++		super.delete(review);
++		flush();
++		recalculate(productId);
++	}
++
+ 	/* (non-Javadoc)
+ 	 * @see com.salesmanager.core.business.services.catalog.product.review.ProductReviewService#getByProductNoObjects(com.salesmanager.core.model.catalog.product.Product)
+ 	 */
+diff --git a/sm-shop-model/src/main/java/com/salesmanager/shop/model/catalog/product/ProductReviewEntity.java b/sm-shop-model/src/main/java/com/salesmanager/shop/model/catalog/product/ProductReviewEntity.java
+index f2c82631b..e7f3727bb 100755
+--- a/sm-shop-model/src/main/java/com/salesmanager/shop/model/catalog/product/ProductReviewEntity.java
++++ b/sm-shop-model/src/main/java/com/salesmanager/shop/model/catalog/product/ProductReviewEntity.java
+@@ -7,6 +7,7 @@ import javax.validation.constraints.Min;
+ import javax.validation.constraints.NotNull;
+ 
+ import javax.validation.constraints.NotEmpty;
++import javax.validation.constraints.Digits;
+ 
+ import com.salesmanager.shop.model.entity.ShopEntity;
+ 
+@@ -25,6 +26,7 @@ public class ProductReviewEntity extends ShopEntity implements Serializable {
+ 	@NotNull
+ 	@Min(1)
+ 	@Max(5)
++	@Digits(integer = 1, fraction = 0)
+ 	private Double rating;
+ 	public String getDescription() {
+ 		return description;
+diff --git a/sm-shop-model/src/main/java/com/salesmanager/shop/model/catalog/product/ReadableProductReview.java b/sm-shop-model/src/main/java/com/salesmanager/shop/model/catalog/product/ReadableProductReview.java
+index 4c5a1c6a8..b84fd523a 100755
+--- a/sm-shop-model/src/main/java/com/salesmanager/shop/model/catalog/product/ReadableProductReview.java
++++ b/sm-shop-model/src/main/java/com/salesmanager/shop/model/catalog/product/ReadableProductReview.java
+@@ -2,7 +2,7 @@ package com.salesmanager.shop.model.catalog.product;
+ 
+ import java.io.Serializable;
+ 
+-import com.salesmanager.shop.model.customer.ReadableCustomer;
++import com.fasterxml.jackson.annotation.JsonIgnore;
+ 
+ 
+ public class ReadableProductReview extends ProductReviewEntity implements Serializable {
+@@ -11,12 +11,24 @@ public class ReadableProductReview extends ProductReviewEntity implements Serial
+ 	 * 
+ 	 */
+ 	private static final long serialVersionUID = 1L;
+-	private ReadableCustomer customer;
+-	public ReadableCustomer getCustomer() {
+-		return customer;
++	private String customerFirstName;
++	public String getCustomerFirstName() {
++		return customerFirstName;
+ 	}
+-	public void setCustomer(ReadableCustomer customer) {
+-		this.customer = customer;
++	public void setCustomerFirstName(String customerFirstName) {
++		this.customerFirstName = customerFirstName;
++	}
++
++	@JsonIgnore
++	@Override
++	public Long getProductId() {
++		return super.getProductId();
++	}
++
++	@JsonIgnore
++	@Override
++	public String getLanguage() {
++		return super.getLanguage();
+ 	}
+ 
+ }
+diff --git a/sm-shop/src/main/java/com/salesmanager/shop/mapper/catalog/product/ReadableProductMapper.java b/sm-shop/src/main/java/com/salesmanager/shop/mapper/catalog/product/ReadableProductMapper.java
+index 89bd5eacf..22b76ab2d 100644
+--- a/sm-shop/src/main/java/com/salesmanager/shop/mapper/catalog/product/ReadableProductMapper.java
++++ b/sm-shop/src/main/java/com/salesmanager/shop/mapper/catalog/product/ReadableProductMapper.java
+@@ -1,6 +1,8 @@
+ package com.salesmanager.shop.mapper.catalog.product;
+ 
+ import java.util.ArrayList;
++import java.math.RoundingMode;
++import java.math.BigDecimal;
+ import java.util.List;
+ import java.util.Optional;
+ import java.util.Set;
+@@ -424,12 +426,16 @@ public class ReadableProductMapper implements Mapper<Product, ReadableProduct> {
+ 
+ 		if (source.getProductReviewAvg() != null) {
+ 			double avg = source.getProductReviewAvg().doubleValue();
+-			double rating = Math.round(avg * 2) / 2.0f;
++			double rating = BigDecimal.valueOf(avg).setScale(1, RoundingMode.HALF_UP).doubleValue();
+ 			destination.setRating(rating);
++		} else {
++			destination.setRating(0D);
+ 		}
+ 
+ 		if (source.getProductReviewCount() != null) {
+ 			destination.setRatingCount(source.getProductReviewCount().intValue());
++		} else {
++			destination.setRatingCount(0);
+ 		}
+ 
+ 		if (description != null) {
+diff --git a/sm-shop/src/main/java/com/salesmanager/shop/populator/catalog/PersistableProductReviewPopulator.java b/sm-shop/src/main/java/com/salesmanager/shop/populator/catalog/PersistableProductReviewPopulator.java
+index 5483b348d..c0717f7ba 100755
+--- a/sm-shop/src/main/java/com/salesmanager/shop/populator/catalog/PersistableProductReviewPopulator.java
++++ b/sm-shop/src/main/java/com/salesmanager/shop/populator/catalog/PersistableProductReviewPopulator.java
+@@ -1,8 +1,6 @@
+ package com.salesmanager.shop.populator.catalog;
+ 
+ import java.util.Date;
+-import java.util.HashSet;
+-import java.util.Set;
+ 
+ import org.apache.commons.lang3.Validate;
+ 
+@@ -62,6 +60,7 @@ public class PersistableProductReviewPopulator extends
+ 			if(target==null) {
+ 				target = new ProductReview();
+ 			}
++			target.setId(source.getId());
+ 			
+ 			Customer customer = customerService.getById(source.getCustomerId());
+ 			
+@@ -92,16 +91,15 @@ public class PersistableProductReviewPopulator extends
+ 				throw new ConversionException("Invalid language code, use iso codes (en, fr ...)");
+ 			}
+ 			
+-			ProductReviewDescription description = new ProductReviewDescription();
++			ProductReviewDescription description = target.getDescriptions().stream().findFirst().orElse(null);
++			if (description == null) {
++				description = new ProductReviewDescription();
++				description.setLanguage(lang);
++				description.setName("-");
++				description.setProductReview(target);
++				target.getDescriptions().add(description);
++			}
+ 			description.setDescription(source.getDescription());
+-			description.setLanguage(lang);
+-			description.setName("-");
+-			description.setProductReview(target);
+-			
+-			Set<ProductReviewDescription> descriptions = new HashSet<ProductReviewDescription>();
+-			descriptions.add(description);
+-			
+-			target.setDescriptions(descriptions);
+ 			
+ 			
+ 
+diff --git a/sm-shop/src/main/java/com/salesmanager/shop/populator/catalog/ReadableProductReviewPopulator.java b/sm-shop/src/main/java/com/salesmanager/shop/populator/catalog/ReadableProductReviewPopulator.java
+index 94e01088a..1f1d2d589 100755
+--- a/sm-shop/src/main/java/com/salesmanager/shop/populator/catalog/ReadableProductReviewPopulator.java
++++ b/sm-shop/src/main/java/com/salesmanager/shop/populator/catalog/ReadableProductReviewPopulator.java
+@@ -9,8 +9,6 @@ import com.salesmanager.core.model.catalog.product.review.ProductReviewDescripti
+ import com.salesmanager.core.model.merchant.MerchantStore;
+ import com.salesmanager.core.model.reference.language.Language;
+ import com.salesmanager.shop.model.catalog.product.ReadableProductReview;
+-import com.salesmanager.shop.model.customer.ReadableCustomer;
+-import com.salesmanager.shop.populator.customer.ReadableCustomerPopulator;
+ import com.salesmanager.shop.utils.DateUtil;
+ 
+ public class ReadableProductReviewPopulator extends
+@@ -23,15 +21,14 @@ public class ReadableProductReviewPopulator extends
+ 
+ 		
+ 		try {
+-			ReadableCustomerPopulator populator = new ReadableCustomerPopulator();
+-			ReadableCustomer customer = new ReadableCustomer();
+-			populator.populate(source.getCustomer(), customer, store, language);
+-
+ 			target.setId(source.getId());
+ 			target.setDate(DateUtil.formatDate(source.getReviewDate()));
+-			target.setCustomer(customer);
++			String firstName = source.getCustomer().getBilling() != null
++					? source.getCustomer().getBilling().getFirstName()
++					: source.getCustomer().getDelivery() == null ? null
++							: source.getCustomer().getDelivery().getFirstName();
++			target.setCustomerFirstName(firstName);
+ 			target.setRating(source.getReviewRating());
+-			target.setProductId(source.getProduct().getId());
+ 			
+ 			Set<ProductReviewDescription> descriptions = source.getDescriptions();
+ 			if(descriptions!=null) {
+diff --git a/sm-shop/src/main/java/com/salesmanager/shop/store/api/v1/product/ProductReviewApi.java b/sm-shop/src/main/java/com/salesmanager/shop/store/api/v1/product/ProductReviewApi.java
+index 688493efd..97c6b480c 100755
+--- a/sm-shop/src/main/java/com/salesmanager/shop/store/api/v1/product/ProductReviewApi.java
++++ b/sm-shop/src/main/java/com/salesmanager/shop/store/api/v1/product/ProductReviewApi.java
+@@ -1,6 +1,7 @@
+ package com.salesmanager.shop.store.api.v1.product;
+ 
+ import java.util.List;
++import java.security.Principal;
+ 
+ import javax.inject.Inject;
+ import javax.servlet.http.HttpServletRequest;
+@@ -17,9 +18,12 @@ import org.springframework.web.bind.annotation.RequestMapping;
+ import org.springframework.web.bind.annotation.RequestMethod;
+ import org.springframework.web.bind.annotation.ResponseBody;
+ import org.springframework.web.bind.annotation.ResponseStatus;
++import org.springframework.web.bind.annotation.ExceptionHandler;
++import org.springframework.http.converter.HttpMessageNotReadableException;
+ 
+ import com.salesmanager.core.business.services.catalog.product.ProductService;
+ import com.salesmanager.core.business.services.catalog.product.review.ProductReviewService;
++import com.salesmanager.core.business.services.customer.CustomerService;
+ import com.salesmanager.core.model.catalog.product.Product;
+ import com.salesmanager.core.model.catalog.product.review.ProductReview;
+ import com.salesmanager.core.model.merchant.MerchantStore;
+@@ -43,8 +47,17 @@ public class ProductReviewApi {
+ 
+   @Inject private ProductReviewService productReviewService;
+ 
++  @Inject private CustomerService customerService;
++
+   private static final Logger LOGGER = LoggerFactory.getLogger(ProductReviewApi.class);
+ 
++  @ExceptionHandler(HttpMessageNotReadableException.class)
++  @ResponseStatus(HttpStatus.BAD_REQUEST)
++  @ResponseBody
++  public void handleUnreadableReview(HttpMessageNotReadableException exception) {
++    LOGGER.debug("Invalid product review payload", exception);
++  }
++
+   @RequestMapping(
+       value = {
+         "/private/products/{id}/reviews",
+@@ -68,23 +81,31 @@ public class ProductReviewApi {
+       HttpServletResponse response) {
+ 
+     try {
++      review.setProductId(id);
++      if (review.getRating() == null || review.getRating() < 1
++          || review.getRating() > Constants.MAX_REVIEW_RATING_SCORE || review.getRating() % 1 != 0) {
++        response.sendError(HttpStatus.BAD_REQUEST.value(), "Rating must be a whole number from 1 to 5");
++        return null;
++      }
++
++      Principal principal = request.getUserPrincipal();
++      if (principal != null && request.getRequestURI().contains("/auth/")) {
++        com.salesmanager.core.model.customer.Customer customer = customerService.getByNick(principal.getName());
++        if (customer == null || !customer.getId().equals(review.getCustomerId())) {
++          response.sendError(HttpStatus.FORBIDDEN.value(), "Review customer does not match the authenticated customer");
++          return null;
++        }
++      }
++
+       // rating already exist
+       ProductReview prodReview =
+           productReviewService.getByProductAndCustomer(
+-              review.getProductId(), review.getCustomerId());
++              id, review.getCustomerId());
+       if (prodReview != null) {
+-        response.sendError(500, "A review already exist for this customer and product");
+-        return null;
+-      }
+-
+-      // rating maximum 5
+-      if (review.getRating() > Constants.MAX_REVIEW_RATING_SCORE) {
+-        response.sendError(503, "Maximum rating score is " + Constants.MAX_REVIEW_RATING_SCORE);
++        response.sendError(HttpStatus.CONFLICT.value(), "A review already exists for this customer and product");
+         return null;
+       }
+ 
+-      review.setProductId(id);
+-
+       productCommonFacade.saveOrUpdateReview(review, merchantStore, language);
+ 
+       return review;
+@@ -140,8 +161,7 @@ public class ProductReviewApi {
+ 
+   @RequestMapping(
+       value = {
+-        "/private/products/{id}/reviews/{reviewid}",
+-        "/auth/products/{id}/reviews/{reviewid}"
++        "/private/products/{id}/reviews/{reviewId}"
+       },
+       method = RequestMethod.PUT)
+   @ResponseStatus(HttpStatus.OK)
+@@ -166,14 +186,17 @@ public class ProductReviewApi {
+         return null;
+       }
+ 
+-      if (prodReview.getCustomer().getId().longValue() != review.getCustomerId().longValue()) {
++      if (prodReview.getProduct() == null || !prodReview.getProduct().getId().equals(id)) {
+         response.sendError(404, "Product review with id " + reviewId + " does not exist");
+         return null;
+       }
+ 
+-      // rating maximum 5
+-      if (review.getRating() > Constants.MAX_REVIEW_RATING_SCORE) {
+-        response.sendError(503, "Maximum rating score is " + Constants.MAX_REVIEW_RATING_SCORE);
++      review.setId(reviewId);
++      review.setCustomerId(prodReview.getCustomer().getId());
++
++      if (review.getRating() == null || review.getRating() < 1
++          || review.getRating() > Constants.MAX_REVIEW_RATING_SCORE || review.getRating() % 1 != 0) {
++        response.sendError(HttpStatus.BAD_REQUEST.value(), "Rating must be a whole number from 1 to 5");
+         return null;
+       }
+ 
+@@ -196,8 +219,7 @@ public class ProductReviewApi {
+ 
+   @RequestMapping(
+       value = {
+-        "/private/products/{id}/reviews/{reviewid}",
+-        "/auth/products/{id}/reviews/{reviewid}"
++        "/private/products/{id}/reviews/{reviewId}"
+       },
+       method = RequestMethod.DELETE)
+   @ResponseStatus(HttpStatus.OK)
+diff --git a/sm-shop/src/main/java/com/salesmanager/shop/store/facade/product/ProductCommonFacadeImpl.java b/sm-shop/src/main/java/com/salesmanager/shop/store/facade/product/ProductCommonFacadeImpl.java
+index cd3d30248..e73c00091 100644
+--- a/sm-shop/src/main/java/com/salesmanager/shop/store/facade/product/ProductCommonFacadeImpl.java
++++ b/sm-shop/src/main/java/com/salesmanager/shop/store/facade/product/ProductCommonFacadeImpl.java
+@@ -306,10 +306,16 @@ public class ProductCommonFacadeImpl implements ProductCommonFacade {
+ 		populator.setCustomerService(customerService);
+ 		populator.setProductService(productService);
+ 
+-		com.salesmanager.core.model.catalog.product.review.ProductReview rev = new com.salesmanager.core.model.catalog.product.review.ProductReview();
++		boolean creating = review.getId() == null || review.getId() == 0L;
++		if (creating) {
++			review.setId(null);
++		}
++		com.salesmanager.core.model.catalog.product.review.ProductReview rev = creating
++				? new com.salesmanager.core.model.catalog.product.review.ProductReview()
++				: productReviewService.getById(review.getId());
+ 		populator.populate(review, rev, store, language);
+ 
+-		if (review.getId() == null) {
++		if (creating) {
+ 			productReviewService.create(rev);
+ 		} else {
+ 			productReviewService.update(rev);
+diff --git a/sm-shop/src/test/java/com/salesmanager/test/shop/integration/product/ProductManagementAPIIntegrationTest.java b/sm-shop/src/test/java/com/salesmanager/test/shop/integration/product/ProductManagementAPIIntegrationTest.java
+index a623b18ea..6f468262d 100755
+--- a/sm-shop/src/test/java/com/salesmanager/test/shop/integration/product/ProductManagementAPIIntegrationTest.java
++++ b/sm-shop/src/test/java/com/salesmanager/test/shop/integration/product/ProductManagementAPIIntegrationTest.java
+@@ -4,14 +4,24 @@ import static org.hamcrest.core.Is.is;
+ import static org.junit.Assert.assertNotNull;
+ import static org.junit.Assert.assertThat;
+ import static org.springframework.http.HttpStatus.CREATED;
++import static org.springframework.http.HttpStatus.CONFLICT;
++import static org.springframework.http.HttpStatus.FORBIDDEN;
++import static org.springframework.http.HttpStatus.NOT_FOUND;
++import static org.springframework.http.HttpStatus.BAD_REQUEST;
++import static org.springframework.http.HttpStatus.OK;
+ 
+ import java.io.BufferedInputStream;
+ import java.io.File;
+ import java.io.FileInputStream;
+ import java.math.BigDecimal;
+ import java.util.ArrayList;
++import java.util.Arrays;
+ import java.util.List;
++import java.util.HashMap;
++import java.util.Map;
++import java.util.UUID;
+ 
++import org.junit.Assert;
+ import org.junit.Ignore;
+ import org.junit.Test;
+ import org.junit.runner.RunWith;
+@@ -21,12 +31,15 @@ import org.springframework.http.HttpEntity;
+ import org.springframework.http.HttpMethod;
+ import org.springframework.http.HttpStatus;
+ import org.springframework.http.ResponseEntity;
++import org.springframework.http.HttpHeaders;
+ import org.springframework.test.context.junit4.SpringRunner;
+ import org.springframework.web.client.RestTemplate;
+ 
++import com.fasterxml.jackson.databind.JsonNode;
+ import com.fasterxml.jackson.databind.ObjectMapper;
+ import com.fasterxml.jackson.databind.ObjectWriter;
+ import com.salesmanager.core.business.constants.Constants;
++import com.salesmanager.core.model.customer.CustomerGender;
+ import com.salesmanager.core.model.catalog.product.attribute.ProductOptionType;
+ import com.salesmanager.shop.application.ShopApplication;
+ import com.salesmanager.shop.model.catalog.category.Category;
+@@ -44,6 +57,9 @@ import com.salesmanager.shop.model.catalog.product.attribute.ProductOptionValueD
+ import com.salesmanager.shop.model.catalog.product.product.PersistableProduct;
+ import com.salesmanager.shop.model.catalog.product.product.PersistableProductInventory;
+ import com.salesmanager.shop.model.catalog.product.product.ProductSpecification;
++import com.salesmanager.shop.model.customer.PersistableCustomer;
++import com.salesmanager.shop.model.customer.address.Address;
++import com.salesmanager.shop.store.security.AuthenticationResponse;
+ import com.salesmanager.test.shop.common.ServicesTestSupport;
+ 
+ @SpringBootTest(classes = ShopApplication.class, webEnvironment = WebEnvironment.RANDOM_PORT)
+@@ -56,6 +72,8 @@ public class ProductManagementAPIIntegrationTest extends ServicesTestSupport {
+ 
+ 	private Long testProductID;
+ 
++	private final Map<String, HttpHeaders> registeredCustomerHeaders = new HashMap<>();
++
+ 	@Test
+ 	public void createProductWithCategory() throws Exception {
+ 
+@@ -106,6 +124,154 @@ public class ProductManagementAPIIntegrationTest extends ServicesTestSupport {
+ 		assertThat(response.getStatusCode(), is(CREATED));
+ 	}
+ 
++	@Test
++	public void productReviewLifecycleEnforcesPrivacyValidationAndAggregates() throws Exception {
++		String suffix = UUID.randomUUID().toString();
++		PersistableCustomer first = registerCustomer("review-first-" + suffix + "@test.com", "Reviewer");
++		PersistableCustomer second = registerCustomer("review-second-" + suffix + "@test.com", "Second");
++		PersistableCustomer third = registerCustomer("review-third-" + suffix + "@test.com", "Third");
++		HttpHeaders firstHeaders = customerHeaders(first.getEmailAddress());
++		HttpHeaders secondHeaders = customerHeaders(second.getEmailAddress());
++		HttpHeaders thirdHeaders = customerHeaders(third.getEmailAddress());
++
++		ReadableProduct product = sampleProduct("review-" + suffix);
++		ReadableProduct otherProduct = sampleProduct("review-other-" + suffix);
++		String reviewPath = "/api/v1/auth/products/" + product.getId() + "/reviews";
++		String privateReviewPath = "/api/v1/private/products/" + product.getId() + "/reviews/";
++
++		for (String rating : new String[] {"0", "6", "4.5", "null", "bad"}) {
++			ResponseEntity<String> invalid = postReview(reviewPath, firstHeaders, first.getId(), rating, "invalid");
++			assertThat("rating " + rating, invalid.getStatusCode(), is(BAD_REQUEST));
++		}
++
++		ResponseEntity<String> mismatched = postReview(reviewPath, firstHeaders, second.getId(), "1", "mismatch");
++		assertThat(mismatched.getStatusCode(), is(FORBIDDEN));
++		assertProductRating(product, 0D, 0);
++
++		PersistableProductReview firstReview = createReview(reviewPath, firstHeaders, first.getId(), "1", "first");
++		assertProductRating(product, 1D, 1);
++		assertThat(postReview(reviewPath, firstHeaders, first.getId(), "2", "duplicate").getStatusCode(), is(CONFLICT));
++		assertProductRating(product, 1D, 1);
++
++		PersistableProductReview secondReview = createReview(reviewPath, secondHeaders, second.getId(), "2", "second");
++		PersistableProductReview thirdReview = createReview(reviewPath, thirdHeaders, third.getId(), "2", "third");
++		assertProductRating(product, 1.7D, 3);
++
++		ResponseEntity<String> publicReviews = testRestTemplate.exchange(
++				"/api/v1/product/" + product.getId() + "/reviews", HttpMethod.GET,
++				new HttpEntity<>(new HttpHeaders()), String.class);
++		assertThat(publicReviews.getStatusCode(), is(OK));
++		JsonNode reviewJson = new ObjectMapper().readTree(publicReviews.getBody());
++		assertThat(reviewJson.size(), is(3));
++		List<String> allowedFields = Arrays.asList("id", "rating", "description", "date", "customerFirstName");
++		for (JsonNode review : reviewJson) {
++			Assert.assertTrue(review.has("id"));
++			Assert.assertTrue(review.has("rating"));
++			Assert.assertTrue(review.has("description"));
++			Assert.assertTrue(review.has("date"));
++			Assert.assertTrue(review.has("customerFirstName"));
++				review.fieldNames().forEachRemaining(field ->
++				Assert.assertTrue("public review contains unexpected field " + field, allowedFields.contains(field)));
++		}
++		ResponseEntity<String> customerUpdate = testRestTemplate.exchange(
++				"/api/v1/auth/products/" + product.getId() + "/reviews/" + firstReview.getId(), HttpMethod.PUT,
++				new HttpEntity<>(reviewJsonFor("5", "customer update"), firstHeaders), String.class);
++		assertThat(customerUpdate.getStatusCode(), is(NOT_FOUND));
++		ResponseEntity<String> customerDelete = testRestTemplate.exchange(
++				"/api/v1/auth/products/" + product.getId() + "/reviews/" + firstReview.getId(), HttpMethod.DELETE,
++				new HttpEntity<>(firstHeaders), String.class);
++		assertThat(customerDelete.getStatusCode(), is(NOT_FOUND));
++		ResponseEntity<String> wrongProductUpdate = testRestTemplate.exchange(
++				"/api/v1/private/products/" + otherProduct.getId() + "/reviews/" + firstReview.getId(),
++				HttpMethod.PUT, new HttpEntity<>(reviewJsonFor("5", "wrong product"), getHeader()), String.class);
++		assertThat(wrongProductUpdate.getStatusCode(), is(NOT_FOUND));
++		ResponseEntity<String> wrongProductDelete = testRestTemplate.exchange(
++				"/api/v1/private/products/" + otherProduct.getId() + "/reviews/" + firstReview.getId(),
++				HttpMethod.DELETE, new HttpEntity<>(getHeader()), String.class);
++		assertThat(wrongProductDelete.getStatusCode(), is(NOT_FOUND));
++
++		ResponseEntity<String> update = testRestTemplate.exchange(privateReviewPath + firstReview.getId(), HttpMethod.PUT,
++				new HttpEntity<>(reviewJsonFor("3", "edited"), getHeader()), String.class);
++		assertThat("product=" + product.getId() + ", review=" + firstReview.getId(), update.getStatusCode(), is(OK));
++		assertProductRating(product, 2.3D, 3);
++
++		ResponseEntity<String> delete = testRestTemplate.exchange(privateReviewPath + thirdReview.getId(), HttpMethod.DELETE,
++				new HttpEntity<>(getHeader()), String.class);
++		assertThat(delete.getStatusCode(), is(OK));
++		assertProductRating(product, 2.5D, 2);
++		assertThat(testRestTemplate.exchange(privateReviewPath + thirdReview.getId(), HttpMethod.DELETE,
++				new HttpEntity<>(getHeader()), String.class).getStatusCode(), is(NOT_FOUND));
++
++		ResponseEntity<String> deleteSecond = testRestTemplate.exchange(privateReviewPath + secondReview.getId(), HttpMethod.DELETE,
++				new HttpEntity<>(getHeader()), String.class);
++		assertThat(deleteSecond.getStatusCode(), is(OK));
++		assertThat(testRestTemplate.exchange(privateReviewPath + firstReview.getId(), HttpMethod.DELETE,
++				new HttpEntity<>(getHeader()), String.class).getStatusCode(), is(OK));
++		assertProductRating(product, 0D, 0);
++	}
++
++	private PersistableCustomer registerCustomer(String email, String firstName) {
++		PersistableCustomer customer = new PersistableCustomer();
++		customer.setEmailAddress(email);
++		customer.setPassword("clear123");
++		customer.setGender(CustomerGender.M.name());
++		customer.setLanguage("en");
++		customer.setFirstName(firstName);
++		customer.setStoreCode(Constants.DEFAULT_STORE);
++		Address billing = new Address();
++		billing.setFirstName(firstName);
++		billing.setLastName("Private");
++		billing.setAddress("1 Hidden Street");
++		billing.setCountry("BE");
++		customer.setBilling(billing);
++		ResponseEntity<AuthenticationResponse> response = testRestTemplate.postForEntity(
++				"/api/v1/customer/register", new HttpEntity<>(customer, getHeader()), AuthenticationResponse.class);
++		assertThat(response.getStatusCode(), is(OK));
++		assertNotNull(response.getBody().getId());
++		customer.setId(response.getBody().getId());
++		registeredCustomerHeaders.put(email, bearerHeaders(response.getBody().getToken()));
++		return customer;
++	}
++
++	private HttpHeaders customerHeaders(String email) {
++		return registeredCustomerHeaders.get(email);
++	}
++
++	private HttpHeaders bearerHeaders(String token) {
++		HttpHeaders headers = new HttpHeaders();
++		headers.setContentType(new org.springframework.http.MediaType("application", "json"));
++		headers.add("Authorization", "Bearer " + token);
++		return headers;
++	}
++
++	private ResponseEntity<String> postReview(String path, HttpHeaders headers, Long customerId, String rating, String description) {
++		return testRestTemplate.postForEntity(path, new HttpEntity<>(reviewJson(customerId, rating, description), headers), String.class);
++	}
++
++	private PersistableProductReview createReview(String path, HttpHeaders headers, Long customerId, String rating, String description) {
++		ResponseEntity<PersistableProductReview> response = testRestTemplate.postForEntity(path,
++				new HttpEntity<>(reviewJson(customerId, rating, description), headers), PersistableProductReview.class);
++		assertThat(response.getStatusCode(), is(CREATED));
++		assertNotNull(response.getBody().getId());
++		return response.getBody();
++	}
++
++	private String reviewJson(Long customerId, String rating, String description) {
++		return "{\"rating\":" + ("bad".equals(rating) ? "\"bad\"" : rating)
++				+ ",\"description\":\"" + description + "\",\"customerId\":" + customerId + ",\"language\":\"en\"}";
++	}
++
++	private String reviewJsonFor(String rating, String description) {
++		return "{\"rating\":" + rating + ",\"description\":\"" + description + "\",\"language\":\"en\"}";
++	}
++
++	private void assertProductRating(ReadableProduct product, double expectedRating, int expectedCount) {
++		ReadableProduct current = testRestTemplate.exchange("/api/v2/product/" + product.getSku(), HttpMethod.GET,
++				new HttpEntity<>(getHeader()), ReadableProduct.class).getBody();
++		assertThat(current.getRating(), is(expectedRating));
++		assertThat(current.getRatingCount(), is(expectedCount));
++	}
++
+ 	/**
+ 	 * Creates a ProductReview requires an existing Customer and an existing
+ 	 * Product
+@@ -393,4 +559,4 @@ public class ProductManagementAPIIntegrationTest extends ServicesTestSupport {
+ 
+ 	}
+ 
+-}
+\ No newline at end of file
++}

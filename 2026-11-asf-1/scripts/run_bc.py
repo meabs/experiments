@@ -93,6 +93,13 @@ def run_one(set_, out, ticket, arm, rep, previous):
     json.dump(j, open(os.path.join(rd, "machinist-job.json"), "w"), indent=1)
     pr_url = ((j.get("workflow") or {}).get("factory") or {}).get("pr_url") or ""
     pr = pr_url.rsplit("/", 1)[-1] if pr_url.startswith(f"https://github.com/{repo}/pull/") else ""
+    pr_source = "machinist" if pr else ""
+    if not pr:
+        # Machinist records no PR when it rejects a stage's reply, though the agent may have opened one. The run's
+        # repository is fresh, so any PR in it is this run's (amendment-log item 12).
+        prs = json.loads(sh("gh", "pr", "list", "-R", repo, "--state", "all", "--json", "number"))
+        if prs:
+            pr, pr_source = str(min(p["number"] for p in prs)), f"github ({len(prs)} PR)"
     grade = None
     if pr:
         g = subprocess.run(["bash", f"{X}/scripts/grade.sh", ticket, arm, str(rep), pr, repo], text=True,
@@ -103,9 +110,10 @@ def run_one(set_, out, ticket, arm, rep, previous):
     ev = json.loads(sh("python3", "-I", f"{X}/scripts/evidence.py", jid, os.path.join(rd, "evidence.json")))
     cases = (grade or {}).get("cases", {})
     row = {"ticket": ticket, "arm": arm, "rep": rep, "repo": repo, "job": jid, "state": j["state"],
-           "stages": [r.get("command") for r in j.get("runs", [])], "pr": pr, "wall_s": wall,
-           "approvals": approvals, "cancelled_at_cap": cancelled,
-           "hidden_passed": sum(v == "pass" for v in cases.values()), "hidden_total": len(cases) or None,
+           "stages": [r.get("command") for r in j.get("runs", [])], "pr": pr, "pr_source": pr_source,
+           "wall_s": wall, "approvals": approvals, "cancelled_at_cap": cancelled,
+           "hidden_passed": sum(v == "pass" for v in cases.values()),
+           "hidden_total": (grade or {}).get("hidden_expected") or len(cases) or None,
            "compiles": (grade or {}).get("mvn_exit") == 0 if grade else None,
            "cost_usd": ev["cost_usd"], "tokens": ev["tokens"], "luna_only": ev["luna_only"], "leaks": len(ev["leaks"])}
     open(os.path.join(out, "bc-runs.jsonl"), "a").write(json.dumps(row) + "\n")

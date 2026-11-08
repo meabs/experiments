@@ -1,0 +1,338 @@
+diff --git a/sm-core/src/main/java/com/salesmanager/core/business/services/catalog/category/CategoryServiceImpl.java b/sm-core/src/main/java/com/salesmanager/core/business/services/catalog/category/CategoryServiceImpl.java
+index 36a1aebe9..ee0208777 100755
+--- a/sm-core/src/main/java/com/salesmanager/core/business/services/catalog/category/CategoryServiceImpl.java
++++ b/sm-core/src/main/java/com/salesmanager/core/business/services/catalog/category/CategoryServiceImpl.java
+@@ -8,6 +8,8 @@ import java.util.Optional;
+ import java.util.Set;
+ 
+ import javax.inject.Inject;
++import javax.persistence.EntityManager;
++import javax.persistence.PersistenceContext;
+ 
+ import org.springframework.data.domain.Page;
+ import org.springframework.data.domain.PageRequest;
+@@ -20,11 +22,9 @@ import com.salesmanager.core.business.exception.ServiceException;
+ import com.salesmanager.core.business.repositories.catalog.category.CategoryDescriptionRepository;
+ import com.salesmanager.core.business.repositories.catalog.category.CategoryRepository;
+ import com.salesmanager.core.business.repositories.catalog.category.PageableCategoryRepository;
+-import com.salesmanager.core.business.services.catalog.product.ProductService;
+ import com.salesmanager.core.business.services.common.generic.SalesManagerEntityServiceImpl;
+ import com.salesmanager.core.model.catalog.category.Category;
+ import com.salesmanager.core.model.catalog.category.CategoryDescription;
+-import com.salesmanager.core.model.catalog.product.Product;
+ import com.salesmanager.core.model.merchant.MerchantStore;
+ import com.salesmanager.core.model.reference.language.Language;
+ 
+@@ -34,15 +34,15 @@ public class CategoryServiceImpl extends SalesManagerEntityServiceImpl<Long, Cat
+ 
+   private CategoryRepository categoryRepository;
+ 
+-  @Inject
+-  private ProductService productService;
+-  
+   @Inject
+   private PageableCategoryRepository pageableCategoryRepository;
+   
+   @Inject
+   private CategoryDescriptionRepository categoryDescriptionRepository;
+ 
++  @PersistenceContext
++  private EntityManager entityManager;
++
+ 
+ 
+   @Inject
+@@ -231,15 +231,13 @@ public class CategoryServiceImpl extends SalesManagerEntityServiceImpl<Long, Cat
+ 	public void delete(Category category) throws ServiceException {
+ 
+ 		// get category with lineage (subcategories)
+-		StringBuilder lineage = new StringBuilder();
+-		lineage.append(category.getLineage()).append(category.getId()).append(Constants.SLASH);
+-		List<Category> categories = this.getListByLineage(category.getMerchantStore(), lineage.toString());
+-
+ 		Category dbCategory = getById(category.getId(), category.getMerchantStore().getId());
+ 
+ 		if (dbCategory != null && dbCategory.getId().longValue() == category.getId().longValue()) {
+-
++			String categoryPath = Constants.SLASH + dbCategory.getId() + Constants.SLASH;
++			List<Category> categories = new ArrayList<>();
+ 			categories.add(dbCategory);
++			categories.addAll(getListByLineage(dbCategory.getMerchantStore(), categoryPath));
+ 
+ 			Collections.reverse(categories);
+ 
+@@ -249,33 +247,15 @@ public class CategoryServiceImpl extends SalesManagerEntityServiceImpl<Long, Cat
+ 				categoryIds.add(c.getId());
+ 			}
+ 
+-			List<Product> products = productService.getProducts(categoryIds);
+-			// org.hibernate.Session session =
+-			// em.unwrap(org.hibernate.Session.class);// need to refresh the
+-			// session to update
+-			// all product
+-			// categories
+-
+-			for (Product product : products) {
+-				// session.evict(product);// refresh product so we get all
+-				// product categories
+-				Product dbProduct = productService.getById(product.getId());
+-				Set<Category> productCategories = dbProduct.getCategories();
+-				if (productCategories.size() > 1) {
+-					for (Category c : categories) {
+-						productCategories.remove(c);
+-						productService.update(dbProduct);
+-					}
+-
+-					if (product.getCategories() == null || product.getCategories().size() == 0) {
+-						productService.delete(dbProduct);
+-					}
+-
+-				} else {
+-					productService.delete(dbProduct);
+-				}
+-
+-			}
++			entityManager.createNativeQuery(
++					"delete from {h-schema}PRODUCT_CATEGORY where CATEGORY_ID in (:categoryIds)")
++					.setParameter("categoryIds", categoryIds)
++					.executeUpdate();
++			entityManager.createNativeQuery(
++					"delete from {h-schema}CATALOG_ENTRY where CATEGORY_ID in (:categoryIds)")
++					.setParameter("categoryIds", categoryIds)
++					.executeUpdate();
++			entityManager.flush();
+ 
+ 			Category categ = getById(category.getId(), category.getMerchantStore().getId());
+ 			categoryRepository.delete(categ);
+diff --git a/sm-core/src/test/java/com/salesmanager/test/catalog/CategoryTest.java b/sm-core/src/test/java/com/salesmanager/test/catalog/CategoryTest.java
+index 95f92c73a..38e974a8d 100755
+--- a/sm-core/src/test/java/com/salesmanager/test/catalog/CategoryTest.java
++++ b/sm-core/src/test/java/com/salesmanager/test/catalog/CategoryTest.java
+@@ -2,6 +2,7 @@ package com.salesmanager.test.catalog;
+ 
+ import static org.junit.Assert.assertNotNull;
+ 
++import java.math.BigDecimal;
+ import java.util.HashSet;
+ import java.util.Set;
+ 
+@@ -11,6 +12,10 @@ import org.junit.Test;
+ import com.salesmanager.core.business.exception.ServiceException;
+ import com.salesmanager.core.model.catalog.category.Category;
+ import com.salesmanager.core.model.catalog.category.CategoryDescription;
++import com.salesmanager.core.model.catalog.product.Product;
++import com.salesmanager.core.model.catalog.product.availability.ProductAvailability;
++import com.salesmanager.core.model.catalog.product.description.ProductDescription;
++import com.salesmanager.core.model.catalog.product.price.ProductPrice;
+ import com.salesmanager.core.model.merchant.MerchantStore;
+ import com.salesmanager.core.model.reference.language.Language;
+ 
+@@ -62,6 +67,83 @@ public class CategoryTest extends com.salesmanager.test.common.AbstractSalesMana
+ 
+ 	}
+ 
++	@Test
++	public void deleteCategoryKeepsProductsAndRemovesSubtreeLinks() throws Exception {
++		MerchantStore store = merchantService.getByCode(MerchantStore.DEFAULT_STORE);
++
++		Category deleted = category(store, "delete-products-root");
++		Category child = category(store, "delete-products-child");
++		child.setParent(deleted);
++		categoryService.create(child);
++		categoryService.addChild(deleted, child);
++		Category retained = category(store, "retain-products-category");
++
++		Product onlyInDeleted = product(store, "DELETE_ONLY");
++		onlyInDeleted.getCategories().add(child);
++		productService.saveProduct(onlyInDeleted);
++
++		Product inBoth = product(store, "DELETE_AND_RETAIN");
++		inBoth.getCategories().add(child);
++		inBoth.getCategories().add(retained);
++		productService.saveProduct(inBoth);
++		Assert.assertEquals(2, productService.findOne(inBoth.getId(), store).getCategories().size());
++
++		categoryService.delete(deleted);
++
++		Product remainingOnly = productService.findOne(onlyInDeleted.getId(), store);
++		Product remainingBoth = productService.findOne(inBoth.getId(), store);
++		Assert.assertNotNull(remainingOnly);
++		Assert.assertTrue(remainingOnly.getCategories().isEmpty());
++		Assert.assertNotNull(remainingBoth);
++		Assert.assertEquals(inBoth.getSku(), remainingBoth.getSku());
++		Assert.assertEquals(0, BigDecimal.TEN.compareTo(remainingBoth.getAvailabilities().iterator().next().getPrices().iterator().next().getProductPriceAmount()));
++		Assert.assertEquals(Integer.valueOf(10), remainingBoth.getAvailabilities().iterator().next().getProductQuantity());
++		Assert.assertEquals(1, remainingBoth.getCategories().size());
++		Assert.assertEquals(retained.getId(), remainingBoth.getCategories().iterator().next().getId());
++		Assert.assertNotNull(categoryService.getById(retained.getId(), store.getId()));
++		Assert.assertNull(categoryService.getById(deleted.getId(), store.getId()));
++		Assert.assertNull(categoryService.getById(child.getId(), store.getId()));
++
++		productService.delete(remainingOnly);
++		productService.delete(remainingBoth);
++		categoryService.delete(retained);
++	}
++
++	private Category category(MerchantStore store, String code) throws Exception {
++		Category category = new Category();
++		category.setMerchantStore(store);
++		category.setCode(code);
++		CategoryDescription description = new CategoryDescription();
++		description.setCategory(category);
++		description.setLanguage(languageService.getByCode("en"));
++		description.setName(code);
++		category.getDescriptions().add(description);
++		categoryService.create(category);
++		return category;
++	}
++
++	private Product product(MerchantStore store, String sku) throws Exception {
++		Product product = new Product();
++		product.setMerchantStore(store);
++		product.setSku(sku);
++		ProductDescription description = new ProductDescription();
++		description.setProduct(product);
++		description.setLanguage(languageService.getByCode("en"));
++		description.setName(sku);
++		product.getDescriptions().add(description);
++		ProductAvailability availability = new ProductAvailability();
++		availability.setProduct(product);
++		availability.setProductQuantity(10);
++		availability.setRegion("*");
++		ProductPrice price = new ProductPrice();
++		price.setProductAvailability(availability);
++		price.setProductPriceAmount(BigDecimal.TEN);
++		price.setDefaultPrice(true);
++		availability.getPrices().add(price);
++		product.getAvailabilities().add(availability);
++		return product;
++	}
++
+ 
+ 
+-}
+\ No newline at end of file
++}
+diff --git a/sm-shop/src/main/java/com/salesmanager/shop/store/api/v1/category/CategoryApi.java b/sm-shop/src/main/java/com/salesmanager/shop/store/api/v1/category/CategoryApi.java
+index 6c3ace248..806f600e4 100755
+--- a/sm-shop/src/main/java/com/salesmanager/shop/store/api/v1/category/CategoryApi.java
++++ b/sm-shop/src/main/java/com/salesmanager/shop/store/api/v1/category/CategoryApi.java
+@@ -62,7 +62,7 @@ public class CategoryApi {
+ 	@Inject
+ 	private UserFacade userFacade;
+ 
+-	@GetMapping(value = "/category/{id}", produces = { APPLICATION_JSON_VALUE })
++	@GetMapping(value = "/category/{id:[0-9]+}", produces = { APPLICATION_JSON_VALUE })
+ 	@ApiOperation(httpMethod = "GET", value = "Get category list for an given Category id", notes = "List current Category and child category")
+ 	@ApiResponses(value = {
+ 			@ApiResponse(code = 200, message = "List of category found", response = ReadableCategory.class) })
+@@ -76,7 +76,7 @@ public class CategoryApi {
+ 		return category;
+ 	}
+ 
+-	@GetMapping(value = "/category/{friendlyUrl}", produces = { APPLICATION_JSON_VALUE })
++	@GetMapping(value = "/category/{friendlyUrl:^(?![0-9]+$)[^/]+$}", produces = { APPLICATION_JSON_VALUE })
+ 	@ApiOperation(httpMethod = "GET", value = "Get category list for an given Category code", notes = "List current Category and child category")
+ 	@ApiResponses(value = {
+ 			@ApiResponse(code = 200, message = "List of category found", response = ReadableCategory.class) })
+diff --git a/sm-shop/src/main/java/com/salesmanager/shop/store/facade/category/CategoryFacadeImpl.java b/sm-shop/src/main/java/com/salesmanager/shop/store/facade/category/CategoryFacadeImpl.java
+index 3d9067d23..1e3d87392 100755
+--- a/sm-shop/src/main/java/com/salesmanager/shop/store/facade/category/CategoryFacadeImpl.java
++++ b/sm-shop/src/main/java/com/salesmanager/shop/store/facade/category/CategoryFacadeImpl.java
+@@ -358,7 +358,7 @@ public class CategoryFacadeImpl implements CategoryFacade {
+ 
+ 	@Override
+ 	public void deleteCategory(Long categoryId, MerchantStore store) {
+-		Category category = getOne(categoryId, store.getId());
++		Category category = getById(store, categoryId);
+ 		deleteCategory(category);
+ 	}
+ 
+diff --git a/sm-shop/src/test/java/com/salesmanager/test/shop/integration/category/CategoryManagementAPIIntegrationTest.java b/sm-shop/src/test/java/com/salesmanager/test/shop/integration/category/CategoryManagementAPIIntegrationTest.java
+index 86987a8fd..b58931eb6 100755
+--- a/sm-shop/src/test/java/com/salesmanager/test/shop/integration/category/CategoryManagementAPIIntegrationTest.java
++++ b/sm-shop/src/test/java/com/salesmanager/test/shop/integration/category/CategoryManagementAPIIntegrationTest.java
+@@ -5,6 +5,7 @@ import static org.junit.Assert.assertNotNull;
+ import static org.junit.Assert.assertTrue;
+ import static org.junit.Assert.assertThat;
+ import static org.springframework.http.HttpStatus.CREATED;
++import static org.springframework.http.HttpStatus.NOT_FOUND;
+ import static org.springframework.http.HttpStatus.OK;
+ import java.util.ArrayList;
+ import java.util.List;
+@@ -32,6 +33,7 @@ import com.salesmanager.shop.model.catalog.manufacturer.PersistableManufacturer;
+ import com.salesmanager.shop.model.catalog.manufacturer.ReadableManufacturer;
+ import com.salesmanager.shop.model.catalog.product.product.PersistableProduct;
+ import com.salesmanager.shop.model.catalog.product.product.ProductSpecification;
++import com.salesmanager.shop.model.catalog.product.ReadableProductList;
+ import com.salesmanager.test.shop.common.ServicesTestSupport;
+ 
+ @SpringBootTest(classes = ShopApplication.class, webEnvironment = WebEnvironment.RANDOM_PORT)
+@@ -334,10 +336,56 @@ public class CategoryManagementAPIIntegrationTest extends ServicesTestSupport {
+ 
+     @Test
+     public void deleteCategory() throws Exception {
+-
+-        final HttpEntity<String> httpEntity = new HttpEntity<>(getHeader());
+-
+-        testRestTemplate.exchange("/services/DEFAULT/category/100", HttpMethod.DELETE, httpEntity, Category.class);
++		PersistableCategory newCategory = new PersistableCategory();
++		newCategory.setCode("delete-api-category-" + System.currentTimeMillis());
++		newCategory.setVisible(true);
++		CategoryDescription description = new CategoryDescription();
++		description.setLanguage("en");
++		description.setName(newCategory.getCode());
++		description.setFriendlyUrl(newCategory.getCode());
++		description.setTitle(newCategory.getCode());
++		newCategory.setDescriptions(List.of(description));
++		PersistableCategory child = new PersistableCategory();
++		child.setCode(newCategory.getCode() + "-child");
++		Category parentReference = new Category();
++		parentReference.setCode(newCategory.getCode());
++		child.setParent(parentReference);
++		newCategory.getChildren().add(child);
++		CategoryDescription childDescription = new CategoryDescription();
++		childDescription.setLanguage("en");
++		childDescription.setName(child.getCode());
++		childDescription.setFriendlyUrl(child.getCode());
++		childDescription.setTitle(child.getCode());
++		child.setDescriptions(List.of(childDescription));
++
++		ResponseEntity<PersistableCategory> createResponse = testRestTemplate.postForEntity(
++				"/api/v1/private/category", new HttpEntity<>(newCategory, getHeader()), PersistableCategory.class);
++		assertThat(createResponse.getStatusCode(), is(CREATED));
++		Long categoryId = createResponse.getBody().getId();
++		Long childId = createResponse.getBody().getChildren().get(0).getId();
++
++		ResponseEntity<Void> deleteResponse = testRestTemplate.exchange("/api/v1/private/category/" + categoryId,
++				HttpMethod.DELETE, new HttpEntity<>(getHeader()), Void.class);
++		assertThat(deleteResponse.getStatusCode(), is(OK));
++
++		ResponseEntity<String> deletedCategory = testRestTemplate.exchange("/api/v1/category/" + categoryId,
++				HttpMethod.GET, new HttpEntity<>(getHeader()), String.class);
++		assertThat(deletedCategory.getStatusCode(), is(NOT_FOUND));
++		ResponseEntity<String> deletedChild = testRestTemplate.exchange("/api/v1/category/" + childId,
++				HttpMethod.GET, new HttpEntity<>(getHeader()), String.class);
++		assertThat(deletedChild.getStatusCode(), is(NOT_FOUND));
++
++		ReadableCategoryList categories = testRestTemplate.exchange("/api/v1/category", HttpMethod.GET,
++				new HttpEntity<>(getHeader()), ReadableCategoryList.class).getBody();
++		assertTrue(categories.getCategories().stream().noneMatch(category -> categoryId.equals(category.getId())));
++
++		ReadableProductList products = testRestTemplate.exchange("/api/v1/products?category=" + categoryId,
++				HttpMethod.GET, new HttpEntity<>(getHeader()), ReadableProductList.class).getBody();
++		assertTrue(products.getProducts().isEmpty());
++
++		ResponseEntity<Void> unknownDelete = testRestTemplate.exchange("/api/v1/private/category/999999999",
++				HttpMethod.DELETE, new HttpEntity<>(getHeader()), Void.class);
++		assertThat(unknownDelete.getStatusCode(), is(NOT_FOUND));
+     }
+ 
+     @Test
+@@ -465,4 +513,4 @@ public class CategoryManagementAPIIntegrationTest extends ServicesTestSupport {
+     }
+         **/
+ 
+-}
+\ No newline at end of file
++}

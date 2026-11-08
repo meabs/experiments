@@ -1,6 +1,6 @@
 # Does an open-source software factory beat a single coding agent? (experiment ASF-1)
 
-**Status: pre-registered 2026-11-07, before any main run** (the user: "Push and do what yiu recommended"). The
+**Status: done. Pre-registered 2026-11-07, before any main run; results in REPORT.md** (the user: "Push and do what yiu recommended"). The
 smoke, the runner test and the arm A pilot are logged at the end. From here, the design changes only through an
 amendment log that quotes the user.
 
@@ -285,3 +285,29 @@ Scripts:
     - Of the six hard tickets, CUSTOMERCART has 1 of 6 runs at the floor and PRODUCTDELETE 1 of 6 at the ceiling. No
       other run is at either. All six hard tickets stay.
     - Disclosed as a change made after seeing data. Under the old rule, H1–H3 would have used four tickets.
+12. **Runner fix during the main run (2026-11-08). A correction, not a design change.**
+    - What happened: in PRODUCTDELETE/C/1, the first implement stage opened PR #1. Its final reply then hit the
+      `pr_description` parse error (item 8), so Machinist recorded no PR.
+    - `run_bc.py` took the PR only from Machinist's record, so it scored the run 0 as "no PR".
+    - The pre-registered rule grades "the PR's head when the job ends". The runner now falls back to the PRs on the
+      run's own fresh repository, and logs where the PR came from (`pr_source`).
+    - The run was re-graded at 9/11. No other run was affected: every earlier B and C run had its PR recorded.
+13. **Two observations from SUPPORTORDERS/B/3 (2026-11-08). Nothing was changed.**
+    - **Token expiry, a stock Machinist defect.** The job started at 11:47:48. Machinist's GitHub App token expired at
+      11:50:58, and Machinist only renews it within one minute of expiry. The agent committed its fix, then its push
+      failed ("Invalid username or token").
+      - No PR was opened, so the run scores 0, as pre-registered.
+      - The undelivered commit is saved as `undelivered-commit.patch` for description only.
+      - The report adds a **disclosed sensitivity analysis, not pre-registered**, that leaves out runs lost to token
+        expiry. Expiry happens about every 8 hours, so it can hit about one run per 8 hours.
+    - **Git identity inside the sandbox.** The sandbox's empty `/home` hides the runtime home's `.gitconfig`, so B and
+      C agents see "Author identity unknown" at their first commit. Agents set one themselves and carry on (here,
+      `trial <trial@example.com>`). Arm A never commits. Left as it is, to keep conditions the same for the rest
+      of the run; disclosed.
+14. **Main run done (2026-11-08).** All 96 runs counted. None was excluded: every run was Luna only, with no leaks.
+    - Results are in `REPORT.md`.
+    - How the review effect was measured. The design said "scored on the PR's commits" but did not fix which
+      commit. "Before" is the PR's last commit committed before Machinist started the first review stage, taken
+      from GitHub's commit list (`scripts/review_effect.py`).
+    - Where the first review's summary names the commit it reviewed (26 runs), that commit matched in all 26.
+    - Two C runs had no review stage, so they have no "before" score.
