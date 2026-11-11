@@ -1,12 +1,12 @@
-"""Opens every run's prototype in a headless browser and measures it. No model is involved.
+"""Opens every run's storyboard in a headless browser and measures it. No model is involved.
 
-For each run (results/<stage>/<arm>/runs/<brief>/<arm>/codex/<rep>/artefacts/prototype/):
+For each run (results/<stage>/<arm>/runs/<brief>/<arm>/codex/<rep>/artefacts/storyboard/):
   - reads screens.json (the delivery contract) and opens index.html#<id> for each screen, phone size 390x844;
   - saves a full-page screenshot (eval/.../screens/NN-<id>.png) and the screen's visible text;
   - runs axe-core 4.10.3 with the WCAG 2.0, 2.1 and 2.2 level A and AA rule tags;
   - measures: sideways overflow at 320 px wide; the size of every visible interactive element (24 px and 44 px
     thresholds); clickable things that can't be reached by keyboard; console errors; network requests.
-Writes results/<stage>/eval/<brief>/<arm>/<rep>/eval.json. Runs with no prototype or a broken contract are recorded
+Writes results/<stage>/eval/<brief>/<arm>/<rep>/eval.json. Runs with no storyboard or a broken contract are recorded
 as such, not skipped.
 
 Usage: ~/code/benchmark/webmcp-exp/env-plain/bin/python shoot.py <stage dir> [brief/arm/rep ...]
@@ -64,14 +64,14 @@ def screens_of(proto):
 
 
 def one(browser, run_dir, out_dir):
-    proto = run_dir / "artefacts" / "prototype"
-    res = {"run": str(run_dir), "prototype": (proto / "index.html").exists(), "contract_error": None, "screens": []}
+    proto = run_dir / "artefacts" / "storyboard"
+    res = {"run": str(run_dir), "storyboard": (proto / "index.html").exists(), "contract_error": None, "screens": []}
     out_dir.mkdir(parents=True, exist_ok=True)
     for old in (out_dir / "screens").glob("*.png") if (out_dir / "screens").exists() else []:
         old.unlink()
     (out_dir / "screens").mkdir(exist_ok=True)
-    if not res["prototype"]:
-        res["contract_error"] = "no prototype/index.html"
+    if not res["storyboard"]:
+        res["contract_error"] = "no storyboard/index.html"
         (out_dir / "eval.json").write_text(json.dumps(res, indent=1))
         return res
     screens, err = screens_of(proto)
@@ -93,14 +93,15 @@ def one(browser, run_dir, out_dir):
         try:
             page.goto(url + ("#" + s["id"] if s["id"] else ""), wait_until="load", timeout=20000)
             page.wait_for_timeout(900)
+            page.evaluate("() => { if (document.activeElement && document.activeElement !== document.body) document.activeElement.blur(); }")  # a focus ring left by script-moved focus is a capture artefact, not part of the design
             m = page.evaluate(MEASURE)
             name = f"{n:02d}-{re.sub(r'[^a-zA-Z0-9_-]+', '_', s['id'])[:40] or 'index'}.png"
             page.screenshot(path=str(out_dir / "screens" / name), full_page=True, clip=None) if m["height"] <= 3600 else \
                 page.screenshot(path=str(out_dir / "screens" / name), clip={"x": 0, "y": 0, "width": 390, "height": 3600})
-            rec.update(png=name, text=m["text"], text_hash=hashlib.sha1(re.sub(r"\s+", " ", m["text"]).encode()).hexdigest()[:12],
+            rec.update(img_hash=hashlib.sha1((out_dir / "screens" / name).read_bytes()).hexdigest()[:12], png=name, text=m["text"], text_hash=hashlib.sha1(re.sub(r"\s+", " ", m["text"]).encode()).hexdigest()[:12],
                        h1=m["h1"], title_tag=m["title"], lang=m["lang"], height=m["height"], sizes=m["sizes"],
                        unreachable=m["unreachable"])
-            own_errors = list(errors)  # axe's own stylesheet fetches fail on file:// pages; they are not the prototype's errors
+            own_errors = list(errors)  # axe's own stylesheet fetches fail on file:// pages; they are not the storyboard's errors
             page.add_script_tag(path=str(AXE))
             ax = page.evaluate("async tags => { const r = await axe.run(document, {runOnly: {type: 'tag', values: tags}, resultTypes: ['violations']}); return r.violations.map(v => ({id: v.id, impact: v.impact, nodes: v.nodes.length, help: v.help})); }", TAGS)
             rec["axe"] = ax
@@ -112,7 +113,7 @@ def one(browser, run_dir, out_dir):
         rec["console_errors"], rec["network"] = (errors if own_errors is None else own_errors)[:10], requests[:10]
         res["screens"].append(rec)
         ctx.close()
-    hashes = [r.get("text_hash") for r in res["screens"] if r.get("text_hash")]
+    hashes = [r.get("img_hash") for r in res["screens"] if r.get("img_hash")]  # distinct by what is shown, not by page text (a one-page storyboard has the same text at every address)
     res["distinct_screens"] = len(set(hashes))
     (out_dir / "eval.json").write_text(json.dumps(res, indent=1))
     return res

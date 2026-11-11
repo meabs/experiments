@@ -3,47 +3,51 @@
 **Status:** design, written 11 November 2026 before any measured run. Later changes go in the
 [amendment log](#amendment-log).
 
-**Who built what:** an AI agent (Claude) wrote the Design Factory, the briefs, the checklist, the graders and this
+**Who built what:** an AI agent (Claude) wrote the Design Factory (and added Impeccable's design guidance, vendored under its Apache-2.0 licence), the briefs, the checklist, the graders and this
 design, at the user's request. The user set the question, chose the two arms and gave the prediction.
 
 ## Why
+The test (user, 11 November 2026): **if we give the agent design knowledge, will it do better?** A design and front-end
+team could give an AI agent a "design factory": design, accessibility, UK legal and banking knowledge in an Open
+Knowledge Format (OKF) bundle behind an `AGENTS.md`, plus written skills (procedures) for research, storyboarding,
+visual direction, building and critique. The alternative is the same agent with nothing but the task.
 
-A design and front-end team wants a "design factory": a fixed workflow an AI agent follows to take a brief through
-research, a storyboard, a visual direction, a prototype and a review, using written skills (procedures) and an Open
-Knowledge Format (OKF) bundle of design, accessibility, legal and industry knowledge. The alternative is to hand the
-brief to the same agent and let it build.
+The task is a realistic one: research current trends and styles in banking app design, then develop a storyboard of a
+banking scenario from that research, the agent's own knowledge and its skills. The user also said: "it's more about
+design looking vs just build", so the main measure is how the finished storyboard looks and reads to a reviewer.
 
-The question (user, 11 November 2026): "I want to see an experiment of this vs a plain agent on a example banking
-app", and "it's more about design looking vs just build". So the main measure is how the finished design looks and
-reads to a reviewer, not whether process documents exist.
+Both arms can search the web, so the plain agent can look up trends and rules itself. Any gain from the factory is gain
+over an agent that can search, not over a blind one.
+
+**What the experiment can and cannot say.** The factory bundles knowledge with process (a six-stage workflow, 12
+skills, rules and three small tools). A difference therefore means "this whole factory vs nothing", not "knowledge
+alone". Separating them needs a third arm, which the user declined ("Keep to two").
 
 ## Terms
 
 - **Design Factory:** the folder in [`factory/`](factory/) (a snapshot of the `design-factory` repository at commit
-  `8140e73`). `AGENTS.md` points to `okf/index.md`, the index that lists the workflow, 11 skills, three rules files
-  and the knowledge files. About 17,000 words in all; an agent reads the parts the index says are relevant.
+  `52fc04e`). `AGENTS.md` points to `okf/index.md`, the index that lists the workflow, 11 skills, three rules files
+  and the knowledge files. About 35,000 words in all, of which about 18,000 are Impeccable's; an agent reads the parts the index says are relevant.
 - **Skill:** a written procedure for one kind of work (for example `journey-storyboard`), in `skills/<name>/SKILL.md`.
 - **OKF (Open Knowledge Format):** a folder of short markdown files with an index, as used in earlier experiments here.
-- **Storyboard:** the journey written as numbered frames (what the customer wants, sees and does, and what the system
-  does back), including failures, before anything is built.
-- **Prototype:** a clickable front end in plain HTML, CSS and JavaScript that runs offline.
+- **Storyboard:** the journey as a sequence of frames, each a designed phone screen, including what happens when
+  things go wrong. Here it is delivered as an offline HTML page whose frames can be opened one by one.
 - **axe-core:** an open-source accessibility checker that tests a page against WCAG rules. It finds only the failures
   a program can detect.
 - **WCAG 2.2 AA:** the Web Content Accessibility Guidelines, version 2.2, level AA: the usual accessibility target.
 
 ## Arms
-
-Two arms, as the user asked ("Two arms only"; "Don't do lots of arms"). Same agent, model, prompt and settings; they
-differ only in the files in the workspace.
+Two arms. Same agent, model, prompt and settings; they differ only in the files in the workspace.
 
 | Arm | Workspace contains |
 | --- | --- |
 | **A. Plain agent** | a README saying this is Brindle Bank's design workspace. Nothing else. |
 | **B. Design Factory** | the same, plus the factory: `AGENTS.md`, `CLAUDE.md`, `okf/`, `skills/`, `tools/` |
 
-Agent: Codex CLI 0.167.1 with hosted `gpt-5.6-luna`, medium reasoning effort, web search off, inside the bubblewrap
-sandbox used in earlier experiments (the experiment folder, checklist and other runs are not visible to the agent).
-Codex loads `AGENTS.md` by itself, so the prompt does not mention the factory.
+Agent: Codex CLI 0.167.1 with hosted `gpt-5.6-luna`, medium reasoning effort, **web search live in both arms**, inside
+the bubblewrap sandbox used in earlier experiments (the experiment folder, checklist and other runs are not visible
+to the agent). Codex loads `AGENTS.md` by itself, so the prompt does not mention the factory; it says only "any skills
+or guidance available in this workspace".
 
 ## Briefs
 
@@ -60,11 +64,14 @@ names a state to design or asks for research or a storyboard.
 | D5 | where did my money go this month? | mostly visual (spending summary) |
 | D6 | account home | mostly visual (home screen) |
 
-The prompt is identical in both arms: one sentence of context, the brief, and a delivery contract
-(`scripts/make_trial.py`): a prototype at `prototype/index.html` that runs offline, designed for a 390 px wide phone;
-every screen and state also opens directly at `index.html#<screen-id>`; `prototype/screens.json` lists them in
-journey order; nobody is available to answer questions. The contract exists so every screen can be opened and
-photographed by a script.
+The prompt is identical in both arms (`scripts/make_trial.py`): one sentence of context, the scenario brief, and the
+task. The task: (1) research current trends and styles in mobile banking and fintech app design using web search and
+write what was found, with sources, and what will be used and why, in `research.md`; (2) drawing on that research, the
+agent's own knowledge and any skills or guidance in the workspace, develop a storyboard of the scenario, delivered as
+`storyboard/index.html` (offline HTML and CSS, JavaScript optional, each frame a phone screen 390 px wide) with every
+frame also opening at `storyboard/index.html#<frame-id>`, and `storyboard/screens.json` listing the frames in order.
+Nobody is available to answer questions. The addressing contract exists so every frame can be opened and photographed
+by a script.
 
 **5 runs per brief per arm: 60 runs, 30 pairs.** Plain run *i* of a brief is paired with factory run *i* of the same
 brief (run numbers are assigned by the rig before anything is produced).
@@ -73,7 +80,7 @@ brief (run numbers are assigned by the rig before anything is produced).
 
 ### Main: which design does a reviewer prefer? (blind, side by side)
 
-`scripts/shoot.py` opens every screen in a headless browser at 390 by 844 and takes a screenshot.
+`scripts/shoot.py` opens every frame in a headless browser at 390 by 844 and takes a screenshot (after removing any focus ring left by script-moved focus, so it doesn't count as design).
 `scripts/sheet.py` tiles them three to a page, numbered, with no names or ids. For each pair, two vision models from
 providers other than the agent's (`google/gemini-4-argon`, `anthropic/claude-sonnet-5.5`) are shown the brief and the
 two designs as "Design 1" and "Design 2" and asked which is better on each criterion, or a tie
@@ -123,20 +130,20 @@ report will say how far they agree.
    made for either arm.
 3. **Cost:** input, cached and output tokens, seconds, and cost at list price per run.
 4. **Process and honesty (descriptive):** which design files each run wrote; whether the factory's stages were
-   followed; whether the final message claims accessibility or compliance; for D2, which FSCS limit the prototype
+   followed; whether the final message claims accessibility or compliance; for D2, which FSCS limit the storyboard
    shows (£120,000 since 1 December 2025; £85,000 before).
 
 ## Hypotheses and the user's prediction
 
 **The user's prediction (11 November 2026):** "Little difference" (the option read: "A capable plain agent already
-does most of this; the factory mainly costs more tokens").
+does most of this; the factory mainly costs more tokens"). Stated before the pilot.
 
 | | Hypothesis | Test |
 | --- | --- | --- |
 | H1 | Whole design: the factory's design is preferred (mean pair score differs from 0.5) | two-sided sign-flip permutation test on pair scores minus 0.5 |
 | H2 | Looks only: the factory's design is preferred | same |
-| H3 | The factory's prototypes contain more of the checklist | sign-flip test on per-pair differences (factory minus plain) |
-| H4 | The factory's prototypes have fewer axe violations per screen | same |
+| H3 | The factory's storyboards contain more of the checklist (**secondary: circular**, see Limits) | sign-flip test on per-pair differences (factory minus plain) |
+| H4 | The factory's storyboards have fewer axe violations per screen | same |
 | H5 | The factory costs more tokens and time | descriptive: ratio with the two means |
 
 All tests are two-sided, so a result against the factory is detected as readily as one for it. 30 pairs; exact
@@ -149,28 +156,33 @@ With 30 pairs the sign test can detect a preference of roughly 75% or more of pa
 be missed.
 
 ## Pilot (11 November 2026, not part of the results)
+Plain arm once on each brief, factory once on D1 and D5, `results/pilot/`, run with the final prompt and factory
+(`52fc04e`). Purpose: prove the rig, check for a ceiling, measure cost. Earlier pilots with the previous prompt
+(build a prototype, no web search) are kept in `results/pilot-v1/` and are not used.
 
-Plain arm once on each brief; factory once on D1 and D5 (`results/pilot/`). Purpose: prove the rig, check the plain
-agent isn't already at the top of every measure, and measure cost.
+- All 8 runs delivered a storyboard the scripts could open, and a `research.md` (plain: 650 to 790 words, 7 to 9 source
+  addresses). The factory runs also wrote its six stage files.
+- Cost: plain about 235k tokens and 192 s a run ($0.021 at list price); the factory more (see
+  `results/pilot/analysis.md`).
+- No ceiling: plain storyboards had on average 60% of the checklist and every one had axe findings.
+- **The factory did not clearly win on looks.** On the two pairs, both judges preferred the plain agent's design on
+  looks and hierarchy, and the factory's on content, trust and journey. The plain agent drew each frame inside a phone
+  mock-up with captions; the factory's were plainer, with more complete states. Two pairs prove nothing, but it
+  means the main hypothesis is genuinely open. The factory is not being changed to suit the judges.
+- Judges are order-sensitive (one chose the design shown first in 6 of 8 calls), hence both orders for every pair.
 
-- All 8 runs met the delivery contract. Plain: 2 to 10 screens, about 94k tokens and 131 s a run. Factory: 8 and 13
-  screens, all six stage files written, about 583k tokens and 338 s a run (about 6 times the tokens, 3 times the cost
-  at list price because most input is cached: $0.013 against $0.041).
-- No ceiling: plain prototypes had 3 to 8 of 12 checklist items; 5 of 6 had colour-contrast violations.
-- The judges are sensitive to order: one judge chose the design shown first in 7 of 8 calls. Hence both orders for
-  every pair and the pair score above.
-- With two pairs nothing can be concluded about preference; the numbers are in `results/pilot/analysis.md`.
-
-Changes made after the pilot, before any measured run: checklist item D2-05 replaced (it depended on D2-04); the
-quote check accepts a quote stitched from several elements if four consecutive words are on a screen; console errors
-caused by the checker itself are no longer counted.
+Corrections made during the pilot, before any measured run: checklist item D2-05 replaced; the quote check accepts a
+quote stitched from neighbouring elements; the checker's own console errors are not counted; a focus ring left by
+script-moved focus is removed before the screenshot (it had drawn an orange box round every factory heading); text
+is de-duplicated for one-page storyboards.
 
 ## Limits known in advance
 
-- **One author.** The same AI agent wrote the factory, the briefs, the checklist and the graders, in that order of
-  commit but in one sitting, with the briefs' topics already in mind. Every checklist item is covered by the factory's
+- **One author, and the factory was shaped to the task.** The same AI agent wrote the factory, the briefs, the
+  checklist and the graders in one sitting, with the briefs' topics in mind, and added a "trends and styles" research
+  step to the factory after the task was changed to include it. Every checklist item is covered by the factory's
   knowledge files (`in_factory` is true for all 72). So the checklist measures whether the factory gets its own
-  knowledge into the prototype, not whether that knowledge is right or complete. The preference judgement and the
+  knowledge into the storyboard, not whether that knowledge is right or complete. The preference judgement and the
   axe checks do not share this weakness.
 - **The factory's regulatory content is draft.** A few points were checked against regulators' pages by search
   summary on 11 November 2026; many are from the author's knowledge and marked "check current rule". The experiment
@@ -179,7 +191,7 @@ caused by the checker itself are no longer counted.
   blind gallery lets people check.
 - **Screenshots, not use.** Judges see still screens opened by address, not the journey being used. Behaviour
   (navigation, validation as you type) is only partly covered by the program checks.
-- **One model, one agent, one industry, short briefs, no web access, nobody answering questions.** The factory is
+- **One model, one agent, one industry, short briefs, nobody answering questions.** The factory is
   run unattended, which is not how a design team would mostly use it.
 - **Two arms.** There is no arm with the same knowledge as a single plain file, or with a one-line instruction, so
   the experiment cannot say which part of the factory (workflow, skills, knowledge, tools) causes any difference.
@@ -192,7 +204,7 @@ pilot, the 60 runs should cost about $2 and take under an hour; judging about $5
 ## Reproduce
 
 ```bash
-python3 -I scripts/make_trial.py                       # trial files
+python3 -I scripts/make_trial.py                       # trial files (web search live)
 bash scripts/run_all.sh                                # 60 runs -> results/main
 ~/code/benchmark/webmcp-exp/env-plain/bin/python scripts/shoot.py results/main
 python3 scripts/sheet.py results/main

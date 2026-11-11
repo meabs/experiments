@@ -19,10 +19,10 @@ build better, not to produce long documents.
 | --- | --- | --- | --- | --- |
 | 1 | Brief | brief-intake | `design/01-brief.md` | users, goal, constraints, assumptions and 3 to 5 success measures are written; open questions are listed |
 | 2 | Research | design-research | `design/02-research.md` | every finding names its source type; each finding ends in "so the design should..."; risks are listed |
-| 3 | Storyboard | journey-storyboard | `design/03-storyboard.md` | main path, each branch and each failure has frames; the screen and state list is complete |
-| 4 | Visual direction | visual-direction | `design/04-direction.md` | tokens are chosen and contrast-checked; the direction is stated in one sentence a person could disagree with |
-| 5 | Prototype | prototype-build | `prototype/` | every screen and state in the storyboard exists and can be reached; the lint tool passes |
-| 6 | Critique and handoff | design-critique, frontend-handoff | `design/05-review.md`, `design/06-handoff.md` | the review's top problems are fixed in the prototype; checks not run are listed as not run |
+| 3 | Storyboard | journey-storyboard (+ impeccable shape) | `design/03-storyboard.md` | main path, each branch and each failure has frames; the screen and state list is complete |
+| 4 | Visual direction | visual-direction (+ impeccable) | `design/04-direction.md` | tokens are chosen and contrast-checked; the direction is stated in one sentence a person could disagree with |
+| 5 | Prototype | prototype-build (+ impeccable craft floor) | `prototype/` | every screen and state in the storyboard exists and can be reached; the lint tool passes |
+| 6 | Critique and handoff | design-critique (+ impeccable), frontend-handoff | `design/05-review.md`, `design/06-handoff.md` | the review's top problems are fixed in the prototype; checks not run are listed as not run |
 
 If the brief names output files or folders, use those instead of the defaults, and keep any extra stage files next to
 them.
@@ -34,6 +34,7 @@ them.
 | content-design | | frame captions and key messages | | all screen text | read every screen aloud |
 | accessibility-review | | focus order, error and timeout branches | contrast of every token pair | semantics, keyboard, target size, reflow | full checklist |
 | legal-review | what applies to this journey | where notices, consent and prices appear | | exact placement and wording status | register of open points |
+| impeccable (craft layer) | | shape | direction: refuse the defaults | craft floor | heuristics, audit, polish |
 | industry skill (for example banking-design) | conventions, risks, regulated information | industry-specific branches | trust and tone | industry components | industry checklist |
 
 ## Order of reading for a new brief

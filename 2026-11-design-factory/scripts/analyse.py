@@ -92,7 +92,10 @@ def load(stage):
         sc = [s for s in e["screens"] if "error" not in s and s.get("png")]
         sizes = [z for s in sc for z in s.get("sizes", []) if not z["inline"]]
         text = " ".join(s.get("text", "") for s in sc)
+        rf = rj.parent / "artefacts" / "research.md"
+        rtext = rf.read_text(errors="replace") if rf.exists() else ""
         runs[(brief, arm, rep)] = {
+            "research_words": len(rtext.split()), "research_sources": len(set(re.findall(r"https?://[^\s)>\]]+", rtext))),
             "brief": brief, "arm": arm, "rep": rep, "seconds": r.get("seconds"), "tokens": r.get("tokens") or {},
             "status": r.get("status"), "answer": r.get("answer") or "", "files": files,
             "design_files": sorted(f for f in files if f.startswith("design/")),
@@ -261,7 +264,7 @@ def main(stage):
         md += [f"The two judges reached the same pair result (factory, plain or split) in {pct(mean(agree))} of {len(agree)} pair-views.", ""]
 
     md += ["## Checklist, accessibility checks", "",
-           "Checklist: share of the brief's 12 checklist items visible in the prototype's text (higher is better). "
+           "Checklist: share of the brief's 12 checklist items visible in the storyboard's text (higher is better). "
            "axe: WCAG A and AA rule violations found by axe-core per screen (lower is better). Difference = factory "
            "minus plain, per pair.", "",
            table(["Measure", "Pairs", "Plain", "Factory", "Difference (95% CI)", "p", "Holm p"],
@@ -312,11 +315,11 @@ def main(stage):
         rows.append([name, len(x), f"{mean(r['tokens'].get('input', 0) for r in x) / 1000:.0f}k",
                      f"{mean(r['tokens'].get('cache_read', 0) for r in x) / 1000:.0f}k", f"{mean(r['tokens'].get('output', 0) for r in x) / 1000:.1f}k",
                      f"{mean(r['seconds'] or 0 for r in x):.0f}", f"${mean(cost(r['tokens']) for r in x):.3f}",
-                     f"{mean(len(r['design_files']) for r in x):.1f}", sum(1 for r in x if r["claims"])])
-    md += [table(["Arm", "Runs", "Input tokens", "of which cached", "Output tokens", "Seconds", "Cost per run", "Design files written", "Runs whose final message mentions accessibility, WCAG or compliance"], rows), ""]
+                     f"{mean(len(r['design_files']) for r in x):.1f}", f"{mean(r['research_words'] for r in x):.0f}", f"{mean(r['research_sources'] for r in x):.1f}", sum(1 for r in x if r["claims"])])
+    md += [table(["Arm", "Runs", "Input tokens", "of which cached", "Output tokens", "Seconds", "Cost per run", "Design files written", "research.md words", "Distinct URLs in research.md", "Runs whose final message mentions accessibility, WCAG or compliance"], rows), ""]
     fs = [(k, r["fscs"]) for k, r in runs.items() if k[0] == "D2"]
     if fs:
-        md += ["FSCS limit shown in D2 prototypes (the limit has been £120,000 since 1 December 2025): " +
+        md += ["FSCS limit shown in D2 storyboards (the limit has been £120,000 since 1 December 2025): " +
                "; ".join(f"{'plain' if a == 'A' else 'factory'}: " + ", ".join(f"£{v} in {sum(1 for k, f in fs if k[1] == a and v in f)}" for v in ("85,000", "120,000")) +
                          f", none in {sum(1 for k, f in fs if k[1] == a and not f)}" for a in "AB") + " runs.", ""]
     js["runs"] = {"/".join(k): {x: v for x, v in r.items() if x not in ("answer",)} for k, r in runs.items()}

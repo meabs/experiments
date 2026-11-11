@@ -8,6 +8,7 @@ description: Stage 5. Build every screen and state from the storyboard as a work
 **Read first:** `design/03-storyboard.md`, `design/04-direction.md`, `okf/knowledge/design/components-and-states.md`,
 `okf/knowledge/design/forms.md`, `okf/knowledge/design/mobile.md`,
 `okf/knowledge/accessibility/keyboard-and-semantics.md`. Use `content-design` for every word.
+**Before the first screen**, read `skills/impeccable/reference/craft-floor.md` and `operate.md` and build to the floor; run its "Verify" list on the finished result, together.
 **Writes:** `prototype/` (or the folder the brief names).
 
 ## Default form

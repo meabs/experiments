@@ -7,7 +7,7 @@ description: Stage 2. Desk research for a brief - user needs, existing conventio
 
 **Read first:** `design/01-brief.md`; the industry index if one applies (for example `okf/industry/banking/index.md`)
 and the files it points to for this journey; `okf/knowledge/legal/` files if legal-review applies.
-**Writes:** `design/02-research.md` (about 300 to 450 words).
+**Writes:** `design/02-research.md` (about 350 to 500 words), or the research file the brief names.
 
 ## Steps
 
@@ -19,9 +19,16 @@ and the files it points to for this journey; `okf/knowledge/legal/` files if leg
    person changing their mind, the person being tricked, doing it twice by accident.
 4. **What must be shown.** From the industry and legal files: information the screens must carry, where and when
    (before commitment, at review, after).
-5. **Turn each finding into a consequence.** Every line ends "-> so the design should ...". A finding with no
+5. **Trends and styles.** What visual, layout, interaction and content styles are current for this kind of product
+   (for example in banking and fintech apps), and what is changing? If you can search the web, do it: read several
+   current sources (design write-ups, product teardowns, regulators' or standards bodies' pages for rules), note each
+   address and date, and say what you saw rather than what you assume. For each trend decide: adopt, adapt or avoid for
+   this brief, and why (fit with the users and their worst moment, accessibility, trust, the industry pack). A trend
+   is not a reason on its own, and copying a real company's look is out. If you cannot search, say so and work from
+   the factory knowledge and your own knowledge, labelled as such.
+6. **Turn each finding into a consequence.** Every line ends "-> so the design should ...". A finding with no
    consequence is cut.
-6. **Unknowns.** What would you ask five real users or the product owner? These go to the team.
+7. **Unknowns.** What would you ask five real users or the product owner? These go to the team.
 
 ## Rules
 
@@ -37,6 +44,7 @@ and the files it points to for this journey; `okf/knowledge/legal/` files if leg
 Method: <what you actually did, one line>
 ## Jobs and worries
 ## Conventions to follow (and any to break)
+## Trends and styles (with sources, and adopt / adapt / avoid)
 ## What goes wrong
 ## What the screens must show
 ## Unknowns for the team

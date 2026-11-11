@@ -1,4 +1,4 @@
-"""Checks each prototype's rendered text against the brief's checklist (key/states.json). One text-model call per run.
+"""Checks each storyboard's rendered text against the brief's checklist (key/states.json). One text-model call per run.
 The model sees only the visible text of every screen (from shoot.py), never the arm, file names or process files.
 For each item it answers present true/false and, if true, must quote the supporting words exactly. A "present" whose
 quote is not found in the screen text (ignoring case and spacing) is set to false by this script (field
@@ -17,8 +17,8 @@ import requests
 E = Path(__file__).resolve().parent.parent
 KEY = json.load(open(E / "key" / "states.json"))["briefs"]
 LOCK = threading.Lock()
-PROMPT = """You are checking a prototype of a UK banking app journey against a checklist. Below is the visible text
-of every screen of the prototype, in order. Be strict and literal: an item is present only if words on a screen
+PROMPT = """You are checking a storyboard of a UK banking app journey against a checklist. Below is the visible text
+of every frame of the storyboard, in order. Be strict and literal: an item is present only if words on a screen
 clearly show it. A heading alone, or a vague hint, is not enough. Do not use outside knowledge of what such an app
 usually has.
 
@@ -86,7 +86,13 @@ def main(stage, model):
         brief, arm, rep = ev.parts[-4:-1]
         run = f"{brief}/{arm}/{rep}"
         e = json.loads(ev.read_text())
-        text = "\n\n".join(f"--- screen {s['n']} ---\n{s.get('text', '').strip()}" for s in e["screens"])
+        seen, parts = set(), []  # a one-page storyboard repeats the same page text at every frame address: show it once
+        for s in e["screens"]:
+            t = s.get("text", "").strip()
+            if t and s.get("text_hash") not in seen:
+                seen.add(s.get("text_hash"))
+                parts.append(f"--- screen {s['n']} ---\n{t}")
+        text = "\n\n".join(parts)
         if run not in done:
             jobs.append((run, brief, arm, rep, text))
 

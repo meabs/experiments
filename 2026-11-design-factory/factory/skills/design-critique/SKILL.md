@@ -6,6 +6,7 @@ description: Stage 6. Review the built prototype as a senior designer would - fi
 # Design critique
 
 **Read first:** `okf/rules/quality-bar.md`, the brief's success measures, the storyboard's screen list.
+Use `skills/impeccable/SKILL.md` for this stage: score the ten heuristics and the cognitive-load checklist and walk the journey as personas (`reference/critique-reference.md`), run `reference/audit.md`, then fix with `polish.md`, `harden.md`, `adapt.md` and `distill.md`.
 **Writes:** `design/05-review.md`; changes to the prototype; then `frontend-handoff`.
 
 ## Steps

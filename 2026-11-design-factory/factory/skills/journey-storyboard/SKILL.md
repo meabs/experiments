@@ -6,6 +6,7 @@ description: Stage 3. Storyboard the journey as numbered frames - main path, bra
 # Journey storyboard
 
 **Read first:** `design/01-brief.md`, `design/02-research.md`, `okf/knowledge/design/components-and-states.md`.
+Also read `skills/impeccable/reference/shape.md` to plan the UX before drawing frames.
 **Writes:** `design/03-storyboard.md`.
 
 A storyboard here is a sequence of frames. Each frame is one moment: what the person wants, what they see, what they

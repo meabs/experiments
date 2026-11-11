@@ -1,5 +1,5 @@
 """Writes the trial files: trial-<arm>.local.toml (6 briefs, REPS runs each) and trial-pilot-<arm>.local.toml (1 run).
-Agent: Codex CLI, hosted gpt-5.6-luna, medium effort, web search off, inside bubblewrap (local-setup/codex-bwrap.sh).
+Agent: Codex CLI, hosted gpt-5.6-luna, medium effort, web search live, inside bubblewrap (local-setup/codex-bwrap.sh).
 The prompt is identical in both arms: a fixed header, the brief, and the delivery contract. The arms differ only in
 the files scripts/setup.sh lays down (arm B gets the Design Factory; Codex loads its AGENTS.md by itself).
 Usage: python3 -I make_trial.py
@@ -16,23 +16,30 @@ ARMS = {"A": "plain", "B": "factory"}
 BRIEFS = ["D1", "D2", "D3", "D4", "D5", "D6"]
 REPS = 5
 TIMEOUT = 2700
-HEAD = ("You are working in the design workspace of Brindle Bank, a fictional UK retail bank, for its mobile banking "
-        "app.\n\n")
+HEAD = ("You are a designer on the design and front-end team at Brindle Bank, a fictional UK retail bank, working on "
+        "its mobile banking app.\n\n")
 CONTRACT = """
 
-What to deliver:
+Your task:
 
-- A clickable prototype of the design in `prototype/index.html`: HTML, CSS and JavaScript that runs offline by
-  opening the file (no build step, no network requests). Design it for a phone (390 px wide).
-- Every screen and state you design must also open directly at `prototype/index.html#<screen-id>`.
-- `prototype/screens.json` listing every screen and state in journey order: `[{"id": "<screen-id>", "title": "..."}]`.
+1. Research current trends and styles in mobile banking and fintech app design (visual style, layout, interaction,
+   content) using web search. Write what you found, with sources, and which of it you will use for this scenario and
+   why, in `research.md`.
+2. Then, drawing on that research, your own knowledge and any skills or guidance available in this workspace, develop
+   a storyboard of the scenario above: the frames a customer moves through, in order, including the situations that
+   could happen along the way.
+
+Deliver the storyboard as a visual storyboard in `storyboard/index.html`: HTML and CSS (JavaScript only if you want
+it) that runs offline by opening the file, with each frame designed as a phone screen 390 px wide. Every frame must
+also open directly at `storyboard/index.html#<frame-id>`. List the frames in journey order in
+`storyboard/screens.json`: `[{"id": "<frame-id>", "title": "..."}]`.
 
 Nobody is available to answer questions. Make reasonable assumptions and finish the work."""
 
 
 def agent():
     cmd = ["bash", f"{S}/codex-bwrap.sh", "exec", "-s", "danger-full-access", "--skip-git-repo-check", "--json",
-           "--model", "gpt-5.6-luna", "-c", f'model_reasoning_effort="{EFFORT}"', "-c", 'web_search="disabled"',
+           "--model", "gpt-5.6-luna", "-c", f'model_reasoning_effort="{EFFORT}"', "-c", 'web_search="live"',
            "{prompt}"]
     return ('[[agents]]\nname = "codex"\n'
             '# hosted gpt-5.6-luna (CODEX_PROFILE=hosted); codex runs inside bubblewrap (codex-bwrap.sh)\n'
@@ -64,7 +71,7 @@ if __name__ == "__main__":
             t = tomllib.loads(text)
             ag = t["agents"][0]
             assert f'model_reasoning_effort="{EFFORT}"' in ag["command"] and ag["env"]["CODEX_PROFILE"] == "hosted"
-            assert 'web_search="disabled"' in ag["command"]
+            assert 'web_search="live"' in ag["command"]
             f = f"{pre}-{a}.local.toml"
             open(os.path.join(E, f), "w").write(text)
             print(f, len(t["questions"]), "briefs, reps", t["defaults"]["reps"])

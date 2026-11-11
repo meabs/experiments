@@ -7,6 +7,7 @@ description: Stage 4. Choose one deliberate visual direction and write it as des
 
 **Read first:** `okf/knowledge/design/hierarchy-and-layout.md`, `okf/knowledge/design/type-and-colour.md`,
 `okf/rules/quality-bar.md`; the industry file on tone and trust if one applies.
+Then read `skills/impeccable/SKILL.md` (its precedence section first), `reference/operate.md` and the "Refuse" list in `reference/craft-floor.md`; use `reference/typeset.md`, `colorize.md` and `layout.md` for those choices. The direction must be specific to this product, not the category's defaults.
 **Writes:** `design/04-direction.md` (about 250 words plus the token block).
 
 ## Steps

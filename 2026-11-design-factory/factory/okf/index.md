@@ -46,6 +46,7 @@ Read the skill's file before doing that kind of work. Each skill says what to re
 | [accessibility-review](../skills/accessibility-review/SKILL.md) | designing and checking any screen (WCAG 2.2 level AA is the target) |
 | [legal-review](../skills/legal-review/SKILL.md) | the journey collects personal data, asks for consent, sells or prices something, or makes a claim |
 | [banking-design](../skills/banking-design/SKILL.md) | the brief is for a bank, payment, savings, lending or card product (industry skill) |
+| [impeccable](../skills/impeccable/SKILL.md) | designing, building or critiquing any screen: the craft floor, what to refuse, Operate-mode depth, and passes for layout, type, colour, copy, edge cases, adaptation and polish (from Impeccable, Apache-2.0) |
 | [frontend-handoff](../skills/frontend-handoff/SKILL.md) | writing notes for the developers who will build the real thing |
 
 ## 4. Knowledge

@@ -5,7 +5,8 @@ description: Write the words on screens - headings, labels, buttons, hints, erro
 
 # Content design
 
-**Read first:** `okf/rules/house-rules.md` (rules 8 and 9); the industry file on money and trust if one applies.
+**Read first:** `okf/rules/house-rules.md` (rules 8 and 9);
+Also `skills/impeccable/reference/clarify.md` for labels, errors and empty states; the industry file on money and trust if one applies.
 
 ## Steps
 
