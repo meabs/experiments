@@ -26,7 +26,7 @@ alone". Separating them needs a third arm, which the user declined ("Keep to two
 ## Terms
 
 - **Design Factory:** the folder in [`factory/`](factory/) (a snapshot of the `design-factory` repository at commit
-  `52fc04e`). `AGENTS.md` points to `okf/index.md`, the index that lists the workflow, 11 skills, three rules files
+  `bafa915`). `AGENTS.md` points to `okf/index.md`, the index that lists the workflow, 11 skills, three rules files
   and the knowledge files. About 35,000 words in all, of which about 18,000 are Impeccable's; an agent reads the parts the index says are relevant.
 - **Skill:** a written procedure for one kind of work (for example `journey-storyboard`), in `skills/<name>/SKILL.md`.
 - **OKF (Open Knowledge Format):** a folder of short markdown files with an index, as used in earlier experiments here.
@@ -145,10 +145,11 @@ does most of this; the factory mainly costs more tokens"). Stated before the pil
 | H3 | The factory's storyboards contain more of the checklist (**secondary: circular**, see Limits) | sign-flip test on per-pair differences (factory minus plain) |
 | H4 | The factory's storyboards have fewer axe violations per screen | same |
 | H5 | The factory costs more tokens and time | descriptive: ratio with the two means |
+| H6 | The factory's storyboards apply more of the decisions listed in their own research (blind vision model; `scripts/judge_research.py`) | sign-flip test on per-pair differences |
 
 All tests are two-sided, so a result against the factory is detected as readily as one for it. 30 pairs; exact
 enumeration where possible, otherwise 10,000 resamples, seed 1; bootstrap 95% intervals (10,000, seed 1); Holm
-adjustment across H1 to H4. An exact sign test on pair wins is reported beside H1 and H2. Results are also shown per
+adjustment across H1 to H4 and H6. An exact sign test on pair wins is reported beside H1 and H2. Results are also shown per
 brief and per criterion, without tests. A non-significant result will be reported as "no difference shown", not as
 "the same".
 
@@ -157,19 +158,20 @@ be missed.
 
 ## Pilot (11 November 2026, not part of the results)
 Plain arm once on each brief, factory once on D1 and D5, `results/pilot/`, run with the final prompt and factory
-(`52fc04e`). Purpose: prove the rig, check for a ceiling, measure cost. Earlier pilots with the previous prompt
-(build a prototype, no web search) are kept in `results/pilot-v1/` and are not used.
+(`bafa915`: mandatory review stage, research decisions carried through, `render_check.py`). Purpose: prove the rig,
+check for a ceiling, measure cost. Earlier pilots (old prompt, or earlier factory versions) are kept in
+`results/pilot-v1/` and `results/pilot-v2/` and are not used.
 
-- All 8 runs delivered a storyboard the scripts could open, and a `research.md` (plain: 650 to 790 words, 7 to 9 source
-  addresses). The factory runs also wrote its six stage files.
-- Cost: plain about 235k tokens and 192 s a run ($0.021 at list price); the factory more (see
-  `results/pilot/analysis.md`).
-- No ceiling: plain storyboards had on average 60% of the checklist and every one had axe findings.
-- **The factory did not clearly win on looks.** On the two pairs, both judges preferred the plain agent's design on
-  looks and hierarchy, and the factory's on content, trust and journey. The plain agent drew each frame inside a phone
-  mock-up with captions; the factory's were plainer, with more complete states. Two pairs prove nothing, but it
-  means the main hypothesis is genuinely open. The factory is not being changed to suit the judges.
-- Judges are order-sensitive (one chose the design shown first in 6 of 8 calls), hence both orders for every pair.
+- All 8 runs delivered a storyboard and a `research.md` listing numbered decisions (plain 7.5 a run, factory 6.0).
+- The mandatory review worked: both factory reviews contain the Impeccable design review, the accessibility and
+  legal sections, the industry checklist and the research trace.
+- Cost: plain about 205k tokens a run; factory about 1.18M (about 6 times).
+- No ceiling: plain storyboards had on average 60% of the checklist, and most had axe findings.
+- Research-to-design (H6): a blind vision model judged 93% of the plain agent's decisions visibly applied and 92% of
+  the factory's. Two pairs show no separation.
+- Preference on the two pairs: factory ahead on the whole design (0.75), plain ahead on looks (0.25). Two pairs prove
+  nothing. The factory is not being changed to suit the judges.
+- Judges are order-sensitive, hence both orders for every pair.
 
 Corrections made during the pilot, before any measured run: checklist item D2-05 replaced; the quote check accepts a
 quote stitched from neighbouring elements; the checker's own console errors are not counted; a focus ring left by
@@ -211,6 +213,7 @@ python3 scripts/sheet.py results/main
 uv run --with requests --with pillow python scripts/judge_pairs.py results/main
 uv run --with requests --with pillow python scripts/judge_pairs.py results/main --judge anthropic/claude-sonnet-5.5
 uv run --with requests python scripts/judge_states.py results/main
+uv run --with requests --with pillow python scripts/judge_research.py results/main
 python3 -I scripts/analyse.py results/main
 ```
 

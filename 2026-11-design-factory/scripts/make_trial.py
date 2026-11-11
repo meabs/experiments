@@ -24,10 +24,11 @@ Your task:
 
 1. Research current trends and styles in mobile banking and fintech app design (visual style, layout, interaction,
    content) using web search. Write what you found, with sources, and which of it you will use for this scenario and
-   why, in `research.md`.
+   why, in `research.md`. End it with a numbered list of decisions (R1, R2, ...): what you will do in the design
+   because of what you found, and in which frames it will show.
 2. Then, drawing on that research, your own knowledge and any skills or guidance available in this workspace, develop
    a storyboard of the scenario above: the frames a customer moves through, in order, including the situations that
-   could happen along the way.
+   could happen along the way. The decisions from your research must show in the storyboard.
 
 Deliver the storyboard as a visual storyboard in `storyboard/index.html`: HTML and CSS (JavaScript only if you want
 it) that runs offline by opening the file, with each frame designed as a phone screen 390 px wide. Every frame must

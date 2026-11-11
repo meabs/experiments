@@ -7,6 +7,7 @@ description: Stage 2. Desk research for a brief - user needs, existing conventio
 
 **Read first:** `design/01-brief.md`; the industry index if one applies (for example `okf/industry/banking/index.md`)
 and the files it points to for this journey; `okf/knowledge/legal/` files if legal-review applies.
+**Ends with:** a numbered Decisions list (R1, R2, ...): the choices the design will take from this research.
 **Writes:** `design/02-research.md` (about 350 to 500 words), or the research file the brief names.
 
 ## Steps
@@ -48,5 +49,7 @@ Method: <what you actually did, one line>
 ## What goes wrong
 ## What the screens must show
 ## Unknowns for the team
+## Decisions (R1, R2, ...)
+Numbered. Each: what the design will do, why (which finding), and the frame or token where it should show.
 ## The five things this changes in the design
 ```

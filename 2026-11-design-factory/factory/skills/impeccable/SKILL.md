@@ -49,7 +49,7 @@ rule is that the brief and the product's conventions win):
    effort on the committed direction (the one sentence in `design/04-direction.md`).
 3. **Refuse the defaults deliberately.** For each item in the "Refuse" list, either do not do it or write down in the
    direction file why this product earns it (for example the balance amount).
-4. **Critique with the heuristics.** In stage 6, score the ten usability heuristics 0 to 4, run the cognitive-load
+4. **The design review is mandatory.** **Critique with the heuristics.** In stage 6, score the ten usability heuristics 0 to 4, run the cognitive-load
    checklist, and walk the journey as at least three of the personas in `critique-reference.md` (always the
    accessibility-dependent and the distracted mobile users; add the confused first-timer for money journeys). Use
    the users in `design/01-brief.md` for any project-specific persona.

@@ -92,5 +92,7 @@ Other industries are added as a new folder under `industry/` with its own index 
 - `python3 tools/lint_prototype.py <folder>` - quick structural checks on a built prototype (page language, title,
   viewport, field labels, button names, image alternatives, heading order, token contrast). It does not replace the
   accessibility review.
+- `python3 tools/render_check.py <folder>` - rendered checks with headless Chrome at each frame address: text
+  contrast, control sizes, accessible names, h1 count. It cannot check 320 px reflow.
 - `python3 tools/check_bundle.py` - checks this index lists every skill and knowledge file and that links resolve.
   Run it after changing the factory itself.

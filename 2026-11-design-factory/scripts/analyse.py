@@ -153,11 +153,25 @@ def load_states(stage):
     return out
 
 
+def load_research(stage):
+    f = stage / f"research-{slug(JUDGES[0])}.jsonl"
+    out = {}
+    if f.exists():
+        for line in f.open():
+            r = json.loads(line)
+            if "error" in r:
+                continue
+            d = r.get("decisions", [])
+            out[(r["brief"], r["arm"], r["rep"])] = {"n": len(d), "applied": sum(1 for x in d if x.get("applied")),
+                                                      "specific": bool(r.get("specific"))}
+    return out
+
+
 def main(stage):
     stage = Path(stage)
     key = json.load(open(Path(__file__).resolve().parent.parent / "key" / "states.json"))["briefs"]
     kind = {i["id"]: i["kind"] for b in key.values() for i in b}
-    runs, (votes, raw), states = load(stage), load_pairs(stage), load_states(stage)
+    runs, (votes, raw), states, rsch = load(stage), load_pairs(stage), load_states(stage), load_research(stage)
     briefs = sorted({k[0] for k in runs})
     pairs = sorted({(b, r) for (b, a, r) in runs if (b, "A", r) in runs and (b, "B", r) in runs})
     md, js = [f"# Analysis: {stage.name}", "", f"{len(runs)} runs, {len(pairs)} pairs (plain run i with factory run i of the same brief). "
@@ -200,7 +214,13 @@ def main(stage):
     h4 = paired("axe_per_screen", "H4 axe rule violations per screen (lower is better)")
     for t, p in zip(tests + [h3, h4], holm([t["p"] for t in tests] + [h3["p"], h4["p"]])):
         t["p_holm"] = p
-    js["tests"] = tests + [h3, h4]
+    def applied(k):
+        r = rsch.get(k)
+        return (r["applied"] / r["n"] if r and r["n"] else 0.0) if r is not None else float("nan")
+
+    h6 = paired(None, "H6 research decisions visibly applied in the storyboard (share)", applied)
+    h6["p_holm"] = holm([t["p"] for t in tests] + [h3["p"], h4["p"], h6["p"]])[-1]
+    js["tests"] = tests + [h3, h4, h6]
 
     md += ["## Which design do the judges prefer?", "",
            "Each pair gets a score from 0 to 1: the share of its judge votes (two judges, two orders) that chose the "
@@ -270,6 +290,19 @@ def main(stage):
            table(["Measure", "Pairs", "Plain", "Factory", "Difference (95% CI)", "p", "Holm p"],
                  [[t["h"], t["n"], f"{t['plain']:.2f}", f"{t['factory']:.2f}", f"{t['diff']:+.2f} ({t['ci'][0]:+.2f} to {t['ci'][1]:+.2f})",
                    f"{t['p']:.4f}", f"{t['p_holm']:.4f}"] for t in (h3, h4)]), ""]
+    if rsch:
+        rows = []
+        for a, name in (("A", "Plain"), ("B", "Factory")):
+            x = [v for k, v in rsch.items() if k[1] == a]
+            rows.append([name, len(x), f"{mean(v['n'] for v in x):.1f}", pct(mean((v['applied'] / v['n']) if v['n'] else 0.0 for v in x)),
+                         pct(mean(1.0 if v['specific'] else 0.0 for v in x))])
+        md += ["## Does the design apply the research?", "",
+               "A vision model (blind to the arm) reads each run's research.md and looks at its frames. Decisions listed = the "
+               "numbered design decisions the agent wrote; applied = visibly shown in a frame (higher is better); a run that "
+               "listed no decisions scores 0. Specific = names current trends or styles with sources.", "",
+               table(["Arm", "Runs", "Decisions listed per run", "Share applied", "Research is specific"], rows),
+               "", table(["Measure", "Pairs", "Plain", "Factory", "Difference (95% CI)", "p", "Holm p"],
+                         [[h6["h"], h6["n"], f"{h6['plain']:.2f}", f"{h6['factory']:.2f}", f"{h6['diff']:+.2f} ({h6['ci'][0]:+.2f} to {h6['ci'][1]:+.2f})", f"{h6['p']:.4f}", f"{h6['p_holm']:.4f}"]]), ""]
     desc = [("Checklist: 'state' items present", lambda k: share(k, "state"), pct), ("Checklist: 'info' items present", lambda k: share(k, "info"), pct),
             ("Screens delivered", lambda k: runs[k]["screens"], lambda x: f"{x:.1f}"),
             ("Delivery contract met (screens.json and every screen opens)", lambda k: 1.0 if runs[k]["contract"] else 0.0, pct),

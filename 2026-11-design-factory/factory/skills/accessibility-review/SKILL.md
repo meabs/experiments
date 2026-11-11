@@ -22,7 +22,7 @@ Use this skill twice: while designing (stages 3 to 5) so problems are not built 
 Go through the checklist file in order for every screen and state. For each line record pass, fail (with the screen
 id and what is wrong) or not run.
 
-1. Automated: `python3 tools/lint_prototype.py <folder>`. If axe, Lighthouse or a browser is available, run them and
+1. Automated: `python3 tools/lint_prototype.py <folder>` and `python3 tools/render_check.py <folder>` (rendered text contrast, control sizes, names; no 320 px check). If axe, Lighthouse or a browser is available, run them and
    keep the output. Zero automated findings does not mean accessible.
 2. Keyboard, by reading the HTML if no browser: every action is a `button`, `a[href]` or form control; order matches
    the screen; nothing has a positive `tabindex`; dialogs keep focus inside and return it on close; focus moves to

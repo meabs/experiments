@@ -12,6 +12,8 @@ Then read `skills/impeccable/SKILL.md` (its precedence section first), `referenc
 
 ## Steps
 
+0. List which research decisions (R1, R2, ...) the direction applies and how; a decision that affects look (style, density, colour, type, motion) must show up in the tokens.
+
 1. **Three words and a sentence.** Pick three words for how it should feel to the user in this journey (for example
    "calm, exact, human") and one sentence describing the look that someone could disagree with. Say what you are
    deliberately not doing.

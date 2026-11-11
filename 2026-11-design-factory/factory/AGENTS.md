@@ -15,4 +15,9 @@ Then follow [`okf/workflow.md`](okf/workflow.md) stage by stage. Do not start bu
 storyboard and visual direction stages have each written their file. Read a skill's `SKILL.md` before doing that
 stage, and read only the knowledge files the index says are relevant to the brief.
 
+**The review stage is required, not optional.** The work is not finished until the stage 6 review has been done in
+full: the Impeccable design review, the accessibility review, the legal review (where it applies) and the industry
+checklist, each recorded as run, passed, failed or not run. **The research must shape the design:** the decisions you
+take from the research are carried through the storyboard and the visual direction and checked again in the review.
+
 If the brief names output files or folders, use those names. Otherwise use the defaults in the workflow.

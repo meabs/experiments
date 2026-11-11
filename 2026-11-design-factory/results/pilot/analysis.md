@@ -8,30 +8,30 @@ Each pair gets a score from 0 to 1: the share of its judge votes (two judges, tw
 
 | Question | Pairs | Factory wins | Plain wins | Split | Mean score (95% CI) | p | Holm p | Sign test p |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| H1 whole design | 2 | 0 | 1 | 1 | 0.38 (0.25 to 0.50) | 1.0000 | 1.0000 | 1.0000 |
-| H2 looks only (first six screens) | 2 | 0 | 2 | 0 | 0.25 (0.25 to 0.25) | 0.5000 | 1.0000 | 0.5000 |
+| H1 whole design | 2 | 1 | 0 | 1 | 0.75 (0.50 to 1.00) | 1.0000 | 1.0000 | 1.0000 |
+| H2 looks only (first six screens) | 2 | 0 | 1 | 1 | 0.25 (0.00 to 0.50) | 1.0000 | 1.0000 | 1.0000 |
 
 ### By criterion (mean pair score; above 0.5 favours the factory; descriptive)
 
 | Criterion | Whole design | Looks only |
 | --- | --- | --- |
-| overall | 0.38 | 0.25 |
-| hierarchy | 0.25 | 0.25 |
-| polish | 0.12 | 0.12 |
-| identity | 0.00 | 0.00 |
-| content | 0.88 | 0.62 |
-| trust | 0.75 | 0.62 |
+| overall | 0.75 | 0.25 |
+| hierarchy | 0.38 | 0.25 |
+| polish | 0.62 | 0.50 |
+| identity | 0.12 | 0.19 |
+| content | 1.00 | 0.62 |
+| trust | 1.00 | 0.50 |
 | journey | 0.75 | - |
 
 ### By brief (mean pair score; factory wins-plain wins-split)
 
 | Brief | Whole: score | Whole: W-L-S | Looks: score | Looks: W-L-S |
 | --- | --- | --- | --- | --- |
-| D1 | 0.50 | 0-0-1 | 0.25 | 0-1-0 |
+| D1 | 1.00 | 1-0-0 | 0.00 | 0-1-0 |
 | D2 | - | 0-0-0 | - | 0-0-0 |
 | D3 | - | 0-0-0 | - | 0-0-0 |
 | D4 | - | 0-0-0 | - | 0-0-0 |
-| D5 | 0.25 | 0-1-0 | 0.25 | 0-1-0 |
+| D5 | 0.50 | 0-0-1 | 0.50 | 0-0-1 |
 | D6 | - | 0-0-0 | - | 0-0-0 |
 
 ### The judges
@@ -40,10 +40,10 @@ Chose the first design shown: 50% means no position bias. Same choice in both or
 
 | Judge | Calls | Chose the design shown first | Same choice in both orders | Mean vote for factory |
 | --- | --- | --- | --- | --- |
-| google/gemini-4-argon | 8 | 100% | 0% | 0.50 |
-| anthropic/claude-sonnet-5.5 | 8 | 38% | 75% | 0.12 |
+| google/gemini-4-argon | 8 | 75% | 50% | 0.50 |
+| anthropic/claude-sonnet-5.5 | 8 | 25% | 50% | 0.50 |
 
-The two judges reached the same pair result (factory, plain or split) in 25% of 4 pair-views.
+The two judges reached the same pair result (factory, plain or split) in 100% of 4 pair-views.
 
 ## Checklist, accessibility checks
 
@@ -51,22 +51,35 @@ Checklist: share of the brief's 12 checklist items visible in the storyboard's t
 
 | Measure | Pairs | Plain | Factory | Difference (95% CI) | p | Holm p |
 | --- | --- | --- | --- | --- | --- | --- |
-| H3 checklist items present (share of 12) | 2 | 0.60 | 0.92 | +0.33 (+0.25 to +0.42) | 0.5000 | 1.0000 |
-| H4 axe rule violations per screen (lower is better) | 2 | 1.17 | 0.50 | -1.00 (-2.00 to +0.00) | 1.0000 | 1.0000 |
+| H3 checklist items present (share of 12) | 2 | 0.62 | 0.83 | +0.08 (-0.17 to +0.33) | 1.0000 | 1.0000 |
+| H4 axe rule violations per screen (lower is better) | 2 | 0.83 | 0.50 | -0.50 (-1.00 to +0.00) | 1.0000 | 1.0000 |
+
+## Does the design apply the research?
+
+A vision model (blind to the arm) reads each run's research.md and looks at its frames. Decisions listed = the numbered design decisions the agent wrote; applied = visibly shown in a frame (higher is better); a run that listed no decisions scores 0. Specific = names current trends or styles with sources.
+
+| Arm | Runs | Decisions listed per run | Share applied | Research is specific |
+| --- | --- | --- | --- | --- |
+| Plain | 6 | 7.5 | 93% | 100% |
+| Factory | 2 | 6.0 | 92% | 100% |
+
+| Measure | Pairs | Plain | Factory | Difference (95% CI) | p | Holm p |
+| --- | --- | --- | --- | --- | --- | --- |
+| H6 research decisions visibly applied in the storyboard (share) | 2 | 0.93 | 0.92 | -0.01 (-0.02 to +0.00) | 1.0000 | 1.0000 |
 
 ### Descriptive measures (means over runs; no tests)
 
 | Measure | Plain | Factory |
 | --- | --- | --- |
-| Checklist: 'state' items present | 66% | 92% |
-| Checklist: 'info' items present | 51% | 100% |
-| Screens delivered | 8.0 | 11.5 |
+| Checklist: 'state' items present | 70% | 83% |
+| Checklist: 'info' items present | 43% | 100% |
+| Screens delivered | 6.8 | 11.5 |
 | Delivery contract met (screens.json and every screen opens) | 100% | 100% |
-| Screens with no axe violation | 0% | 50% |
-| Screens that scroll sideways at 320 px (lower is better) | 50% | 0% |
-| Controls at least 24 px in both directions | 79% | 83% |
-| Controls at least 44 px in both directions | 59% | 55% |
-| Screens with exactly one h1 | 67% | 100% |
+| Screens with no axe violation | 17% | 50% |
+| Screens that scroll sideways at 320 px (lower is better) | 33% | 0% |
+| Controls at least 24 px in both directions | 78% | 88% |
+| Controls at least 44 px in both directions | 57% | 77% |
+| Screens with exactly one h1 | 83% | 50% |
 | Clickable things not reachable by keyboard, per run (lower is better) | 0.0 | 0.0 |
 | Console errors per run (lower is better) | 0.0 | 0.0 |
 
@@ -74,12 +87,12 @@ Checklist: share of the brief's 12 checklist items visible in the storyboard's t
 
 | Brief | Checklist of 12: plain | factory | axe per screen: plain | factory | Screens: plain | factory |
 | --- | --- | --- | --- | --- | --- | --- |
-| D1 | 7.0 | 12.0 | 2.00 | 0.00 | 11.0 | 17.0 |
-| D2 | 4.0 | nan | 1.00 | nan | 7.0 | nan |
-| D3 | 8.0 | nan | 1.00 | nan | 9.0 | nan |
-| D4 | 8.0 | nan | 1.00 | nan | 8.0 | nan |
-| D5 | 7.0 | 10.0 | 1.00 | 1.00 | 7.0 | 6.0 |
-| D6 | 9.0 | nan | 1.00 | nan | 6.0 | nan |
+| D1 | 8.0 | 12.0 | 1.00 | 0.00 | 10.0 | 15.0 |
+| D2 | 4.0 | nan | 1.00 | nan | 8.0 | nan |
+| D3 | 6.0 | nan | 1.00 | nan | 8.0 | nan |
+| D4 | 8.0 | nan | 1.00 | nan | 6.0 | nan |
+| D5 | 10.0 | 8.0 | 1.00 | 1.00 | 5.0 | 8.0 |
+| D6 | 9.0 | nan | 0.00 | nan | 4.0 | nan |
 
 ### Every checklist item (runs in which it was present)
 
@@ -91,7 +104,7 @@ Checklist: share of the brief's 12 checklist items visible in the storyboard's t
 | D1-04 | state | A review screen before sending that repeats payee, account details, amount and reference t | 1/1 | 1/1 |
 | D1-05 | state | A step where the customer approves the payment or confirms it is them (passcode, biometric | 1/1 | 1/1 |
 | D1-06 | state | A result screen for the payment being sent that includes the amount and the payee | 1/1 | 1/1 |
-| D1-07 | state | A state for an amount over the £1,000 new-payee limit or over the available balance, sayin | 0/1 | 1/1 |
+| D1-07 | state | A state for an amount over the £1,000 new-payee limit or over the available balance, sayin | 1/1 | 1/1 |
 | D1-08 | state | A state for the payment failing, being declined, or its outcome being unknown (for example | 1/1 | 1/1 |
 | D1-09 | state | Input validation errors on the payee or amount form that say how to fix the problem | 0/1 | 1/1 |
 | D1-10 | info | A scam or fraud warning relevant to paying someone new (for example checking the payee is  | 1/1 | 1/1 |
@@ -116,17 +129,17 @@ Checklist: share of the brief's 12 checklist items visible in the storyboard's t
 | D3-05 | state | The lower offer of £350 presented clearly as less than the £500 asked for, with accepting  | 1/1 | 0/0 |
 | D3-06 | state | A declined state that is its own screen | 1/1 | 0/0 |
 | D3-07 | info | On being declined: that credit reference agency information was used, or that she can ask  | 0/1 | 0/0 |
-| D3-08 | info | Help for money worries: the bank's support and/or free independent debt advice (for exampl | 1/1 | 0/0 |
+| D3-08 | info | Help for money worries: the bank's support and/or free independent debt advice (for exampl | 0/1 | 0/0 |
 | D3-09 | info | The right to withdraw within 14 days, or how to reduce or remove the overdraft later | 1/1 | 0/0 |
 | D3-10 | state | A step where she explicitly agrees to the overdraft agreement, with the agreement or pre-c | 0/1 | 0/0 |
 | D3-11 | info | Why income and outgoings are asked for (affordability) | 1/1 | 0/0 |
-| D3-12 | state | A result screen for the accepted overdraft stating the limit, the rate and when it is avai | 1/1 | 0/0 |
+| D3-12 | state | A result screen for the accepted overdraft stating the limit, the rate and when it is avai | 0/1 | 0/0 |
 | D4-01 | state | A way to freeze the card temporarily (reversible), separate from cancelling it | 1/1 | 0/0 |
 | D4-02 | state | The frozen state shown in words, with a way to unfreeze | 1/1 | 0/0 |
-| D4-03 | state | A question or choice that separates lost from stolen (or 'someone has used it') | 0/1 | 0/0 |
+| D4-03 | state | A question or choice that separates lost from stolen (or 'someone has used it') | 1/1 | 0/0 |
 | D4-04 | info | A statement before confirming that cancelling the card is permanent or cannot be undone | 1/1 | 0/0 |
 | D4-05 | state | A way to mark the NVX*DIGITAL payment as not recognised and report it | 1/1 | 0/0 |
-| D4-06 | info | What happens next with the unrecognised payment (the bank will look into it or refund it,  | 1/1 | 0/0 |
+| D4-06 | info | What happens next with the unrecognised payment (the bank will look into it or refund it,  | 0/1 | 0/0 |
 | D4-07 | state | Confirmation of the delivery address for the replacement, with a way to say it is wrong | 1/1 | 0/0 |
 | D4-08 | info | What still works or stops working while the card is frozen or cancelled (for example Direc | 1/1 | 0/0 |
 | D4-09 | state | A result screen stating the card is cancelled and the replacement arrives in 3 to 5 workin | 1/1 | 0/0 |
@@ -137,13 +150,13 @@ Checklist: share of the brief's 12 checklist items visible in the storyboard's t
 | D5-02 | state | Every category's amount shown as text next to or in its chart mark (not only in a legend o | 1/1 | 1/1 |
 | D5-03 | state | The comparison says it is like for like (same point in last month), not the whole of Octob | 1/1 | 1/1 |
 | D5-04 | state | The groceries budget shows spent (£212.35), the budget (£300.00) and what is left (£87.65) | 1/1 | 1/1 |
-| D5-05 | state | The budget relates the money left to the time left in the month (for example 12 days left) | 0/1 | 1/1 |
+| D5-05 | state | The budget relates the money left to the time left in the month (for example 12 days left) | 1/1 | 1/1 |
 | D5-06 | state | A category detail screen listing the six groceries payments with dates | 1/1 | 1/1 |
-| D5-07 | state | A way to set a budget for a category that has none | 1/1 | 1/1 |
-| D5-08 | state | A way to change or remove the existing budget | 0/1 | 0/1 |
+| D5-07 | state | A way to set a budget for a category that has none | 1/1 | 0/1 |
+| D5-08 | state | A way to change or remove the existing budget | 1/1 | 0/1 |
 | D5-09 | state | An over-budget state shown in words | 0/1 | 0/1 |
 | D5-10 | state | An empty or loading state (for example a month or category with no spending, or data unava | 0/1 | 1/1 |
-| D5-11 | state | A way to correct a payment's category, or to see how categories are decided | 0/1 | 1/1 |
+| D5-11 | state | A way to correct a payment's category, or to see how categories are decided | 1/1 | 0/1 |
 | D5-12 | state | Pending or incomplete data acknowledged (for example 'so far', 'up to 18 November', or pen | 1/1 | 1/1 |
 | D6-01 | state | The Everyday balance labelled as 'available' balance (or the kind of balance stated) | 1/1 | 0/0 |
 | D6-02 | state | The Tesco Express payment marked 'Pending' in words | 1/1 | 0/0 |
@@ -163,8 +176,7 @@ Checklist: share of the brief's 12 checklist items visible in the storyboard's t
 | Rule | Plain | Factory |
 | --- | --- | --- |
 | aria-prohibited-attr | 0 | 1 |
-| color-contrast | 6 | 0 |
-| label | 1 | 0 |
+| color-contrast | 5 | 0 |
 
 ## Cost and process
 
@@ -172,8 +184,8 @@ Tokens and seconds are means per run (lower is cheaper). Cost at gpt-5.6-luna li
 
 | Arm | Runs | Input tokens | of which cached | Output tokens | Seconds | Cost per run | Design files written | research.md words | Distinct URLs in research.md | Runs whose final message mentions accessibility, WCAG or compliance |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| Plain | 6 | 235k | 209k | 9.8k | 192 | $0.021 | 0.0 | 717 | 7.8 | 1 |
-| Factory | 2 | 984k | 919k | 18.7k | 364 | $0.054 | 6.0 | 708 | 6.5 | 0 |
+| Plain | 6 | 195k | 169k | 9.6k | 190 | $0.020 | 0.0 | 810 | 8.0 | 1 |
+| Factory | 2 | 1156k | 1091k | 20.4k | 400 | $0.059 | 5.0 | 864 | 6.0 | 2 |
 
 FSCS limit shown in D2 storyboards (the limit has been £120,000 since 1 December 2025): plain: £85,000 in 0, £120,000 in 0, none in 1; factory: £85,000 in 0, £120,000 in 0, none in 0 runs.
 

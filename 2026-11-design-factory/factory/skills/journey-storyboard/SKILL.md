@@ -29,6 +29,7 @@ do, and what the system does back. It is written before any visual decisions.
    Does: confirms, or goes back to change
    System: asks for approval -> F4; if connection lost -> F4c
    Feels: careful -> reassured
+   Applies: R2, R5            (research decisions this frame puts into practice)
    ```
 5. **Screen and state list.** A table of every screen id with its states (default, loading, empty, error, success,
    disabled, long content). This list is the contract for stage 5: everything in it gets built.

@@ -22,10 +22,28 @@ build better, not to produce long documents.
 | 3 | Storyboard | journey-storyboard (+ impeccable shape) | `design/03-storyboard.md` | main path, each branch and each failure has frames; the screen and state list is complete |
 | 4 | Visual direction | visual-direction (+ impeccable) | `design/04-direction.md` | tokens are chosen and contrast-checked; the direction is stated in one sentence a person could disagree with |
 | 5 | Prototype | prototype-build (+ impeccable craft floor) | `prototype/` | every screen and state in the storyboard exists and can be reached; the lint tool passes |
-| 6 | Critique and handoff | design-critique (+ impeccable), frontend-handoff | `design/05-review.md`, `design/06-handoff.md` | the review's top problems are fixed in the prototype; checks not run are listed as not run |
+| 6 | Critique and handoff | design-critique (+ impeccable), frontend-handoff | `design/05-review.md`, `design/06-handoff.md` | every required review output below exists, the top problems are fixed in the prototype, and checks not run are listed as not run |
 
 If the brief names output files or folders, use those instead of the defaults, and keep any extra stage files next to
 them.
+
+## The review is mandatory
+
+Stage 6 is not done until `design/05-review.md` contains all of these (see the design-critique skill for how):
+
+1. **Design review with Impeccable:** per-screen five-second and squint tests; the ten usability heuristics scored 0 to
+   4; the cognitive-load checklist; a walk of the journey as at least three personas; a ranked list of problems.
+2. **Accessibility review:** the checklist table, with evidence (lint, render check, source reading) or "not run".
+3. **Legal review:** the register, where legal-review applies, or a line saying why it does not.
+4. **Industry checklist:** for banking, the nine questions in the banking-design skill.
+5. **Research trace:** each research decision, and whether the built design applies it.
+6. **Fixes:** what was fixed and what remains.
+
+## Research feeds the design
+
+Stage 2 ends with a numbered list of **decisions** (R1, R2, ...), each saying what the design will do and why. Stage 3
+frames and stage 4 tokens name the decisions they apply. Stage 6 checks that every decision is visible in the built
+design and says so, or says which were dropped and why. A decision that cannot be seen in a frame is not a decision.
 
 ## Which specialist skills run where
 
