@@ -1,0 +1,48 @@
+---
+type: Process
+title: Design Factory workflow
+description: The six stages from brief to handoff, the file each stage writes and the check that ends it.
+tags: [workflow]
+status: draft
+---
+
+# Workflow
+
+Six stages, in order. Each stage has one skill, writes one file (or folder), and ends with a short check. Do not skip
+a stage and do not merge stages into one file: the point of the factory is that the look and the journey are decided
+on purpose before anything is built.
+
+Keep the early stages short. Stages 1 to 4 together should take well under half of the effort; they exist to make the
+build better, not to produce long documents.
+
+| # | Stage | Skill | Writes (default path) | Stage is done when |
+| --- | --- | --- | --- | --- |
+| 1 | Brief | brief-intake | `design/01-brief.md` | users, goal, constraints, assumptions and 3 to 5 success measures are written; open questions are listed |
+| 2 | Research | design-research | `design/02-research.md` | every finding names its source type; each finding ends in "so the design should..."; risks are listed |
+| 3 | Storyboard | journey-storyboard | `design/03-storyboard.md` | main path, each branch and each failure has frames; the screen and state list is complete |
+| 4 | Visual direction | visual-direction | `design/04-direction.md` | tokens are chosen and contrast-checked; the direction is stated in one sentence a person could disagree with |
+| 5 | Prototype | prototype-build | `prototype/` | every screen and state in the storyboard exists and can be reached; the lint tool passes |
+| 6 | Critique and handoff | design-critique, frontend-handoff | `design/05-review.md`, `design/06-handoff.md` | the review's top problems are fixed in the prototype; checks not run are listed as not run |
+
+If the brief names output files or folders, use those instead of the defaults, and keep any extra stage files next to
+them.
+
+## Which specialist skills run where
+
+| Specialist skill | Stage 2 | Stage 3 | Stage 4 | Stage 5 | Stage 6 |
+| --- | --- | --- | --- | --- | --- |
+| content-design | | frame captions and key messages | | all screen text | read every screen aloud |
+| accessibility-review | | focus order, error and timeout branches | contrast of every token pair | semantics, keyboard, target size, reflow | full checklist |
+| legal-review | what applies to this journey | where notices, consent and prices appear | | exact placement and wording status | register of open points |
+| industry skill (for example banking-design) | conventions, risks, regulated information | industry-specific branches | trust and tone | industry components | industry checklist |
+
+## Order of reading for a new brief
+
+1. `okf/index.md`, this file, and the three rules files.
+2. The stage 1 skill. Decide which industry applies and whether personal data, consent, prices or claims are involved.
+3. For each later stage: its skill, then only the knowledge files that skill names for this brief.
+
+## Changing direction
+
+If stage 5 or 6 shows the storyboard or direction was wrong, change the earlier file first, then the prototype, and
+note the change at the bottom of the earlier file under "Changes". The files must describe what was built.
