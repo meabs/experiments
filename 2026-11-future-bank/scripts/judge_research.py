@@ -76,7 +76,7 @@ def main(stage, model):
     out = stage / f"research-{slug(model)}.jsonl"
     done = {j["run"] for j in map(json.loads, out.open()) if "error" not in j} if out.exists() else set()
     jobs = []
-    for ev in sorted(stage.glob("eval-crop/*/*/*/crop.json")):
+    for ev in sorted(stage.glob("eval/*/*/*/eval.json")):
         brief, arm, rep = ev.parts[-4:-1]
         run = f"{brief}/{arm}/{rep}"
         rf = stage / arm / "runs" / brief / arm / "codex" / rep / "artefacts" / "research.md"

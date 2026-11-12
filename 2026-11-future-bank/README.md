@@ -46,15 +46,14 @@ of 8 to 12 frames, each exactly 390 × 844 px, readable without a device mock-up
 px wide, each openable at `#frame-id`, listed in `screens.json`.
 
 Changes from DFX, made because DFX showed they distorted the judging: the frame size and a 1280 px browser are
-specified in the prompt, so no arm's frames get squeezed; judges see screens cropped to the phone interior from the
-start. The prompt does not ask for demo controls. The factory's own skills still suggest them, which may count against
+specified in the prompt, so no arm's frames get squeezed; the judges see the screens as captured (uncropped; see amendment 1). The prompt does not ask for demo controls. The factory's own skills still suggest them, which may count against
 it, and that is a known cost of the frozen factory.
 
 ## Measures
 
 **Primary, P1: blind pair preference on the whole design.** The 5 plain runs are paired with the 5 factory runs in all 25
 combinations. Two vision-model judges (`google/gemini-4-argon`, `anthropic/claude-sonnet-5.5`) see the brief and two
-unlabelled designs (cropped screens, up to 12 per design), in both orders. Criteria: overall, **novelty** (does it do
+unlabelled designs (uncropped screen captures, up to 12 per design), in both orders. Criteria: overall, **novelty** (does it do
 something a current banking app does not), **fit for a new generation of users**, **plausible as a UK bank's app**,
 hierarchy, polish, identity. Pair score = share of the four votes for the factory (tie counts half).
 
@@ -116,4 +115,9 @@ and the feature-coding script.
 
 ## Amendment log
 
-(none yet)
+1. 12 Nov 2026, before any judging (main runs under way, none read): the user said "Don't crop them this time". The judges
+   and the research judge therefore use the original uncropped captures (`shoot.py` at 390 px, tiled by `sheet.py`
+   without `--crop`), not the cropped ones. `judge_cross.py` and `judge_research.py` read `eval/`, not `eval-crop/`.
+   Known risk from DFX: a 390 px capture can squeeze frames built for a wider page. The prompt asks for 390 x 844
+   frames that display correctly at 1280 px; I will check the captures of every run and report any that look squeezed
+   rather than hide it. `crop.py` is not used.

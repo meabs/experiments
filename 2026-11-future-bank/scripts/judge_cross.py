@@ -1,6 +1,6 @@
 """Blind side-by-side judging of the designs by two vision models from providers other than the agent's.
 
-Pairs: every plain run against every factory run (5 x 5 = 25), on cropped screens (eval-crop), whole design only. For each pair, each judge
+Pairs: every plain run against every factory run (5 x 5 = 25), on the uncropped screen captures (eval), whole design only. For each pair, each judge
 answers four times: two views x two orders (which design is shown first is swapped, to cancel position bias).
   view "looks": the first six screens of each design (pages p1, p2) - visual design only
   view "whole": every screen, up to 18 (pages p1..p6)           - the design as a whole
@@ -93,7 +93,7 @@ def main(stage, model):
     out = stage / f"cross-{slug(model)}.jsonl"
     done = {(j["a"], j["b"], j["first"]) for j in map(json.loads, out.open()) if "error" not in j} if out.exists() else set()
     text = (E / "briefs" / "F1" / "prompt.md").read_text().strip()
-    ev = stage / "eval-crop" / "F1"
+    ev = stage / "eval" / "F1"
     pages = lambda arm, rep: sorted((ev / arm / rep).glob("p[0-9].png"))
     reps = sorted(p.name for p in (ev / "A").iterdir())
     jobs = []
