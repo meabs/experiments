@@ -90,6 +90,17 @@ predictions, which I will state as predictions and not tune to:
 One run of each arm on the brief (not part of the results), to check the rig, the contract (frames 390 × 844, openable
 by id), the cost and that neither arm sits at a ceiling. Any change to the prompt or contract goes in the amendment log.
 
+### Pilot result (12 November 2026, not part of the results)
+
+Both runs delivered and met the contract (11 frames each, all open by id, all 390 px wide, all cropped cleanly). No
+change to the prompt. Plain: 214 s, 205k tokens; factory: 496 s, 2,160k tokens. axe rule hits: plain 11, factory 0.
+**What the two chose differed in kind.** The plain run built a spread of features (safe-to-spend, a week-ahead
+horizon, connecting other accounts, an assistant, scenarios, a buffer, a payment check). The factory run spent 8 of
+its 11 frames on one payment journey (purpose, payee, name check, warning, review, approval, unknown status, declined)
+with a futuristic home and an assistant character, and said in its research to "keep everyday banking familiar". That
+fits prediction 2 and prediction 3 (the factory narrows towards conventional, well-checked banking), from one run each.
+Neither arm is at a ceiling.
+
 ## Impact, risks and recommendations
 
 The report will say what the result means in practice, what risks it exposes, and give configuration recommendations
