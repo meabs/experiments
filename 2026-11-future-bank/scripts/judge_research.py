@@ -1,4 +1,4 @@
-"""Does the storyboard apply the research? One vision-model call per run, blind to the arm.
+"""Are the features the agent chose visible in its storyboard? One vision-model call per run, blind to the arm.
 The judge reads the run's research.md (its findings and its numbered decisions) and looks at the storyboard's frames
 (the same pages as the preference judgement, up to 18 frames). For each decision the agent listed it says whether the
 decision is visibly applied in the frames shown (true or false, with a one-sentence reason naming the frame). It also
@@ -16,10 +16,10 @@ import requests
 from PIL import Image
 
 LOCK = threading.Lock()
-PROMPT = """An AI agent was asked to research current trends and styles in mobile banking app design, then to
-develop a storyboard of a banking scenario from that research. Below are its research notes (RESEARCH) and the frames
-of its storyboard (images, in journey order, numbered on each page). Judge only what is visible in the images and
-written in the notes.
+PROMPT = """An AI agent was asked to design a futuristic mobile banking app for a new generation of users: research the
+next generation's needs and the trends shaping banking, choose features, and create a storyboard of the app. Below are
+its research notes (RESEARCH), including the numbered features it chose (F1, F2, ...), and the frames of its storyboard
+(images, in order, numbered on each page). Judge only what is visible in the images and written in the notes.
 
 RESEARCH:
 <<<
@@ -27,14 +27,13 @@ RESEARCH:
 >>>
 
 Tasks:
-1. List the numbered decisions the agent says it will take into the design (R1, R2, ...). If it listed none, return an
-   empty list. Leave out decisions that are about its own process rather than the design.
-2. For each, say whether it is visibly applied in the frames shown: applied true or false, and one sentence of
+1. List the numbered features the agent chose (F1, F2, ...). If it listed none, return an empty list.
+2. For each, say whether it is visibly present in the frames shown: applied true or false, and one sentence of
    evidence naming the frame number.
-3. Say whether the research names specific current trends or styles with a source for each (specific: true) or stays
-   generic (specific: false).
+3. Say whether the research names specific current trends, user needs or sources for its choices (specific: true) or
+   stays generic (specific: false).
 
-Return only JSON: {"decisions": [{"id": "R1", "applied": true|false, "evidence": "<one sentence>"}], "specific": true|false}"""
+Return only JSON: {"decisions": [{"id": "F1", "applied": true|false, "evidence": "<one sentence>"}], "specific": true|false}"""
 
 
 def slug(m):
@@ -77,7 +76,7 @@ def main(stage, model):
     out = stage / f"research-{slug(model)}.jsonl"
     done = {j["run"] for j in map(json.loads, out.open()) if "error" not in j} if out.exists() else set()
     jobs = []
-    for ev in sorted(stage.glob("eval/*/*/*/eval.json")):
+    for ev in sorted(stage.glob("eval-crop/*/*/*/crop.json")):
         brief, arm, rep = ev.parts[-4:-1]
         run = f"{brief}/{arm}/{rep}"
         rf = stage / arm / "runs" / brief / arm / "codex" / rep / "artefacts" / "research.md"
