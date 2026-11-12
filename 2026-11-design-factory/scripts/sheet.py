@@ -34,9 +34,11 @@ def page(pngs, first, out):
 
 if __name__ == "__main__":
     stage = Path(sys.argv[1])
-    for ev in sorted(stage.glob("eval/*/*/*/eval.json")):
+    crop = "--crop" in sys.argv  # exploratory: tile the cropped screens (crop.py) into eval-crop/ instead
+    for ev in sorted(stage.glob("eval-crop/*/*/*/crop.json" if crop else "eval/*/*/*/eval.json")):
         e = json.loads(ev.read_text())
-        pngs = [ev.parent / "screens" / s["png"] for s in e["screens"] if s.get("png")]
+        e = {"screens": e} if crop else e
+        pngs = [ev.parent / ("crops" if crop else "screens") / s["png"] for s in e["screens"] if s.get("png")]
         for old in ev.parent.glob("p[0-9].png"):
             old.unlink()
         for n in range(min(MAXP, -(-len(pngs) // PER))):

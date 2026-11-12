@@ -219,4 +219,11 @@ python3 -I scripts/analyse.py results/main
 
 ## Amendment log
 
-None yet.
+1. 12 Nov 2026, after the main run and its first analysis (exploratory, not a pre-registered test; the primary H1 and H2
+   results stand as reported). Question: does presentation chrome in the storyboard page (device bezel, captions,
+   research tags, page background) explain the plain agent's lead on looks? Method: scripts/crop.py re-captures every
+   screen in a 1280 px wide viewport and crops it to the screen interior (503 of 509 screens; 6 factory screens fell
+   back to the original capture); scripts/judge_pairs.py --crop re-judges the same pairs with the same judges and
+   prompt; scripts/analyse_crop.py compares. Two things changed together: the crop and the wider viewport (which stops
+   plain phone frames being squeezed). Residual chrome: a status bar or notch inside the glass is kept. Result in
+   results/main/analysis-crop.md.

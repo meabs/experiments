@@ -88,14 +88,15 @@ def ask(model, brief, first, second, view):
     return {"error": last}, 0
 
 
-def main(stage, model):
+def main(stage, model, crop=False):
     stage = Path(stage)
-    out = stage / f"pairs-{slug(model)}.jsonl"
+    ev = "eval-crop" if crop else "eval"  # --crop: exploratory re-score on screens cropped to their interior (crop.py)
+    out = stage / f"pairs-{'crop-' if crop else ''}{slug(model)}.jsonl"
     done = {(j["brief"], j["rep"], j["view"], j["first"]) for j in map(json.loads, out.open()) if "error" not in j} if out.exists() else set()
     jobs = []
-    for a in sorted(stage.glob("eval/*/A/*")):
+    for a in sorted(stage.glob(ev + "/*/A/*")):
         brief, rep = a.parts[-3], a.parts[-1]
-        b = stage / "eval" / brief / "B" / rep
+        b = stage / ev / brief / "B" / rep
         pa, pb = sorted(a.glob("p[0-9].png")), sorted(b.glob("p[0-9].png"))
         if not pa or not pb:
             continue  # a run with no screens loses the pair by rule (analyse.py); nothing to judge
@@ -124,4 +125,7 @@ if __name__ == "__main__":
         i = args.index("--judge")
         model = args[i + 1]
         del args[i:i + 2]
-    main(args[0], model)
+    crop = "--crop" in args
+    if crop:
+        args.remove("--crop")
+    main(args[0], model, crop)
