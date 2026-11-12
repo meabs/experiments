@@ -8,9 +8,9 @@ SK = ["brief-intake","design-research","journey-storyboard","visual-direction","
 TOOLS = ["contrast.py","lint_prototype.py","render_check.py","check_bundle.py"]
 out = {}
 for home in sorted(stage.glob("*/agent-homes/*")):
-    m = re.match(r"d(\d)_([ab])_codex_(\d)", home.name)
+    m = re.match(r"f(\d)_([ab])_codex_(\d)", home.name)
     if not m: continue
-    run = f"D{m[1]}/{m[2].upper()}/{m[3]}"
+    run = f"F{m[1]}/{m[2].upper()}/{m[3]}"
     logs = list(home.glob(".codex/sessions/**/rollout-*.jsonl"))
     reads, writes, tools, search = set(), set(), set(), 0
     for lg in logs:

@@ -30,7 +30,7 @@ def vote(j, c):
 
 
 def matrix(rows, c, judge=None):
-    reps = sorted({j["a"] for j in rows})
+    reps = (sorted({j["a"] for j in rows}), sorted({j["b"] for j in rows}))
     f = {}
     for j in rows:
         if judge and j["judge"] != judge:
@@ -40,12 +40,13 @@ def matrix(rows, c, judge=None):
 
 
 def stat_and_p(reps, f):
-    plain = [1 - sum(f[(a, b)] for b in reps) / len(reps) for a in reps]
-    fac = [sum(f[(a, b)] for a in reps) / len(reps) for b in reps]
+    ra, rb = reps
+    plain = [1 - sum(f[(a, b)] for b in rb) / len(rb) for a in ra]
+    fac = [sum(f[(a, b)] for a in ra) / len(ra) for b in rb]
     runs = plain + fac
     obs = sum(fac) / len(fac) - sum(plain) / len(plain)
     cnt = tot = 0
-    for idx in itertools.combinations(range(len(runs)), len(reps)):
+    for idx in itertools.combinations(range(len(runs)), len(ra)):
         s = sum(runs[i] for i in idx) / len(idx) - sum(runs[i] for i in range(len(runs)) if i not in idx) / (len(runs) - len(idx))
         tot += 1
         cnt += abs(s) >= abs(obs) - 1e-12
@@ -56,9 +57,9 @@ def boot(reps, f, n=5000, seed=1):
     rnd = random.Random(seed)
     out = []
     for _ in range(n):
-        ra = [rnd.choice(reps) for _ in reps]
-        rb = [rnd.choice(reps) for _ in reps]
-        out.append(sum(f[(a, b)] for a in ra for b in rb) / 25)
+        ra = [rnd.choice(reps[0]) for _ in reps[0]]
+        rb = [rnd.choice(reps[1]) for _ in reps[1]]
+        out.append(sum(f[(a, b)] for a in ra for b in rb) / (len(ra) * len(rb)))
     out.sort()
     return out[int(.025 * n)], out[int(.975 * n)]
 
@@ -83,14 +84,14 @@ def main(stage, crop=False, drop=None):
             continue
         obs, p = stat_and_p(reps, f)
         lo, hi = boot(reps, f)
-        m = sum(f.values()) / 25
+        m = sum(f.values()) / len(f)
         w = sum(v > .5 for v in f.values()); l = sum(v < .5 for v in f.values())
         per = []
         for jd in judges:
             _, fj = matrix(rows, c, jd)
             per.append(f"{sum(fj.values()) / len(fj):.2f}")
-        res[c] = {"mean": m, "lo": lo, "hi": hi, "obs": obs, "p": p, "wins": [w, l, 25 - w - l], "per_judge": per}
-        lines.append(f"| {c} | {m:.2f} ({lo:.2f} to {hi:.2f}) | {obs:+.2f} | {p:.3f} | {w} | {l} | {25 - w - l} | " + " | ".join(per) + " |")
+        res[c] = {"mean": m, "lo": lo, "hi": hi, "obs": obs, "p": p, "wins": [w, l, len(f) - w - l], "per_judge": per}
+        lines.append(f"| {c} | {m:.2f} ({lo:.2f} to {hi:.2f}) | {obs:+.2f} | {p:.3f} | {w} | {l} | {len(f) - w - l} | " + " | ".join(per) + " |")
     # position bias
     lines += ["", "Judge position bias (share choosing the design shown first on 'overall'; same choice in both orders):", ""]
     for jd in judges:
@@ -101,10 +102,11 @@ def main(stage, crop=False, drop=None):
             pairs.setdefault((j["a"], j["b"]), {})[j["first"]] = vote(j, "overall")
         same = sum(1 for d in pairs.values() if len(d) == 2 and d["A"] == d["B"]) / max(1, len(pairs))
         lines.append(f"- {jd}: first-shown {first:.0%}, same choice in both orders {same:.0%}")
-    Path(stage, "analysis-crop.md" if crop else "analysis.md").write_text("\n".join(lines) + "\n")
-    Path(stage, "analysis-crop.json" if crop else "analysis.json").write_text(json.dumps(res, indent=1))
+    Path(stage, ("analysis-drop%s" % drop if drop else "analysis") + ("-crop" if crop else "") + ".md").write_text("\n".join(lines) + "\n")
+    Path(stage, ("analysis-drop%s" % drop if drop else "analysis") + ("-crop" if crop else "") + ".json").write_text(json.dumps(res, indent=1))
     print("\n".join(lines))
 
 
 if __name__ == "__main__":
-    main(sys.argv[1], "--crop" in sys.argv)
+    d = sys.argv[sys.argv.index("--drop") + 1] if "--drop" in sys.argv else None
+    main(sys.argv[1], "--crop" in sys.argv, d)
