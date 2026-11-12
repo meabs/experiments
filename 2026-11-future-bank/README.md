@@ -127,3 +127,10 @@ and the feature-coding script.
    (`crop.py`, `judge_cross.py --crop`, `analyse_cross.py --crop`). Reason: in DFX the capture method moved the
    whole-design result from 0.53 to 0.38. Both results are reported in full; if they disagree, the report says so
    and does not choose between them afterwards.
+3. 12 Nov 2026, after the captures and before any judging. Checking the uncropped captures as promised in amendment 1
+   found one broken: factory run 5 hides every frame but the first at viewport widths of 430 px or less
+   (`.phone:not(:first-child){display:none}`), so the 390 px capture shows one screen and ten blank ones (shoot.py: "11
+   screens, 2 distinct"). It displays correctly at 1280 px, as the contract asked. The other nine runs capture
+   correctly. This is a capture artefact, not a design fault. Handling: the uncropped analysis is run as declared
+   (primary, with run 5's blank frames included), the cropped re-score is run as declared, and a **sensitivity
+   analysis dropping factory run 5** (20 pairs, post hoc, labelled) is added. All three are reported.

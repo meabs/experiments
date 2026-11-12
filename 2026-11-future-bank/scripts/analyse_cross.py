@@ -63,8 +63,10 @@ def boot(reps, f, n=5000, seed=1):
     return out[int(.025 * n)], out[int(.975 * n)]
 
 
-def main(stage, crop=False):
+def main(stage, crop=False, drop=None):
     rows = load(stage, crop)
+    if drop:
+        rows = [j for j in rows if j["b"] != drop]
     judges = sorted({j["judge"] for j in rows})
     res = {}
     lines = ["# FUT-1 cross-pair results" + (" (cropped re-score, exploratory)" if crop else " (uncropped captures, primary)"), "", f"{len(rows)} judge calls, judges: {', '.join(judges)}.", "",
@@ -75,7 +77,8 @@ def main(stage, crop=False):
                  j.split("/")[-1] for j in judges) + " |", "| --- | --- | --- | --- | --- | --- | --- | " + " | ".join("---" for _ in judges) + " |"]
     for c in CRIT:
         reps, f = matrix(rows, c)
-        if len(f) < 25:
+        npairs = len({(j["a"], j["b"]) for j in rows}) if drop else 25
+        if len(f) < npairs:
             lines.append(f"| {c} | incomplete ({len(f)} of 25 pairs) | | | | | | |")
             continue
         obs, p = stat_and_p(reps, f)
