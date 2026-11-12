@@ -121,3 +121,9 @@ and the feature-coding script.
    Known risk from DFX: a 390 px capture can squeeze frames built for a wider page. The prompt asks for 390 x 844
    frames that display correctly at 1280 px; I will check the captures of every run and report any that look squeezed
    rather than hide it. `crop.py` is not used.
+2. 12 Nov 2026, before any judging; replaces nothing in amendment 1. The user asked me to do what I recommend about
+   cropping. Recommendation, and what will be run: **primary = uncropped captures (amendment 1). Also run, declared
+   now as an exploratory check, the same 25 pairs and the same judges on screens cropped to the phone interior**
+   (`crop.py`, `judge_cross.py --crop`, `analyse_cross.py --crop`). Reason: in DFX the capture method moved the
+   whole-design result from 0.53 to 0.38. Both results are reported in full; if they disagree, the report says so
+   and does not choose between them afterwards.

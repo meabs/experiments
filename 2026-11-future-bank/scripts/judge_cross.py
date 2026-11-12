@@ -88,12 +88,12 @@ def ask(model, brief, first, second, view):
     return {"error": last}, 0
 
 
-def main(stage, model):
+def main(stage, model, crop=False):
     stage = Path(stage)
-    out = stage / f"cross-{slug(model)}.jsonl"
+    out = stage / f"cross-{'crop-' if crop else ''}{slug(model)}.jsonl"
     done = {(j["a"], j["b"], j["first"]) for j in map(json.loads, out.open()) if "error" not in j} if out.exists() else set()
     text = (E / "briefs" / "F1" / "prompt.md").read_text().strip()
-    ev = stage / "eval" / "F1"
+    ev = stage / ("eval-crop" if crop else "eval") / "F1"
     pages = lambda arm, rep: sorted((ev / arm / rep).glob("p[0-9].png"))
     reps = sorted(p.name for p in (ev / "A").iterdir())
     jobs = []
@@ -124,4 +124,7 @@ if __name__ == "__main__":
         i = args.index("--judge")
         model = args[i + 1]
         del args[i:i + 2]
-    main(args[0], model)
+    crop = "--crop" in args
+    if crop:
+        args.remove("--crop")
+    main(args[0], model, crop)

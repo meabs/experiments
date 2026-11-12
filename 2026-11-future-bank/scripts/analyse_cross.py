@@ -13,9 +13,9 @@ from pathlib import Path
 CRIT = ["overall", "novelty", "fit", "plausible", "hierarchy", "polish", "identity"]
 
 
-def load(stage):
+def load(stage, crop=False):
     rows = []
-    for f in sorted(Path(stage).glob("cross-*.jsonl")):
+    for f in sorted(Path(stage).glob("cross-crop-*.jsonl" if crop else "cross-[!c]*.jsonl")):
         rows += [j for j in map(json.loads, f.open()) if "error" not in j]
     return rows
 
@@ -63,11 +63,11 @@ def boot(reps, f, n=5000, seed=1):
     return out[int(.025 * n)], out[int(.975 * n)]
 
 
-def main(stage):
-    rows = load(stage)
+def main(stage, crop=False):
+    rows = load(stage, crop)
     judges = sorted({j["judge"] for j in rows})
     res = {}
-    lines = ["# FUT-1 cross-pair results", "", f"{len(rows)} judge calls, judges: {', '.join(judges)}.", "",
+    lines = ["# FUT-1 cross-pair results" + (" (cropped re-score, exploratory)" if crop else " (uncropped captures, primary)"), "", f"{len(rows)} judge calls, judges: {', '.join(judges)}.", "",
              "Mean pair score = share of votes for the factory design over the 25 plain x factory pairs (0.5 = no preference; "
              "above 0.5 favours the factory, below 0.5 the plain agent). Obs = factory minus plain mean win share (= 2 x score - 1). "
              "p: permutation over the 252 splits of the 10 runs (approximate); interval: bootstrap over runs.", "",
@@ -98,10 +98,10 @@ def main(stage):
             pairs.setdefault((j["a"], j["b"]), {})[j["first"]] = vote(j, "overall")
         same = sum(1 for d in pairs.values() if len(d) == 2 and d["A"] == d["B"]) / max(1, len(pairs))
         lines.append(f"- {jd}: first-shown {first:.0%}, same choice in both orders {same:.0%}")
-    Path(stage, "analysis.md").write_text("\n".join(lines) + "\n")
-    Path(stage, "analysis.json").write_text(json.dumps(res, indent=1))
+    Path(stage, "analysis-crop.md" if crop else "analysis.md").write_text("\n".join(lines) + "\n")
+    Path(stage, "analysis-crop.json" if crop else "analysis.json").write_text(json.dumps(res, indent=1))
     print("\n".join(lines))
 
 
 if __name__ == "__main__":
-    main(sys.argv[1])
+    main(sys.argv[1], "--crop" in sys.argv)
