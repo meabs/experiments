@@ -78,6 +78,8 @@ flow"; "a safe, honest but generic payment flow that barely feels futuristic, ev
 for a UK bank"; "unfinished draft copy and broken icon rendering". The judges named the factory's trust and UK credibility
 and still chose plain because the brief asked for futuristic.
 
+![Pair scores](diagrams/png/results.png)
+
 ### Sample screens
 
 Run 2 of each arm, first screens, cropped to the phone screen (the judges saw the uncropped captures; the cropped
@@ -129,6 +131,8 @@ Means per run at `gpt-5.6-luna` list prices ($0.20 per million input tokens, $0.
 | --- | --- | --- | --- | --- |
 | Plain | 286k | 13.5k | 263 | $0.028 |
 | Factory | 1,377k | 22.4k | 459 | $0.068 |
+
+![Tokens per run](diagrams/png/tokens.png)
 
 The factory used 4.8 times the input tokens and 2.4 times the cost. The 10 runs cost about $0.48 and the judging
 (including the research judge) $5.35. People's time reading the factory's five extra design files per run is not counted.
@@ -231,5 +235,5 @@ Raw agent session files and the copies of the Codex login in `agent-homes/` are 
 ## 10. What changed from the design
 
 Amendments 1 to 3 (README): judge uncropped captures (the user's instruction); also run a cropped re-score; handle the
-one broken capture with a labelled sensitivity analysis. All were made before any judging. Not done: a token chart, the blind
+one broken capture with a labelled sensitivity analysis. All were made before any judging. Not done: the blind
 human-vote gallery. The research-applied judge was run on the uncropped captures only.
