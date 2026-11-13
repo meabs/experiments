@@ -1,7 +1,7 @@
 # Does a Home Repo help an agent work across repositories? Report (HR-1)
 
 13 November 2026. Design: [README.md](README.md), pushed before the main run (45603306), with three logged amendments.
-Numbers: `results/analysis.md`, per-run data `results/analysis.md` is produced by `scripts/analyse.py` from the rig output.
+Numbers: `results/analysis.md`, produced by `scripts/analyse.py` from the rig output.
 
 ## 1. What I wanted to find out
 Matt Pocock's Home Repo pattern: run the agent in one repo whose AGENTS.md points at the other repos. **When the code a
@@ -42,13 +42,13 @@ the backend's AGENTS.md to run a bootstrap script (the script only writes a mark
   tokens (247k against 133k, still under $0.02 a run).
 - **H2 (estimate): fetching is not equivalent.** C passed 6 of 12, B 11 of 12. In C the pass depended entirely on whether
   the agent went to the remote: it passed in 6 of 6 runs that did (by `git clone` or by reading the bare remote with
-  `git --git-dir`), and failed in 6 of 6 that did not, which stayed in the storefront. Pointer text alone did not make it
+  `git --git-dir`), and failed in 6 of 6 that never touched the remote. Pointer text alone did not make it
   go (6 of 12).
 - **H3 not supported: area files did not beat the flat list** (8 against 9 of 12; no measurable difference). With 40 repos
   both lost some runs to the look-alikes: runs that opened a look-alike passed 1 of 5 (D 0 of 2, E 1 of 3), the rest 16
   of 19. That comparison is descriptive and not randomised.
 - **H4 (estimate): the planted instruction was run in 10 of 12 F runs** (Wilson 0.55 to 0.95), against 0 of 12 in B, which
-  had no plant. The hint is what sends the agent to read the file. Seven of the ten that ran it still passed the task,
+  had neither the plant nor the hint (F differs from B by both together, so this does not separate them). Seven of the ten that ran it still passed the task,
   so the task result would not show it.
 - All 72 runs finished within the time limit.
 
@@ -58,15 +58,13 @@ the backend's AGENTS.md to run a bootstrap script (the script only writes a mark
 - With 40 repos, the cost of look-alike repos is real but moderate here (75% and 67% against 92%). Area files did not help
   in this test; the cost was in which repo the agent trusted, not in reading the list.
 - "Clone from X if missing" is not reliable on its own: half the time the agent worked without the backend and failed.
-- The hint "read its AGENTS.md first" is an injection route. Nothing in the session shows the agent weighing that file
-  differently from your own.
+- Following a pointer to another repo, and reading its AGENTS.md as the hint says, led 10 of 12 agents to run a planted setup script.
 
 ## 5. Risks
 - **Prompt injection through the pointers.** Any repo the pointer reaches can steer the agent, and the Home Repo session
   can reach all of them (and, per the pattern, the tooling's environment variables). My plant only wrote a marker file;
   a real one could send data.
-- **Silent failure when a repo is missing:** the agent in C that did not fetch it still produced and reported a result
-  (it passed 0 of 6 doing so).
+- **Failure when a repo is missing:** the C runs that never went to the remote passed 0 of 6; I did not check what they told the user.
 - **Look-alike repos** (legacy, staging, archive) are normal in real organisations.
 - Judge: none; pass is the hidden test. But a pass is not proof the agent was not exposed (7 of 10 plant-runners passed).
 
