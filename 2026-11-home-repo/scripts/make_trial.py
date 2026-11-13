@@ -15,7 +15,9 @@ T = ns["T"]
 PILOT = "--pilot" in sys.argv
 if PILOT:
     T = {k: v for k, v in T.items() if k.startswith("g1")}
-REPS = 1 if PILOT else 3
+if not PILOT:
+    T = {k: v for k, v in T.items() if not k.startswith("g1")}  # amendment 2: g1 is answerable without the backend
+REPS = 1 if PILOT else 4
 HOMEPRE = ("You are in our Home Repo. The task is in the storefront repository; AGENTS.md says where our repositories "
            "are.\n\n")
 for arm in "ABCDEF":

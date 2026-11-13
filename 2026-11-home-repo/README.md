@@ -92,6 +92,10 @@ one Home Repo, and what breaks for an agent started inside a child repo (CI, a t
 2. 13 Nov 2026, after pilot 2 (9 runs, GitHub blocked; not counted). **Task g1 is dropped:** arm A passes it without the
    backend (the answer follows from the storefront), so it can't separate arms. g2, g3 and g4 fail in arm A (0 of 3), so
    they are kept. Main run is now 3 tasks x 6 arms x 4 reps = 72 runs.
+3. 13 Nov 2026, during the main run, after reading arm C's first three commands (no outcomes analysed): the agent read
+   the backend straight from the pointer's bare remote with `git --git-dir=<remote> ls-tree/grep/show` instead of
+   `git clone`. That is a valid use of the pointer, so the "cloned" measure is now "reached the backend through the
+   pointer's remote (git clone or git --git-dir reads)". `scripts/analyse.py` was changed before any analysis.
 
 ## Pilot results (not counted; 15 runs, about 5M tokens, well under $2 at list price)
 | Pilot | Arm | Task | Result | What happened |
