@@ -1,0 +1,367 @@
+#!/usr/bin/env python3
+"""Command-line task manager."""
+
+import json
+import os
+import sys
+from datetime import datetime, date
+
+
+DATA_FILE = "tasks.json"
+
+
+def load_data():
+    """Load data from tasks.json, creating it if necessary."""
+    if os.path.exists(DATA_FILE):
+        with open(DATA_FILE, "r") as f:
+            return json.load(f)
+    return {"tasks": [], "next_id": 1, "undo_history": []}
+
+
+def save_data(data):
+    """Save data to tasks.json."""
+    with open(DATA_FILE, "w") as f:
+        json.dump(data, f)
+
+
+def validate_priority(priority):
+    """Validate priority value."""
+    if priority not in ("high", "medium", "low"):
+        print(f"Invalid priority: {priority}", file=sys.stderr)
+        sys.exit(1)
+
+
+def validate_date(date_str):
+    """Validate a date string in YYYY-MM-DD format."""
+    try:
+        datetime.strptime(date_str, "%Y-%m-%d")
+    except ValueError:
+        print(f"Invalid date: {date_str}", file=sys.stderr)
+        sys.exit(1)
+
+
+def add_task(data, title, priority="medium", tags=None, due=None):
+    """Add a new task and return the new data."""
+    # Save state for undo BEFORE mutation
+    data["undo_history"].append(json.dumps({
+        "tasks": data["tasks"],
+        "next_id": data["next_id"]
+    }))
+    task_id = data["next_id"]
+    data["next_id"] += 1
+    task = {
+        "id": task_id,
+        "title": title,
+        "done": False,
+        "priority": priority,
+        "tags": tags or [],
+        "due": due,
+    }
+    data["tasks"].append(task)
+    return data
+
+
+def format_task_line(task):
+    """Format a task into its display line."""
+    status = "[x]" if task["done"] else "[ ]"
+    line = f"{task['id']} {status} {task['title']}"
+    # Priority suffix (in order)
+    if task["priority"] == "high":
+        line += " (high)"
+    elif task["priority"] == "low":
+        line += " (low)"
+    # Tags suffix
+    for tag in task["tags"]:
+        line += f" #{tag}"
+    # Due date suffix
+    if task["due"]:
+        line += f" due:{task['due']}"
+    return line
+
+
+def main():
+    args = sys.argv[1:]
+    if not args:
+        print("Usage: tasks.py <command> [args]", file=sys.stderr)
+        sys.exit(1)
+
+    command = args[0]
+
+    if command == "add":
+        # Parse arguments: TITLE [--priority PRIORITY] [--tag TAG]... [--due DATE]
+        title_parts = []
+        priority = "medium"
+        tags = []
+        due = None
+        i = 1
+        while i < len(args):
+            if args[i] == "--priority":
+                if i + 1 >= len(args):
+                    print("Missing value for --priority", file=sys.stderr)
+                    sys.exit(1)
+                priority = args[i + 1]
+                i += 2
+            elif args[i] == "--tag":
+                if i + 1 >= len(args):
+                    print("Missing value for --tag", file=sys.stderr)
+                    sys.exit(1)
+                tags.append(args[i + 1])
+                i += 2
+            elif args[i] == "--due":
+                if i + 1 >= len(args):
+                    print("Missing value for --due", file=sys.stderr)
+                    sys.exit(1)
+                due = args[i + 1]
+                i += 2
+            else:
+                title_parts.append(args[i])
+                i += 1
+
+        if not title_parts:
+            print("Missing task title", file=sys.stderr)
+            sys.exit(1)
+
+        # Validate inputs
+        validate_priority(priority)
+        if due is not None:
+            validate_date(due)
+
+        title = " ".join(title_parts)
+        data = load_data()
+        data = add_task(data, title, priority, tags, due)
+        save_data(data)
+        task_id = data["tasks"][-1]["id"]
+        print(f"Added {task_id}")
+
+    elif command == "list":
+        data = load_data()
+        tasks = data["tasks"]
+
+        if not tasks:
+            print("No tasks")
+            return
+
+        # Parse list options
+        sort_option = None
+        tag_filter = None
+        overdue = False
+        today_str = None
+        i = 1
+        while i < len(args):
+            if args[i] == "--sort":
+                if i + 1 >= len(args):
+                    print("Missing value for --sort", file=sys.stderr)
+                    sys.exit(1)
+                sort_option = args[i + 1]
+                i += 2
+            elif args[i] == "--tag":
+                if i + 1 >= len(args):
+                    print("Missing value for --tag", file=sys.stderr)
+                    sys.exit(1)
+                tag_filter = args[i + 1]
+                i += 2
+            elif args[i] == "--overdue":
+                overdue = True
+                i += 1
+            elif args[i] == "--today":
+                if i + 1 >= len(args):
+                    print("Missing value for --today", file=sys.stderr)
+                    sys.exit(1)
+                today_str = args[i + 1]
+                i += 2
+            else:
+                i += 1
+
+        # Filter by tag
+        if tag_filter:
+            tasks = [t for t in tasks if tag_filter in t["tags"]]
+
+        # Filter overdue (open tasks only, due before today)
+        if overdue:
+            if today_str:
+                today = date.fromisoformat(today_str)
+            else:
+                today = date.today()
+            tasks = [t for t in tasks if not t["done"] and t["due"] and date.fromisoformat(t["due"]) < today]
+
+        # Sort
+        if sort_option == "priority":
+            priority_order = {"high": 0, "medium": 1, "low": 2}
+            tasks = sorted(tasks, key=lambda t: (priority_order.get(t["priority"], 1), t["id"]))
+        else:
+            tasks = sorted(tasks, key=lambda t: t["id"])
+
+        if not tasks:
+            print("No tasks")
+            return
+
+        for task in tasks:
+            print(format_task_line(task))
+
+    elif command == "done":
+        if len(args) < 2:
+            print("Missing task ID", file=sys.stderr)
+            sys.exit(1)
+        try:
+            task_id = int(args[1])
+        except ValueError:
+            print(f"Invalid task ID: {args[1]}", file=sys.stderr)
+            sys.exit(1)
+
+        data = load_data()
+        found = False
+        for task in data["tasks"]:
+            if task["id"] == task_id:
+                # Save state for undo BEFORE mutation
+                data["undo_history"].append(json.dumps({
+                    "tasks": data["tasks"],
+                    "next_id": data["next_id"]
+                }))
+                task["done"] = True
+                save_data(data)
+                print(f"Done {task_id}")
+                found = True
+                break
+        if not found:
+            print(f"No such task: {task_id}", file=sys.stderr)
+            sys.exit(1)
+
+    elif command == "delete":
+        if len(args) < 2:
+            print("Missing task ID", file=sys.stderr)
+            sys.exit(1)
+        try:
+            task_id = int(args[1])
+        except ValueError:
+            print(f"Invalid task ID: {args[1]}", file=sys.stderr)
+            sys.exit(1)
+
+        data = load_data()
+        found = False
+        for i, task in enumerate(data["tasks"]):
+            if task["id"] == task_id:
+                # Save state for undo BEFORE mutation
+                data["undo_history"].append(json.dumps({
+                    "tasks": data["tasks"],
+                    "next_id": data["next_id"]
+                }))
+                data["tasks"].pop(i)
+                save_data(data)
+                print(f"Deleted {task_id}")
+                found = True
+                break
+        if not found:
+            print(f"No such task: {task_id}", file=sys.stderr)
+            sys.exit(1)
+
+    elif command == "edit":
+        if len(args) < 3:
+            print("Usage: edit ID --title NEW TITLE", file=sys.stderr)
+            sys.exit(1)
+        try:
+            task_id = int(args[1])
+        except ValueError:
+            print(f"Invalid task ID: {args[1]}", file=sys.stderr)
+            sys.exit(1)
+
+        data = load_data()
+        # Find --title flag
+        title_idx = None
+        for i, arg in enumerate(args):
+            if arg == "--title":
+                title_idx = i
+                break
+
+        if title_idx is None or title_idx + 2 >= len(args):
+            print("Usage: edit ID --title NEW TITLE", file=sys.stderr)
+            sys.exit(1)
+
+        new_title = " ".join(args[title_idx + 1:])
+        found = False
+        for task in data["tasks"]:
+            if task["id"] == task_id:
+                # Save state for undo BEFORE mutation
+                data["undo_history"].append(json.dumps({
+                    "tasks": data["tasks"],
+                    "next_id": data["next_id"]
+                }))
+                task["title"] = new_title
+                save_data(data)
+                print(f"Edited {task_id}")
+                found = True
+                break
+        if not found:
+            print(f"No such task: {task_id}", file=sys.stderr)
+            sys.exit(1)
+
+    elif command == "search":
+        if len(args) < 2:
+            print("Usage: search TEXT", file=sys.stderr)
+            sys.exit(1)
+        text = " ".join(args[1:]).lower()
+        data = load_data()
+        matches = [t for t in data["tasks"] if text in t["title"].lower()]
+        if not matches:
+            print("No matches")
+        else:
+            for task in sorted(matches, key=lambda t: t["id"]):
+                print(format_task_line(task))
+
+    elif command == "export":
+        if len(args) < 2 or args[1] != "--format":
+            print("Usage: export --format json|csv", file=sys.stderr)
+            sys.exit(1)
+        fmt = args[2] if len(args) > 2 else ""
+        data = load_data()
+        tasks = sorted(data["tasks"], key=lambda t: t["id"])
+
+        if fmt == "json":
+            export_list = []
+            for task in tasks:
+                export_list.append({
+                    "id": task["id"],
+                    "title": task["title"],
+                    "done": task["done"],
+                    "priority": task["priority"],
+                    "tags": task["tags"],
+                    "due": task["due"],
+                })
+            print(json.dumps(export_list))
+        elif fmt == "csv":
+            print("id,title,done,priority,tags,due")
+            for task in tasks:
+                done_str = "true" if task["done"] else "false"
+                tags_str = ";".join(task["tags"])
+                due_str = task["due"] if task["due"] else ""
+                print(f"{task['id']},{task['title']},{done_str},{task['priority']},{tags_str},{due_str}")
+        else:
+            print(f"Invalid format: {fmt}", file=sys.stderr)
+            sys.exit(1)
+
+    elif command == "stats":
+        data = load_data()
+        open_count = sum(1 for t in data["tasks"] if not t["done"])
+        done_count = sum(1 for t in data["tasks"] if t["done"])
+        total = len(data["tasks"])
+        print(f"open: {open_count}")
+        print(f"done: {done_count}")
+        print(f"total: {total}")
+
+    elif command == "undo":
+        data = load_data()
+        if not data.get("undo_history"):
+            print("Nothing to undo", file=sys.stderr)
+            sys.exit(1)
+        prev_state = json.loads(data["undo_history"].pop())
+        data["tasks"] = prev_state["tasks"]
+        data["next_id"] = prev_state["next_id"]
+        save_data(data)
+        print("Undone")
+
+    else:
+        print(f"Unknown command: {command}", file=sys.stderr)
+        sys.exit(1)
+
+
+if __name__ == "__main__":
+    main()
