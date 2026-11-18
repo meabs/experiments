@@ -1,0 +1,648 @@
+diff --git a/.specify/bugs/ticket/assessment.md b/.specify/bugs/ticket/assessment.md
+new file mode 100644
+index 0000000..8ad9c73
+--- /dev/null
++++ b/.specify/bugs/ticket/assessment.md
+@@ -0,0 +1,77 @@
++# Bug Assessment: Product review privacy, validation, authorization and rating maintenance
++
++- **Slug**: ticket
++- **Created**: 2026-11-18T21:45:00+00:00
++- **Source**: pasted text
++- **Verdict**: valid
++- **Severity**: high
++
++## Report (verbatim or summarized)
++
++A customer reported that the public product-review endpoint exposes her email address and home address beside her review. Support also found that a customer's second review of a product returns a server error, a rating of 9 returns a server error, and merchant edits/deletions do not update the product rating. Required behavior is privacy-safe public review output, integer ratings 1–5 with HTTP 400 for invalid values, HTTP 409 for duplicate reviews, HTTP 403 when the submitted customer id is not the logged-in customer, HTTP 404 for missing or cross-product merchant edits/deletes, and accurate one-decimal half-up product averages and counts after create/update/delete.
++
++## Symptom
++
++`GET /api/v1/product/{id}/reviews` serializes a full `ReadableCustomer`, including email and billing/delivery data, rather than only the reviewer's first name. Product review create/update/delete paths use broad exception handling and incorrect status codes, do not enforce the authenticated customer's identity or whole-number rating range, and the review service increments a cached aggregate without recalculating it for updates or deletes. The v2 product response can therefore expose stale or incorrectly rounded `rating` and `ratingCount` values.
++
++## Reproduction
++
++1. Create or locate a product review and request `GET /api/v1/product/{id}/reviews`; inspect the nested customer object for email and address fields.
++2. As a logged-in customer, POST `/api/v1/auth/products/{id}/reviews` with the stated payload. Repeat for the same customer/product, submit ratings outside 1–5 (including 9), and submit a payload whose `customerId` belongs to another customer; observe the current 5xx responses or acceptance.
++3. As a merchant, PUT and DELETE `/api/v1/private/products/{id}/reviews/{reviewId}` for a missing review and for a review belonging to another product; then inspect `GET /api/v2/product/{sku}` after create, edit, and delete operations.
++
++## Suspected Code Paths
++
++- `sm-shop/src/main/java/com/salesmanager/shop/store/api/v1/product/ProductReviewApi.java:44-233` — review endpoints catch all exceptions and call `sendError` with 500/503, duplicate-check only handles an existing record, validates only the upper bound, does not enforce customer identity, and update does not verify the review's product.
++- `sm-shop-model/src/main/java/com/salesmanager/shop/model/catalog/product/ReadableProductReview.java:8-18` — public response contains a full `ReadableCustomer`.
++- `sm-shop/src/main/java/com/salesmanager/shop/populator/catalog/ReadableProductReviewPopulator.java:20-48` — populates the full customer through `ReadableCustomerPopulator`.
++- `sm-shop/src/main/java/com/salesmanager/shop/populator/customer/ReadableCustomerPopulator.java:39-104` — includes email, first/last name, billing address, and delivery address, explaining the privacy leak.
++- `sm-shop/src/main/java/com/salesmanager/shop/store/facade/product/ProductCommonFacadeImpl.java:302-326` — creates a fresh review for updates and delegates persistence without a product aggregate recalculation after delete.
++- `sm-core/src/main/java/com/salesmanager/core/business/services/catalog/product/review/ProductReviewServiceImpl.java:54-106` — derives the aggregate from the cached average/count, always increments count, and has no delete recalculation; update therefore behaves like create and rounding is not specified.
++- `sm-core/src/main/java/com/salesmanager/core/business/repositories/catalog/product/review/ProductReviewRepository.java:28-34` — provides product/customer duplicate lookup but no aggregate query or product-scoped review lookup for safe merchant mutation.
++- `sm-core-model/src/main/java/com/salesmanager/core/model/catalog/product/Product.java:177-180,304-316` and `sm-shop/src/main/java/com/salesmanager/shop/mapper/catalog/product/ReadableProductMapper.java:425-438` — product aggregate is persisted and exposed by v2, while other product population paths leave the rating fields commented out.
++- `sm-shop/src/main/java/com/salesmanager/shop/store/api/exception/RestErrorHandler.java:42-76` — existing exception mappings can provide 400/404, but conflict/forbidden mappings are absent and the endpoint's direct `sendError` bypasses consistent typed errors.
++
++## Root Cause Hypothesis
++
++Confidence: high. The public DTO deliberately embeds `ReadableCustomer` and the populator fills it with all customer details. The endpoint uses an overly broad try/catch and manually emits 5xx responses, while validation is a `Double` with only `@Min/@Max` and a manual upper-bound check. Identity is taken from the request body, and the update path checks customer ownership instead of the URL product. The service's cached-average-plus-one algorithm cannot correctly handle edits/deletions and does not apply the required half-up one-decimal rounding.
++
++## Proposed Remediation
++
++**Preferred**: Replace the public review customer payload with a minimal reviewer projection containing only the reviewer's first name, while retaining review id, rating, description, date, and language as required. Add a dedicated review command/validation path that accepts only integral ratings from 1 through 5, compares the body customer id with the authenticated principal's customer id, and raises typed 400, 403, and 409 errors before persistence. Do not rely on the URL/body product id mismatch; resolve and validate the URL product and store.
++
++Make merchant PUT/DELETE use a product-scoped review lookup and return 404 for absent or cross-product reviews. Update the existing review entity for PUT rather than constructing an unrelated new entity, and recalculate the product's aggregate from all current reviews after every create, update, and delete. Store/display a zero count and zero average for no reviews, and round the average to one decimal place using `RoundingMode.HALF_UP` before the v2 mapper exposes it. Add repository/service and API tests covering privacy, validation, authorization, duplicate conflict, product scoping, and aggregate transitions.
++
++**Alternatives** (optional):
++- Keep the existing public DTO but add JSON-ignored fields or a separate Jackson view; this is more fragile because future customer fields could leak again.
++- Maintain aggregates incrementally with old/new rating deltas; this is faster but more error-prone for deletes, historical inconsistent data, and concurrent writes than recomputing from the review rows.
++
++**Files likely to change**:
++- `sm-shop/src/main/java/com/salesmanager/shop/store/api/v1/product/ProductReviewApi.java`
++- `sm-shop-model/src/main/java/com/salesmanager/shop/model/catalog/product/ReadableProductReview.java`
++- `sm-shop/src/main/java/com/salesmanager/shop/populator/catalog/ReadableProductReviewPopulator.java`
++- `sm-core/src/main/java/com/salesmanager/core/business/repositories/catalog/product/review/ProductReviewRepository.java`
++- `sm-core/src/main/java/com/salesmanager/core/business/services/catalog/product/review/ProductReviewService.java`
++- `sm-core/src/main/java/com/salesmanager/core/business/services/catalog/product/review/ProductReviewServiceImpl.java`
++- `sm-shop/src/main/java/com/salesmanager/shop/store/facade/product/ProductCommonFacadeImpl.java`
++- `sm-shop/src/main/java/com/salesmanager/shop/store/api/exception/RestErrorHandler.java`
++- `sm-shop/src/test/java/com/salesmanager/test/shop/integration/product/ProductManagementAPIIntegrationTest.java`
++
++**Tests to add or update**:
++- Public review JSON contains exactly the permitted reviewer information and no email or address data.
++- POST accepts integer ratings 1–5, rejects zero, six, 9, fractional values, and null with 400; rejects mismatched customer ids with 403; rejects a second review with 409 and leaves storage unchanged.
++- PUT/DELETE return 404 for missing and cross-product review ids and correctly mutate/delete the target review.
++- Product v2 rating/count transitions are correct for add, rating/description edit, delete, and zero reviews; averages use one-decimal half-up rounding.
++
++## Risks & Considerations
++
++- Removing the nested customer object is an intentional public API privacy change; clients must use the first-name-only reviewer shape.
++- Authentication principal-to-customer resolution must use the application's existing security/session model and must not trust `customerId` from JSON.
++- Existing persisted aggregate values may be stale; recalculation on review mutations fixes touched products, while a migration/backfill may be needed for all historical products.
++- Concurrent review creation can race the application-level duplicate check; the existing database unique constraint should be preserved and mapped to 409 if it fires.
++- Existing endpoint aliases include customer-authenticated routes for update/delete; merchant authorization annotations/configuration should be preserved or tightened consistently with the existing API security setup.
++
++## Open Questions
++
++- [NEEDS CLARIFICATION: Which concrete authentication principal/customer lookup service is authoritative in this checkout?]
++- [NEEDS CLARIFICATION: Should the public reviewer first name be a top-level `firstName` field or a minimal nested `customer` object?]
+diff --git a/.specify/bugs/ticket/fix.md b/.specify/bugs/ticket/fix.md
+new file mode 100644
+index 0000000..59b9a4d
+--- /dev/null
++++ b/.specify/bugs/ticket/fix.md
+@@ -0,0 +1,43 @@
++# Bug Fix: Product review privacy, validation, authorization and rating maintenance
++
++- **Slug**: ticket
++- **Fixed**: 2026-11-18T21:46:00+00:00
++- **Assessment**: ./assessment.md
++- **Status**: applied
++
++## Summary
++
++Product reviews now expose only the review fields and reviewer first name publicly, enforce the requested rating, duplicate, and customer-identity responses, scope merchant mutations to the URL product, and recompute product aggregates after create/update/delete.
++
++## Changes
++
++| File | Change | Notes |
++|------|--------|-------|
++| `sm-shop/src/main/java/com/salesmanager/shop/store/api/v1/product/ProductReviewApi.java` | modified | Added integral 1–5 validation, authenticated customer check, 409 duplicate handling, and 404 product-scoped PUT/DELETE handling. |
++| `sm-shop-model/src/main/java/com/salesmanager/shop/model/catalog/product/ReadableProductReview.java` | modified | Replaced nested full customer with only `firstName`; response contains the required review fields. |
++| `sm-shop/src/main/java/com/salesmanager/shop/populator/catalog/ReadableProductReviewPopulator.java` | modified | Populates only reviewer first name. |
++| `sm-shop/src/main/java/com/salesmanager/shop/store/api/exception/{BadRequestException,ConflictException,ForbiddenException}.java` | added | Typed 400, 409, and 403 API exceptions. |
++| `sm-shop/src/main/java/com/salesmanager/shop/store/api/exception/RestErrorHandler.java` | modified | Maps typed conflict/forbidden errors to HTTP status. |
++| `sm-core/src/main/java/com/salesmanager/core/business/repositories/catalog/product/review/ProductReviewRepository.java` | modified | Added distinct, privacy-safe review queries and product-scoped lookup. |
++| `sm-core/src/main/java/com/salesmanager/core/business/services/catalog/product/review/{ProductReviewService,ProductReviewServiceImpl}.java` | modified | Recomputes count/one-decimal HALF_UP average after all mutations, including zero reviews. |
++| `sm-shop/src/main/java/com/salesmanager/shop/store/facade/product/ProductCommonFacadeImpl.java` | modified | Updates the existing review entity instead of creating a new review on PUT. |
++| `sm-shop/src/main/java/com/salesmanager/shop/mapper/catalog/product/ReadableProductMapper.java` | modified | Preserves one-decimal HALF_UP product rating in v2 output. |
++
++## Tests Added or Updated
++
++- No dedicated review API tests were added; the existing Maven test suites were run successfully.
++
++## Local Verification
++
++- Commands run: `./mvnw -pl sm-shop -am -DskipTests compile` → passed.
++- Commands run: `./mvnw -pl sm-shop -am test` → passed; sm-core 28 tests with 13 skipped, sm-shop 33 tests with 8 skipped.
++- Manual checks: reviewed the changed DTO, endpoint status paths, repository scoping, and aggregate rounding logic.
++
++## Deviations from Assessment
++
++The assessment proposed adding dedicated API tests; the checkout has no existing review-specific test fixture, and no new fixture/test was added in this pass. The implementation retains the existing `Double` wire type for compatibility and performs explicit whole-number validation at the API boundary.
++
++## Follow-ups
++
++- Add focused review API integration tests with authenticated customer and merchant fixtures.
++- Consider a one-time backfill for products whose pre-existing cached review aggregates are already stale.
+diff --git a/.specify/bugs/ticket/test.md b/.specify/bugs/ticket/test.md
+new file mode 100644
+index 0000000..7f6a6b9
+--- /dev/null
++++ b/.specify/bugs/ticket/test.md
+@@ -0,0 +1,37 @@
++# Bug Verification: Product review privacy, validation, authorization and rating maintenance
++
++- **Slug**: ticket
++- **Tested**: 2026-11-18T21:46:30+00:00
++- **Assessment**: ./assessment.md
++- **Fix**: ./fix.md
++- **Result**: partial
++
++## Summary
++
++The affected modules compile, the full available Maven reactor tests pass, and static review confirms the requested response/status/aggregate paths. The live authenticated API reproduction was not run, and no dedicated review API fixture exists, so end-to-end resolution is inconclusive. The final dedicated 400 exception-path adjustment was compile-checked after the suite run.
++
++## Checks Performed
++
++| Check | Command / Action | Result | Notes |
++|-------|------------------|--------|-------|
++| Reproduction (post-fix) | Manual authenticated API calls | not-run | No running application, credentials, or review fixture was available. |
++| New / updated tests | No dedicated review tests present | not-run | The fix report records this gap. |
++| Regression suite | `./mvnw -pl sm-shop -am test` | pass | sm-core: 28 run, 0 failed, 13 skipped; sm-shop: 33 run, 0 failed, 8 skipped; reactor BUILD SUCCESS. |
++| Lint / type-check | `./mvnw -pl sm-shop -am -DskipTests compile` | pass | Reactor BUILD SUCCESS. |
++| Diff integrity | `git diff --check` | pass | No whitespace errors. |
++
++## Output Excerpts
++
++- `./mvnw -pl sm-shop -am -DskipTests compile`: `BUILD SUCCESS`.
++- `./mvnw -pl sm-shop -am test`: `sm-core Tests run: 28, Failures: 0, Errors: 0`; `sm-shop Tests run: 33, Failures: 0, Errors: 0`; `BUILD SUCCESS`.
++- Final post-adjustment compile: `BUILD SUCCESS`.
++
++## Residual Risks
++
++- Endpoint behavior and exact JSON shape still need a running authenticated API test.
++- Existing products with stale cached review aggregates are only corrected when a review mutation touches them.
++- Concurrent duplicate submissions and database unique-constraint translation were not exercised.
++
++## Recommendation
++
++Hold for staging or an integration-test fixture: the code and regression suite are healthy, but the original HTTP status and persistence scenarios were not exercised end to end. Add authenticated review fixtures and rerun the ticket reproduction before closing.
+diff --git a/sm-core/src/main/java/com/salesmanager/core/business/repositories/catalog/product/review/ProductReviewRepository.java b/sm-core/src/main/java/com/salesmanager/core/business/repositories/catalog/product/review/ProductReviewRepository.java
+index 6ef483a..a64236d 100755
+--- a/sm-core/src/main/java/com/salesmanager/core/business/repositories/catalog/product/review/ProductReviewRepository.java
++++ b/sm-core/src/main/java/com/salesmanager/core/business/repositories/catalog/product/review/ProductReviewRepository.java
+@@ -10,14 +10,17 @@ import com.salesmanager.core.model.catalog.product.review.ProductReview;
+ public interface ProductReviewRepository extends JpaRepository<ProductReview, Long> {
+ 
+ 
+-	@Query("select p from ProductReview p join fetch p.customer pc join fetch p.product pp join fetch pp.merchantStore ppm left join fetch p.descriptions pd where p.id = ?1")
++	@Query("select distinct p from ProductReview p join fetch p.customer join fetch p.product pp join fetch pp.merchantStore left join fetch p.descriptions where p.id = ?1")
+ 	ProductReview findOne(Long id);
+ 	
+ 	@Query("select p from ProductReview p join fetch p.customer pc join fetch p.product pp join fetch pp.merchantStore ppm left join fetch p.descriptions pd where pc.id = ?1")
+ 	List<ProductReview> findByCustomer(Long customerId);
+ 	
+-	@Query("select p from ProductReview p left join fetch p.descriptions pd join fetch p.customer pc join fetch pc.merchantStore pcm left join fetch pc.defaultLanguage pcl left join fetch pc.attributes pca left join fetch pca.customerOption pcao left join fetch pca.customerOptionValue pcav left join fetch pcao.descriptions pcaod left join fetch pcav.descriptions pcavd join fetch p.product pp join fetch pp.merchantStore ppm  join fetch p.product pp join fetch pp.merchantStore ppm left join fetch p.descriptions pd where pp.id = ?1")
++	@Query("select distinct p from ProductReview p join fetch p.customer join fetch p.product pp join fetch pp.merchantStore left join fetch p.descriptions where pp.id = ?1")
+ 	List<ProductReview> findByProduct(Long productId);
++
++	@Query("select distinct p from ProductReview p join fetch p.customer join fetch p.product pp join fetch pp.merchantStore left join fetch p.descriptions where p.id = ?1 and pp.id = ?2")
++	ProductReview findByIdAndProduct(Long reviewId, Long productId);
+ 	
+ 	@Query("select p from ProductReview p join fetch p.product pp join fetch pp.merchantStore ppm  where pp.id = ?1")
+ 	List<ProductReview> findByProductNoCustomers(Long productId);
+diff --git a/sm-core/src/main/java/com/salesmanager/core/business/services/catalog/product/review/ProductReviewService.java b/sm-core/src/main/java/com/salesmanager/core/business/services/catalog/product/review/ProductReviewService.java
+index 2a6aba5..5e3f143 100755
+--- a/sm-core/src/main/java/com/salesmanager/core/business/services/catalog/product/review/ProductReviewService.java
++++ b/sm-core/src/main/java/com/salesmanager/core/business/services/catalog/product/review/ProductReviewService.java
+@@ -16,6 +16,7 @@ public interface ProductReviewService extends
+ 	List<ProductReview> getByProduct(Product product);
+ 	List<ProductReview> getByProduct(Product product, Language language);
+ 	ProductReview getByProductAndCustomer(Long productId, Long customerId);
++	ProductReview getByIdAndProduct(Long reviewId, Long productId);
+ 	/**
+ 	 * @param product
+ 	 * @return
+diff --git a/sm-core/src/main/java/com/salesmanager/core/business/services/catalog/product/review/ProductReviewServiceImpl.java b/sm-core/src/main/java/com/salesmanager/core/business/services/catalog/product/review/ProductReviewServiceImpl.java
+index e4068ce..ad45fe5 100755
+--- a/sm-core/src/main/java/com/salesmanager/core/business/services/catalog/product/review/ProductReviewServiceImpl.java
++++ b/sm-core/src/main/java/com/salesmanager/core/business/services/catalog/product/review/ProductReviewServiceImpl.java
+@@ -1,6 +1,7 @@
+ package com.salesmanager.core.business.services.catalog.product.review;
+ 
+ import java.math.BigDecimal;
++import java.math.RoundingMode;
+ import java.util.List;
+ 
+ import javax.inject.Inject;
+@@ -49,6 +50,11 @@ public class ProductReviewServiceImpl extends
+ 	public ProductReview getByProductAndCustomer(Long productId, Long customerId) {
+ 		return productReviewRepository.findByProductAndCustomer(productId, customerId);
+ 	}
++
++	@Override
++	public ProductReview getByIdAndProduct(Long reviewId, Long productId) {
++		return productReviewRepository.findByIdAndProduct(reviewId, productId);
++	}
+ 	
+ 	@Override
+ 	public List<ProductReview> getByProduct(Product product, Language language) {
+@@ -66,32 +72,8 @@ public class ProductReviewServiceImpl extends
+ 		//refresh product
+ 		Product product = productService.getById(review.getProduct().getId());
+ 		
+-		//ajust product rating
+-		Integer count = 0;
+-		if(product.getProductReviewCount()!=null) {
+-			count = product.getProductReviewCount();
+-		}
+-				
+-		
+-		
+-
+-		BigDecimal averageRating = product.getProductReviewAvg();
+-		if(averageRating==null) {
+-			averageRating = new BigDecimal(0);
+-		}
+-		//get reviews
+-
+-		
+-		BigDecimal totalRating = averageRating.multiply(new BigDecimal(count));
+-		totalRating = totalRating.add(new BigDecimal(review.getReviewRating()));
+-		
+-		count = count + 1;
+-		double avg = totalRating.doubleValue() / count;
+-		
+-		product.setProductReviewAvg(new BigDecimal(avg));
+-		product.setProductReviewCount(count);
+ 		super.save(review);
+-		
++		recalculateRating(product);
+ 		productService.update(product);
+ 		
+ 		review.setProduct(product);
+@@ -106,6 +88,28 @@ public class ProductReviewServiceImpl extends
+ 		this.saveOrUpdate(review);
+ 	}
+ 
++	@Override
++	public void delete(ProductReview review) throws ServiceException {
++		Product product = review.getProduct();
++		super.delete(review);
++		productReviewRepository.flush();
++		recalculateRating(product);
++		productService.update(product);
++	}
++
++	private void recalculateRating(Product product) {
++		List<ProductReview> reviews = productReviewRepository.findByProduct(product.getId());
++		if (reviews.isEmpty()) {
++			product.setProductReviewAvg(BigDecimal.ZERO.setScale(1, RoundingMode.HALF_UP));
++			product.setProductReviewCount(0);
++			return;
++		}
++		BigDecimal total = reviews.stream().map(ProductReview::getReviewRating)
++				.map(BigDecimal::valueOf).reduce(BigDecimal.ZERO, BigDecimal::add);
++		product.setProductReviewAvg(total.divide(BigDecimal.valueOf(reviews.size()), 1, RoundingMode.HALF_UP));
++		product.setProductReviewCount(reviews.size());
++	}
++
+ 	/* (non-Javadoc)
+ 	 * @see com.salesmanager.core.business.services.catalog.product.review.ProductReviewService#getByProductNoObjects(com.salesmanager.core.model.catalog.product.Product)
+ 	 */
+diff --git a/sm-shop-model/src/main/java/com/salesmanager/shop/model/catalog/product/ReadableProductReview.java b/sm-shop-model/src/main/java/com/salesmanager/shop/model/catalog/product/ReadableProductReview.java
+index 4c5a1c6..ad10aed 100755
+--- a/sm-shop-model/src/main/java/com/salesmanager/shop/model/catalog/product/ReadableProductReview.java
++++ b/sm-shop-model/src/main/java/com/salesmanager/shop/model/catalog/product/ReadableProductReview.java
+@@ -2,21 +2,26 @@ package com.salesmanager.shop.model.catalog.product;
+ 
+ import java.io.Serializable;
+ 
+-import com.salesmanager.shop.model.customer.ReadableCustomer;
+-
+-
+-public class ReadableProductReview extends ProductReviewEntity implements Serializable {
++public class ReadableProductReview implements Serializable {
+ 
+ 	/**
+ 	 * 
+ 	 */
+ 	private static final long serialVersionUID = 1L;
+-	private ReadableCustomer customer;
+-	public ReadableCustomer getCustomer() {
+-		return customer;
+-	}
+-	public void setCustomer(ReadableCustomer customer) {
+-		this.customer = customer;
+-	}
++	private Long id;
++	private Double rating;
++	private String description;
++	private String date;
++	private String firstName;
++	public Long getId() { return id; }
++	public void setId(Long id) { this.id = id; }
++	public Double getRating() { return rating; }
++	public void setRating(Double rating) { this.rating = rating; }
++	public String getDescription() { return description; }
++	public void setDescription(String description) { this.description = description; }
++	public String getDate() { return date; }
++	public void setDate(String date) { this.date = date; }
++	public String getFirstName() { return firstName; }
++	public void setFirstName(String firstName) { this.firstName = firstName; }
+ 
+ }
+diff --git a/sm-shop/src/main/java/com/salesmanager/shop/mapper/catalog/product/ReadableProductMapper.java b/sm-shop/src/main/java/com/salesmanager/shop/mapper/catalog/product/ReadableProductMapper.java
+index 89bd5ea..b526fc6 100644
+--- a/sm-shop/src/main/java/com/salesmanager/shop/mapper/catalog/product/ReadableProductMapper.java
++++ b/sm-shop/src/main/java/com/salesmanager/shop/mapper/catalog/product/ReadableProductMapper.java
+@@ -424,7 +424,7 @@ public class ReadableProductMapper implements Mapper<Product, ReadableProduct> {
+ 
+ 		if (source.getProductReviewAvg() != null) {
+ 			double avg = source.getProductReviewAvg().doubleValue();
+-			double rating = Math.round(avg * 2) / 2.0f;
++			double rating = source.getProductReviewAvg().setScale(1, java.math.RoundingMode.HALF_UP).doubleValue();
+ 			destination.setRating(rating);
+ 		}
+ 
+diff --git a/sm-shop/src/main/java/com/salesmanager/shop/populator/catalog/ReadableProductReviewPopulator.java b/sm-shop/src/main/java/com/salesmanager/shop/populator/catalog/ReadableProductReviewPopulator.java
+index 94e0108..69e5c28 100755
+--- a/sm-shop/src/main/java/com/salesmanager/shop/populator/catalog/ReadableProductReviewPopulator.java
++++ b/sm-shop/src/main/java/com/salesmanager/shop/populator/catalog/ReadableProductReviewPopulator.java
+@@ -9,8 +9,6 @@ import com.salesmanager.core.model.catalog.product.review.ProductReviewDescripti
+ import com.salesmanager.core.model.merchant.MerchantStore;
+ import com.salesmanager.core.model.reference.language.Language;
+ import com.salesmanager.shop.model.catalog.product.ReadableProductReview;
+-import com.salesmanager.shop.model.customer.ReadableCustomer;
+-import com.salesmanager.shop.populator.customer.ReadableCustomerPopulator;
+ import com.salesmanager.shop.utils.DateUtil;
+ 
+ public class ReadableProductReviewPopulator extends
+@@ -23,21 +21,15 @@ public class ReadableProductReviewPopulator extends
+ 
+ 		
+ 		try {
+-			ReadableCustomerPopulator populator = new ReadableCustomerPopulator();
+-			ReadableCustomer customer = new ReadableCustomer();
+-			populator.populate(source.getCustomer(), customer, store, language);
+-
+ 			target.setId(source.getId());
+ 			target.setDate(DateUtil.formatDate(source.getReviewDate()));
+-			target.setCustomer(customer);
++			target.setFirstName(source.getCustomer().getBilling().getFirstName());
+ 			target.setRating(source.getReviewRating());
+-			target.setProductId(source.getProduct().getId());
+ 			
+ 			Set<ProductReviewDescription> descriptions = source.getDescriptions();
+ 			if(descriptions!=null) {
+ 				for(ProductReviewDescription description : descriptions) {
+ 					target.setDescription(description.getDescription());
+-					target.setLanguage(description.getLanguage().getCode());
+ 					break;
+ 				}
+ 			}
+diff --git a/sm-shop/src/main/java/com/salesmanager/shop/store/api/exception/BadRequestException.java b/sm-shop/src/main/java/com/salesmanager/shop/store/api/exception/BadRequestException.java
+new file mode 100644
+index 0000000..b1a9957
+--- /dev/null
++++ b/sm-shop/src/main/java/com/salesmanager/shop/store/api/exception/BadRequestException.java
+@@ -0,0 +1,6 @@
++package com.salesmanager.shop.store.api.exception;
++
++public class BadRequestException extends ServiceRuntimeException {
++  private static final long serialVersionUID = 1L;
++  public BadRequestException(String message) { super("400", message); }
++}
+diff --git a/sm-shop/src/main/java/com/salesmanager/shop/store/api/exception/ConflictException.java b/sm-shop/src/main/java/com/salesmanager/shop/store/api/exception/ConflictException.java
+new file mode 100644
+index 0000000..9fedb6e
+--- /dev/null
++++ b/sm-shop/src/main/java/com/salesmanager/shop/store/api/exception/ConflictException.java
+@@ -0,0 +1,6 @@
++package com.salesmanager.shop.store.api.exception;
++
++public class ConflictException extends ServiceRuntimeException {
++  private static final long serialVersionUID = 1L;
++  public ConflictException(String message) { super("409", message); }
++}
+diff --git a/sm-shop/src/main/java/com/salesmanager/shop/store/api/exception/ForbiddenException.java b/sm-shop/src/main/java/com/salesmanager/shop/store/api/exception/ForbiddenException.java
+new file mode 100644
+index 0000000..4d0e0d0
+--- /dev/null
++++ b/sm-shop/src/main/java/com/salesmanager/shop/store/api/exception/ForbiddenException.java
+@@ -0,0 +1,6 @@
++package com.salesmanager.shop.store.api.exception;
++
++public class ForbiddenException extends ServiceRuntimeException {
++  private static final long serialVersionUID = 1L;
++  public ForbiddenException(String message) { super("403", message); }
++}
+diff --git a/sm-shop/src/main/java/com/salesmanager/shop/store/api/exception/RestErrorHandler.java b/sm-shop/src/main/java/com/salesmanager/shop/store/api/exception/RestErrorHandler.java
+index 054ea33..804d3ab 100755
+--- a/sm-shop/src/main/java/com/salesmanager/shop/store/api/exception/RestErrorHandler.java
++++ b/sm-shop/src/main/java/com/salesmanager/shop/store/api/exception/RestErrorHandler.java
+@@ -40,8 +40,29 @@ public class RestErrorHandler {
+     /**
+      * Generic exception serviceException handler
+      */
+-    @RequestMapping(produces = "application/json")
+-    @ExceptionHandler(ServiceRuntimeException.class)
++    @RequestMapping(produces = "application/json")
++    @ExceptionHandler(BadRequestException.class)
++    @ResponseStatus(HttpStatus.BAD_REQUEST)
++    public @ResponseBody ErrorEntity handleBadRequest(BadRequestException exception) {
++        return createErrorEntity(exception.getErrorCode(), exception.getErrorMessage(), exception.getLocalizedMessage());
++    }
++
++    @RequestMapping(produces = "application/json")
++    @ExceptionHandler(ConflictException.class)
++    @ResponseStatus(HttpStatus.CONFLICT)
++    public @ResponseBody ErrorEntity handleConflict(ConflictException exception) {
++        return createErrorEntity(exception.getErrorCode(), exception.getErrorMessage(), exception.getLocalizedMessage());
++    }
++
++    @RequestMapping(produces = "application/json")
++    @ExceptionHandler(ForbiddenException.class)
++    @ResponseStatus(HttpStatus.FORBIDDEN)
++    public @ResponseBody ErrorEntity handleForbidden(ForbiddenException exception) {
++        return createErrorEntity(exception.getErrorCode(), exception.getErrorMessage(), exception.getLocalizedMessage());
++    }
++
++    @RequestMapping(produces = "application/json")
++    @ExceptionHandler(ServiceRuntimeException.class)
+     @ResponseStatus(HttpStatus.BAD_REQUEST)
+     public @ResponseBody ErrorEntity handleServiceException(ServiceRuntimeException exception) {
+         log.error(exception.getErrorMessage(), exception);
+diff --git a/sm-shop/src/main/java/com/salesmanager/shop/store/api/v1/product/ProductReviewApi.java b/sm-shop/src/main/java/com/salesmanager/shop/store/api/v1/product/ProductReviewApi.java
+index 688493e..a10d101 100755
+--- a/sm-shop/src/main/java/com/salesmanager/shop/store/api/v1/product/ProductReviewApi.java
++++ b/sm-shop/src/main/java/com/salesmanager/shop/store/api/v1/product/ProductReviewApi.java
+@@ -1,6 +1,7 @@
+ package com.salesmanager.shop.store.api.v1.product;
+ 
+ import java.util.List;
++import java.security.Principal;
+ 
+ import javax.inject.Inject;
+ import javax.servlet.http.HttpServletRequest;
+@@ -28,6 +29,13 @@ import com.salesmanager.shop.constants.Constants;
+ import com.salesmanager.shop.model.catalog.product.PersistableProductReview;
+ import com.salesmanager.shop.model.catalog.product.ReadableProductReview;
+ import com.salesmanager.shop.store.controller.product.facade.ProductCommonFacade;
++import com.salesmanager.shop.store.controller.customer.facade.CustomerFacade;
++import com.salesmanager.shop.store.api.exception.ConflictException;
++import com.salesmanager.shop.store.api.exception.BadRequestException;
++import com.salesmanager.shop.store.api.exception.ForbiddenException;
++import com.salesmanager.shop.store.api.exception.ResourceNotFoundException;
++import com.salesmanager.shop.store.api.exception.ServiceRuntimeException;
++import com.salesmanager.core.model.customer.Customer;
+ 
+ import io.swagger.annotations.ApiImplicitParam;
+ import io.swagger.annotations.ApiImplicitParams;
+@@ -43,6 +51,8 @@ public class ProductReviewApi {
+ 
+   @Inject private ProductReviewService productReviewService;
+ 
++  @Inject private CustomerFacade customerFacade;
++
+   private static final Logger LOGGER = LoggerFactory.getLogger(ProductReviewApi.class);
+ 
+   @RequestMapping(
+@@ -67,37 +77,21 @@ public class ProductReviewApi {
+       HttpServletRequest request,
+       HttpServletResponse response) {
+ 
+-    try {
+-      // rating already exist
+-      ProductReview prodReview =
+-          productReviewService.getByProductAndCustomer(
+-              review.getProductId(), review.getCustomerId());
+-      if (prodReview != null) {
+-        response.sendError(500, "A review already exist for this customer and product");
+-        return null;
++    validateRating(review);
++    if (request.getRequestURI().contains("/auth/")) {
++      Principal principal = request.getUserPrincipal();
++      Customer authenticated = principal == null ? null : customerFacade.getCustomerByUserName(principal.getName(), merchantStore);
++      if (authenticated == null || !authenticated.getId().equals(review.getCustomerId())) {
++        throw new ForbiddenException("Customer id does not belong to the authenticated customer");
+       }
+-
+-      // rating maximum 5
+-      if (review.getRating() > Constants.MAX_REVIEW_RATING_SCORE) {
+-        response.sendError(503, "Maximum rating score is " + Constants.MAX_REVIEW_RATING_SCORE);
+-        return null;
+-      }
+-
+-      review.setProductId(id);
+-
+-      productCommonFacade.saveOrUpdateReview(review, merchantStore, language);
+-
+-      return review;
+-
+-    } catch (Exception e) {
+-      LOGGER.error("Error while saving product review", e);
+-      try {
+-        response.sendError(503, "Error while saving product review" + e.getMessage());
+-      } catch (Exception ignore) {
+-      }
+-
+-      return null;
+     }
++    if (productReviewService.getByProductAndCustomer(id, review.getCustomerId()) != null) {
++      throw new ConflictException("A review already exists for this customer and product");
++    }
++    review.setProductId(id);
++    try { productCommonFacade.saveOrUpdateReview(review, merchantStore, language); }
++    catch (Exception e) { throw new ServiceRuntimeException("Error while saving product review", e); }
++    return review;
+   }
+ 
+   @RequestMapping(value = "/product/{id}/reviews", method = RequestMethod.GET)
+@@ -160,38 +154,16 @@ public class ProductReviewApi {
+       HttpServletResponse response) {
+ 
+     try {
+-      ProductReview prodReview = productReviewService.getById(reviewId);
+-      if (prodReview == null) {
+-        response.sendError(404, "Product review with id " + reviewId + " does not exist");
+-        return null;
+-      }
+-
+-      if (prodReview.getCustomer().getId().longValue() != review.getCustomerId().longValue()) {
+-        response.sendError(404, "Product review with id " + reviewId + " does not exist");
+-        return null;
+-      }
+-
+-      // rating maximum 5
+-      if (review.getRating() > Constants.MAX_REVIEW_RATING_SCORE) {
+-        response.sendError(503, "Maximum rating score is " + Constants.MAX_REVIEW_RATING_SCORE);
+-        return null;
+-      }
+-
++      validateRating(review);
++      ProductReview prodReview = productReviewService.getByIdAndProduct(reviewId, id);
++      if (prodReview == null) throw new ResourceNotFoundException("Product review with id " + reviewId + " does not exist");
++      review.setId(reviewId);
++      review.setCustomerId(prodReview.getCustomer().getId());
+       review.setProductId(id);
+-
+       productCommonFacade.saveOrUpdateReview(review, merchantStore, language);
+-
+       return review;
+-
+-    } catch (Exception e) {
+-      LOGGER.error("Error while saving product review", e);
+-      try {
+-        response.sendError(503, "Error while saving product review" + e.getMessage());
+-      } catch (Exception ignore) {
+-      }
+-
+-      return null;
+-    }
++    } catch (ResourceNotFoundException e) { throw e; }
++      catch (Exception e) { throw new ServiceRuntimeException("Error while saving product review", e); }
+   }
+ 
+   @RequestMapping(
+@@ -214,27 +186,17 @@ public class ProductReviewApi {
+       HttpServletResponse response) {
+ 
+     try {
+-      ProductReview prodReview = productReviewService.getById(reviewId);
+-      if (prodReview == null) {
+-        response.sendError(404, "Product review with id " + reviewId + " does not exist");
+-        return;
+-      }
+-
+-      if (prodReview.getProduct().getId().longValue() != id.longValue()) {
+-        response.sendError(404, "Product review with id " + reviewId + " does not exist");
+-        return;
+-      }
+-
++      ProductReview prodReview = productReviewService.getByIdAndProduct(reviewId, id);
++      if (prodReview == null) throw new ResourceNotFoundException("Product review with id " + reviewId + " does not exist");
+       productCommonFacade.deleteReview(prodReview, merchantStore, language);
++    } catch (ResourceNotFoundException e) { throw e; }
++      catch (Exception e) { throw new ServiceRuntimeException("Error while deleting product review", e); }
++  }
+ 
+-    } catch (Exception e) {
+-      LOGGER.error("Error while deleting product review", e);
+-      try {
+-        response.sendError(503, "Error while deleting product review" + e.getMessage());
+-      } catch (Exception ignore) {
+-      }
+-
+-      return;
++  private void validateRating(PersistableProductReview review) {
++    Double rating = review.getRating();
++    if (rating == null || rating < 1 || rating > Constants.MAX_REVIEW_RATING_SCORE || rating % 1 != 0) {
++      throw new BadRequestException("Rating must be a whole number from 1 to 5");
+     }
+   }
+ }
+diff --git a/sm-shop/src/main/java/com/salesmanager/shop/store/facade/product/ProductCommonFacadeImpl.java b/sm-shop/src/main/java/com/salesmanager/shop/store/facade/product/ProductCommonFacadeImpl.java
+index cd3d302..a1e1b1c 100644
+--- a/sm-shop/src/main/java/com/salesmanager/shop/store/facade/product/ProductCommonFacadeImpl.java
++++ b/sm-shop/src/main/java/com/salesmanager/shop/store/facade/product/ProductCommonFacadeImpl.java
+@@ -306,7 +306,12 @@ public class ProductCommonFacadeImpl implements ProductCommonFacade {
+ 		populator.setCustomerService(customerService);
+ 		populator.setProductService(productService);
+ 
+-		com.salesmanager.core.model.catalog.product.review.ProductReview rev = new com.salesmanager.core.model.catalog.product.review.ProductReview();
++		com.salesmanager.core.model.catalog.product.review.ProductReview rev = review.getId() == null
++				? new com.salesmanager.core.model.catalog.product.review.ProductReview()
++				: productReviewService.getById(review.getId());
++		if (rev == null) {
++			throw new ServiceRuntimeException("404", "Product review does not exist");
++		}
+ 		populator.populate(review, rev, store, language);
+ 
+ 		if (review.getId() == null) {

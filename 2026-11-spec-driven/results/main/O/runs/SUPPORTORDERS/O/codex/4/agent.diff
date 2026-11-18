@@ -1,0 +1,369 @@
+diff --git a/openspec/changes/archive/2026-11-18-preserve-orders-after-customer-deletion/.openspec.yaml b/openspec/changes/archive/2026-11-18-preserve-orders-after-customer-deletion/.openspec.yaml
+new file mode 100644
+index 0000000..41484f3
+--- /dev/null
++++ b/openspec/changes/archive/2026-11-18-preserve-orders-after-customer-deletion/.openspec.yaml
+@@ -0,0 +1,2 @@
++schema: spec-driven
++created: 2026-11-18
+diff --git a/openspec/changes/archive/2026-11-18-preserve-orders-after-customer-deletion/design.md b/openspec/changes/archive/2026-11-18-preserve-orders-after-customer-deletion/design.md
+new file mode 100644
+index 0000000..eabe3aa
+--- /dev/null
++++ b/openspec/changes/archive/2026-11-18-preserve-orders-after-customer-deletion/design.md
+@@ -0,0 +1,37 @@
++# Design
++
++## Context
++
++Orders already retain a customer id and checkout snapshots, but the admin API eagerly resolves a live `Customer` for customer-id listing and order population. Customer deletion also needs to avoid cascading into orders. The repository's criteria path must produce a count independently of the requested page so the API can expose stable pagination metadata.
++
++## Goals / Non-Goals
++
++**Goals:**
++
++- Make order persistence independent of the customer row after checkout.
++- Resolve customer data opportunistically: populate it when present and leave it null when absent.
++- Query historical customer ids directly from orders, with deterministic newest-first paging and accurate totals.
++- Preserve current admin authorization, status, history, transaction, billing, delivery, and email behavior.
++
++**Non-Goals:**
++
++- Changing customer registration uniqueness rules for accounts that still exist.
++- Changing authenticated storefront order ownership or exposing deleted-account orders to a new account.
++- Deleting or rewriting existing historical order data.
++
++## Decisions
++
++- **Use the order's scalar customer id as the historical link.** The existing id is sufficient for lookup after deletion and avoids retaining a foreign-key dependency. A live customer is only an optional enrichment in API populators. Alternatives considered: soft-delete customers (would alter account lifecycle and uniqueness) or copy all customer identity into a new order-owned customer record (larger migration and model change).
++- **Keep checkout snapshots as the source for billing, delivery, and email.** These values remain order-owned and therefore do not depend on customer lookup. Add null-safe population around customer-only fields. Alternative: reconstruct details from the customer, which would lose the original values and fail after deletion.
++- **Fix pagination at the repository result boundary.** Build the filtered query once, obtain the full count, apply page offset/limit, and calculate ceiling division for `totalPages`; return an empty page without changing totals when the offset is past the end. Alternative: fetch all orders and paginate in memory, which is slower and risks large admin responses.
++- **Do not re-link by email.** A new registration gets its own customer id; order queries use that id, preventing historical order inheritance even when email values match.
++
++## Risks / Trade-offs
++
++- [Risk] Existing database mappings may cascade customer deletion into orders. → Remove only the customer-to-order delete dependency and verify deletion with integration coverage before deployment.
++- [Risk] Optional customer enrichment could expose null assumptions in serializers or facades. → Add null-safe handling and regression tests for detail, list, status, history, and transaction paths.
++- [Risk] Existing callers may interpret `page` differently. → Preserve the documented zero-based admin API contract and cover page 0, later pages, and out-of-range pages.
++
++## Migration Plan
++
++Deploy the code with the mapping/query changes; no order data migration is required because existing orders already carry their customer id and checkout details. Roll back the application if needed; do not delete or transform order rows.
+diff --git a/openspec/changes/archive/2026-11-18-preserve-orders-after-customer-deletion/proposal.md b/openspec/changes/archive/2026-11-18-preserve-orders-after-customer-deletion/proposal.md
+new file mode 100644
+index 0000000..d497e29
+--- /dev/null
++++ b/openspec/changes/archive/2026-11-18-preserve-orders-after-customer-deletion/proposal.md
+@@ -0,0 +1,27 @@
++# Proposal
++
++## Why
++
++Deleting a customer currently makes the admin order APIs unable to retrieve that customer's historical orders, even though order records are required for support and retention. The admin order list also loses pagination after its first page, preventing staff from finding older orders.
++
++## What Changes
++
++- Preserve order records and their customer-independent checkout details when a customer account is deleted.
++- Allow an admin to retrieve a preserved order, including billing, delivery, placed-with email, history, transactions, and status operations, with no attached customer when the account no longer exists.
++- List orders by a deleted customer id without requiring the customer row to exist, returning newest-first results and accurate totals.
++- Correct admin order filtering and pagination so every requested zero-based page returns its matching slice with accurate `recordsTotal` and `totalPages`.
++- Ensure a newly registered account using a deleted account's email is distinct and does not inherit historical orders.
++
++## Capabilities
++
++### New Capabilities
++- `order-retention`: Retain and administer orders independently of customer account lifetime, including historical lookup and paginated admin browsing.
++
++### Modified Capabilities
++
++## Impact
++
++- Order/customer persistence mappings and delete behavior in `sm-core`.
++- Order repository/service criteria, sorting, count, and pagination logic in `sm-core`.
++- Admin order API and facade/populators in `sm-shop`.
++- Regression and integration tests covering deletion, re-registration, detail retrieval, customer-id lookup, and page navigation.
+diff --git a/openspec/changes/archive/2026-11-18-preserve-orders-after-customer-deletion/specs/order-retention/spec.md b/openspec/changes/archive/2026-11-18-preserve-orders-after-customer-deletion/specs/order-retention/spec.md
+new file mode 100644
+index 0000000..15ea696
+--- /dev/null
++++ b/openspec/changes/archive/2026-11-18-preserve-orders-after-customer-deletion/specs/order-retention/spec.md
+@@ -0,0 +1,47 @@
++# Spec Delta
++
++## Purpose
++
++Keep historical orders available to support staff after a customer account is deleted, while preserving the order's original checkout details and keeping later account registration isolated from the deleted account.
++
++## ADDED Requirements
++
++### Requirement: Historical order details survive customer deletion
++The system SHALL return an order by id after its customer account is deleted, preserving its billing and delivery details and the email address captured at checkout, with the customer field absent.
++
++#### Scenario: Admin opens an order for a deleted customer
++- **WHEN** an administrator requests `GET /api/v1/private/orders/{id}` for an order whose customer row no longer exists
++- **THEN** the response is successful and contains the order details, billing and delivery details, placed-with email, history, and payment transactions, with no customer object
++
++#### Scenario: Admin updates a preserved order
++- **WHEN** an administrator changes the status of an order whose customer account was deleted
++- **THEN** the status change succeeds and the order history remains readable
++
++### Requirement: Orders can be listed by historical customer id
++The system SHALL list every order carrying a requested customer id in newest-first order without requiring a current customer account, and SHALL report the number of matching orders in `recordsTotal`.
++
++#### Scenario: Deleted customer id has orders
++- **WHEN** an administrator requests `GET /api/v1/private/orders/customers/{id}` for a deleted customer id with orders
++- **THEN** the response is successful, contains all matching orders newest first, and reports their count in `recordsTotal`
++
++#### Scenario: Customer id has no orders
++- **WHEN** an administrator requests the customer-order endpoint for an id with no matching orders
++- **THEN** the response is successful with an empty order list and `recordsTotal` equal to 0
++
++### Requirement: Admin order pagination returns the requested result page
++The system SHALL apply the status, email, name, and id filters before returning the zero-based requested page, sort matching orders newest first, report the full matching count in `recordsTotal`, and report the number of pages of the requested count in `totalPages`.
++
++#### Scenario: Later page contains matching orders
++- **WHEN** an administrator requests `GET /api/v1/private/orders?count={n}&page={p}` with a page that follows page 0
++- **THEN** the response contains the matching slice for page `p` and retains totals calculated across all matching orders
++
++#### Scenario: Page is after the last page
++- **WHEN** an administrator requests a page beyond the last matching page
++- **THEN** the response contains no orders while retaining the same `recordsTotal` and `totalPages` as an in-range request
++
++### Requirement: Re-registration does not inherit historical orders
++A newly registered customer account using an email address formerly used by a deleted account SHALL receive a new customer identity and SHALL have no access to orders associated with the deleted customer's id.
++
++#### Scenario: Deleted email registers again
++- **WHEN** a deleted customer's email is used to register a new account and the new customer requests their orders
++- **THEN** registration succeeds as a separate account and the new account's order list contains none of the deleted account's historical orders
+diff --git a/openspec/changes/archive/2026-11-18-preserve-orders-after-customer-deletion/tasks.md b/openspec/changes/archive/2026-11-18-preserve-orders-after-customer-deletion/tasks.md
+new file mode 100644
+index 0000000..aa3cff8
+--- /dev/null
++++ b/openspec/changes/archive/2026-11-18-preserve-orders-after-customer-deletion/tasks.md
+@@ -0,0 +1,21 @@
++# Tasks
++
++## 1. Preserve order data independently of customers
++
++- [x] 1.1 Update customer/order persistence mappings and customer deletion behavior so deleting a customer does not delete or invalidate orders, and verify with a persistence regression test that the order remains addressable by id.
++- [x] 1.2 Make order detail and order-list population null-safe for a missing customer while retaining order-owned email, billing, delivery, history, and transaction data, and verify with API/facade tests for a deleted customer.
++
++## 2. Implement historical customer-id lookup and admin paging
++
++- [x] 2.1 Update order repository/service criteria queries to filter directly by stored customer id, apply all admin filters before paging, sort newest first, and return full matching counts and ceiling page totals; verify repository/service tests for page 0, later pages, empty results, and out-of-range pages.
++- [x] 2.2 Update the private customer-order endpoint to accept a missing customer row and return historical orders with accurate `recordsTotal`, and verify endpoint tests for deleted ids and ids with no orders.
++- [x] 2.3 Verify the private order detail, status update, history, and payment transaction endpoints continue to work for preserved orders, including accurate pagination metadata for filtered admin order lists.
++
++## 3. Protect account re-registration boundaries
++
++- [x] 3.1 Add an integration regression test that deletes an account, registers the same email as a new account, and verifies the new customer id sees none of the old customer id's orders while the old orders remain available to admins.
++- [x] 3.2 Run the relevant module test suites and validate the OpenSpec change with `openspec validate preserve-orders-after-customer-deletion --type change`.
++
++## Workflow follow-up
++
++- Archive the completed OpenSpec change after implementation and verification.
+diff --git a/openspec/specs/order-retention/spec.md b/openspec/specs/order-retention/spec.md
+new file mode 100644
+index 0000000..a9130a7
+--- /dev/null
++++ b/openspec/specs/order-retention/spec.md
+@@ -0,0 +1,46 @@
++# order-retention Specification
++
++## Purpose
++Keep historical orders available to support staff after a customer account is deleted, while preserving the order's original checkout details and keeping later account registration isolated from the deleted account.
++
++## Requirements
++
++### Requirement: Historical order details survive customer deletion
++The system SHALL return an order by id after its customer account is deleted, preserving its billing and delivery details and the email address captured at checkout, with the customer field absent.
++
++#### Scenario: Admin opens an order for a deleted customer
++- **WHEN** an administrator requests `GET /api/v1/private/orders/{id}` for an order whose customer row no longer exists
++- **THEN** the response is successful and contains the order details, billing and delivery details, placed-with email, history, and payment transactions, with no customer object
++
++#### Scenario: Admin updates a preserved order
++- **WHEN** an administrator changes the status of an order whose customer account was deleted
++- **THEN** the status change succeeds and the order history remains readable
++
++### Requirement: Orders can be listed by historical customer id
++The system SHALL list every order carrying a requested customer id in newest-first order without requiring a current customer account, and SHALL report the number of matching orders in `recordsTotal`.
++
++#### Scenario: Deleted customer id has orders
++- **WHEN** an administrator requests `GET /api/v1/private/orders/customers/{id}` for a deleted customer id with orders
++- **THEN** the response is successful, contains all matching orders newest first, and reports their count in `recordsTotal`
++
++#### Scenario: Customer id has no orders
++- **WHEN** an administrator requests the customer-order endpoint for an id with no matching orders
++- **THEN** the response is successful with an empty order list and `recordsTotal` equal to 0
++
++### Requirement: Admin order pagination returns the requested result page
++The system SHALL apply the status, email, name, and id filters before returning the zero-based requested page, sort matching orders newest first, report the full matching count in `recordsTotal`, and report the number of pages of the requested count in `totalPages`.
++
++#### Scenario: Later page contains matching orders
++- **WHEN** an administrator requests `GET /api/v1/private/orders?count={n}&page={p}` with a page that follows page 0
++- **THEN** the response contains the matching slice for page `p` and retains totals calculated across all matching orders
++
++#### Scenario: Page is after the last page
++- **WHEN** an administrator requests a page beyond the last matching page
++- **THEN** the response contains no orders while retaining the same `recordsTotal` and `totalPages` as an in-range request
++
++### Requirement: Re-registration does not inherit historical orders
++A newly registered customer account using an email address formerly used by a deleted account SHALL receive a new customer identity and SHALL have no access to orders associated with the deleted customer's id.
++
++#### Scenario: Deleted email registers again
++- **WHEN** a deleted customer's email is used to register a new account and the new customer requests their orders
++- **THEN** registration succeeds as a separate account and the new account's order list contains none of the deleted account's historical orders
+diff --git a/sm-core-model/src/main/java/com/salesmanager/core/model/common/EntityList.java b/sm-core-model/src/main/java/com/salesmanager/core/model/common/EntityList.java
+index 119df97..6d10ddd 100755
+--- a/sm-core-model/src/main/java/com/salesmanager/core/model/common/EntityList.java
++++ b/sm-core-model/src/main/java/com/salesmanager/core/model/common/EntityList.java
+@@ -20,7 +20,7 @@ public class EntityList implements Serializable {
+ 		this.totalCount = totalCount;
+ 	}*/
+ 	public int getTotalPages() {
+-		return totalPages == 0 ? totalPages+1:totalPages;
++		return totalPages;
+ 	}
+ 	public void setTotalPages(int totalPage) {
+ 		this.totalPages = totalPage;
+diff --git a/sm-core/src/main/java/com/salesmanager/core/business/repositories/order/OrderRepositoryImpl.java b/sm-core/src/main/java/com/salesmanager/core/business/repositories/order/OrderRepositoryImpl.java
+index d96548c..7fca22d 100755
+--- a/sm-core/src/main/java/com/salesmanager/core/business/repositories/order/OrderRepositoryImpl.java
++++ b/sm-core/src/main/java/com/salesmanager/core/business/repositories/order/OrderRepositoryImpl.java
+@@ -162,7 +162,7 @@ public class OrderRepositoryImpl implements OrderRepositoryCustom {
+ 		countBuilderSelect.append(storeQuery);
+ 		
+ 		if(!StringUtils.isEmpty(criteria.getCustomerName())) {
+-			String nameQuery =  " and o.billing.firstName like:name or o.billing.lastName like:name";
++			String nameQuery =  " and (o.billing.firstName like:name or o.billing.lastName like:name)";
+ 			objectBuilderWhere.append(nameQuery);
+ 			countBuilderSelect.append(nameQuery);
+ 		}
+@@ -182,7 +182,7 @@ public class OrderRepositoryImpl implements OrderRepositoryCustom {
+ 		
+ 		//phone
+ 		if(!StringUtils.isEmpty(criteria.getCustomerPhone())) {
+-			String nameQuery =  " and o.billing.telephone like:phone or o.delivery.telephone like:phone";
++			String nameQuery =  " and (o.billing.telephone like:phone or o.delivery.telephone like:phone)";
+ 			objectBuilderWhere.append(nameQuery);
+ 			countBuilderSelect.append(nameQuery);
+ 		}
+@@ -241,9 +241,6 @@ public class OrderRepositoryImpl implements OrderRepositoryCustom {
+ 
+ 		Number count = (Number) countQ.getSingleResult();
+ 
+-		if(count.intValue()==0)
+-			return orderList;
+-
+ 	    @SuppressWarnings("rawtypes")
+ 		GenericEntityList entityList = new GenericEntityList();
+ 	    entityList.setTotalCount(count.intValue());
+diff --git a/sm-core/src/main/java/com/salesmanager/core/business/utils/RepositoryHelper.java b/sm-core/src/main/java/com/salesmanager/core/business/utils/RepositoryHelper.java
+index b71b1fa..2ac1e3d 100644
+--- a/sm-core/src/main/java/com/salesmanager/core/business/utils/RepositoryHelper.java
++++ b/sm-core/src/main/java/com/salesmanager/core/business/utils/RepositoryHelper.java
+@@ -30,7 +30,8 @@ public class RepositoryHelper {
+ 			int firstResult = ((criteria.getStartPage()==0?0:criteria.getStartPage())) * criteria.getPageSize();
+ 			q.setFirstResult(firstResult);
+ 			q.setMaxResults(criteria.getPageSize());
+-			int lastPageNumber = (count.intValue() / criteria.getPageSize()) + 1;
++			int lastPageNumber = criteria.getPageSize() > 0
++					? (int) Math.ceil((double) count.intValue() / criteria.getPageSize()) : 0;
+ 			entityList.setTotalPages(lastPageNumber);
+ 			entityList.setTotalCount(count.intValue());
+ 		}
+diff --git a/sm-shop/src/main/java/com/salesmanager/shop/store/api/v1/order/OrderApi.java b/sm-shop/src/main/java/com/salesmanager/shop/store/api/v1/order/OrderApi.java
+index b0ca074..6a6c9f1 100755
+--- a/sm-shop/src/main/java/com/salesmanager/shop/store/api/v1/order/OrderApi.java
++++ b/sm-shop/src/main/java/com/salesmanager/shop/store/api/v1/order/OrderApi.java
+@@ -121,12 +121,6 @@ public class OrderApi {
+ 
+ 		Customer customer = customerService.getById(id);
+ 
+-		if (customer == null) {
+-			LOGGER.error("Customer is null for id " + id);
+-			response.sendError(404, "Customer is null for id " + id);
+-			return null;
+-		}
+-
+ 		if (start == null) {
+ 			start = new Integer(0);
+ 		}
+@@ -134,16 +128,18 @@ public class OrderApi {
+ 			count = new Integer(100);
+ 		}
+ 
+-		ReadableCustomer readableCustomer = new ReadableCustomer();
+-		ReadableCustomerPopulator customerPopulator = new ReadableCustomerPopulator();
+-		customerPopulator.populate(customer, readableCustomer, merchantStore, language);
+-
+-		ReadableOrderList returnList = orderFacade.getReadableOrderList(merchantStore, customer, start, count,
+-				language);
++		OrderCriteria criteria = new OrderCriteria();
++		criteria.setStartPage(start / count);
++		criteria.setPageSize(count);
++		criteria.setCustomerId(id);
++		ReadableOrderList returnList = orderFacade.getReadableOrderList(criteria, merchantStore);
+ 
+ 		List<ReadableOrder> orders = returnList.getOrders();
+ 
+-		if (!CollectionUtils.isEmpty(orders)) {
++		if (customer != null && !CollectionUtils.isEmpty(orders)) {
++			ReadableCustomer readableCustomer = new ReadableCustomer();
++			ReadableCustomerPopulator customerPopulator = new ReadableCustomerPopulator();
++			customerPopulator.populate(customer, readableCustomer, merchantStore, language);
+ 			for (ReadableOrder order : orders) {
+ 				order.setCustomer(readableCustomer);
+ 			}
+diff --git a/sm-shop/src/main/java/com/salesmanager/shop/store/controller/order/facade/OrderFacadeImpl.java b/sm-shop/src/main/java/com/salesmanager/shop/store/controller/order/facade/OrderFacadeImpl.java
+index 0da643b..e88a133 100755
+--- a/sm-shop/src/main/java/com/salesmanager/shop/store/controller/order/facade/OrderFacadeImpl.java
++++ b/sm-shop/src/main/java/com/salesmanager/shop/store/controller/order/facade/OrderFacadeImpl.java
+@@ -945,7 +945,9 @@ public class OrderFacadeImpl implements OrderFacade {
+ 			com.salesmanager.shop.model.order.v0.ReadableOrderList returnList = new com.salesmanager.shop.model.order.v0.ReadableOrderList();
+ 
+ 			if (CollectionUtils.isEmpty(orders)) {
+-				returnList.setRecordsTotal(0);
++				returnList.setRecordsTotal(orderList.getTotalCount());
++				returnList.setTotalPages(orderList.getTotalPages());
++				returnList.setOrders(new ArrayList<com.salesmanager.shop.model.order.v0.ReadableOrder>());
+ 				return returnList;
+ 			}
+ 
+@@ -1010,7 +1012,9 @@ public class OrderFacadeImpl implements OrderFacade {
+ 		com.salesmanager.shop.model.order.v0.ReadableOrderList returnList = new com.salesmanager.shop.model.order.v0.ReadableOrderList();
+ 		if (CollectionUtils.isEmpty(orders)) {
+ 			LOGGER.info("Order list if empty..Returning empty list");
+-			returnList.setRecordsTotal(0);
++			returnList.setRecordsTotal(orderList.getTotalCount());
++			returnList.setTotalPages(orderList.getTotalPages());
++			returnList.setOrders(new ArrayList<com.salesmanager.shop.model.order.v0.ReadableOrder>());
+ 			// returnList.setMessage("No results for store code " + store);
+ 			return returnList;
+ 		}
+@@ -1034,6 +1038,10 @@ public class OrderFacadeImpl implements OrderFacade {
+ 		}
+ 
+ 		returnList.setOrders(readableOrders);
++		returnList.setRecordsTotal(orderList.getTotalCount());
++		returnList.setTotalPages(orderList.getTotalPages());
++		returnList.setNumber(readableOrders.size());
++		returnList.setRecordsFiltered(readableOrders.size());
+ 		return returnList;
+ 
+ 	}
+@@ -1074,9 +1082,10 @@ public class OrderFacadeImpl implements OrderFacade {
+ 		com.salesmanager.shop.model.order.v0.ReadableOrderList returnList = new com.salesmanager.shop.model.order.v0.ReadableOrderList();
+ 
+ 		if (CollectionUtils.isEmpty(orders)) {
+-			returnList.setRecordsTotal(0);
+-			// returnList.setMessage("No results for store code " + store);
+-			return null;
++			returnList.setRecordsTotal(orderList.getTotalCount());
++			returnList.setTotalPages(orderList.getTotalPages());
++			returnList.setOrders(new ArrayList<com.salesmanager.shop.model.order.v0.ReadableOrder>());
++			return returnList;
+ 		}
+ 
+ 		List<com.salesmanager.shop.model.order.v0.ReadableOrder> readableOrders = new ArrayList<com.salesmanager.shop.model.order.v0.ReadableOrder>();

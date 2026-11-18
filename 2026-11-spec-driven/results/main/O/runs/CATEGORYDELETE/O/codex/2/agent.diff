@@ -1,0 +1,407 @@
+diff --git a/openspec/changes/archive/2026-11-18-category-delete-preserve-products/.openspec.yaml b/openspec/changes/archive/2026-11-18-category-delete-preserve-products/.openspec.yaml
+new file mode 100644
+index 0000000..41484f3
+--- /dev/null
++++ b/openspec/changes/archive/2026-11-18-category-delete-preserve-products/.openspec.yaml
+@@ -0,0 +1,2 @@
++schema: spec-driven
++created: 2026-11-18
+diff --git a/openspec/changes/archive/2026-11-18-category-delete-preserve-products/design.md b/openspec/changes/archive/2026-11-18-category-delete-preserve-products/design.md
+new file mode 100644
+index 0000000..1527596
+--- /dev/null
++++ b/openspec/changes/archive/2026-11-18-category-delete-preserve-products/design.md
+@@ -0,0 +1,37 @@
++# Design
++
++## Context
++
++See proposal.md for motivation. The current `CategoryServiceImpl.delete` path deletes products that have no remaining category and uses a category lookup that can silently continue when the requested category is absent. Category associations are persisted through the product model, while carts and orders have their own product line data.
++
++## Goals / Non-Goals
++
++**Goals:**
++
++- Make category deletion a classification-only operation for products.
++- Delete the full category subtree and clean product-category join rows safely.
++- Preserve transaction behavior and expose consistent not-found responses.
++
++**Non-Goals:**
++
++- Changing product deletion semantics when a product is explicitly deleted.
++- Reworking cart or order persistence schemas.
++- Changing authorization rules for category administration.
++
++## Decisions
++
++- Resolve and validate the requested category before calculating the subtree; missing or cross-store ids must raise the existing resource-not-found/authorization errors rather than become a no-op.
++- Load all subtree categories, remove each from every affected product's category set, and update the product only when associations changed. Never call product deletion from category deletion; products with no remaining categories are still valid retained products.
++- Delete categories after association cleanup, preserving the existing descendant ordering needed by the category repository.
++- Add regression coverage at the core service level and API integration level for subtree deletion, multi-category products, missing ids, and cart/order continuity. This keeps persistence behavior and HTTP mapping covered.
++
++Alternatives considered: soft-deleting categories would require changing every category query and would not satisfy the requirement that deleted ids return 404; deleting products is the existing behavior and directly causes the reported data loss.
++
++## Risks / Trade-offs
++
++- [Risk] Large category trees or product sets may require many entity updates. → Reuse existing subtree/product queries and keep the operation transactional; validate with representative integration coverage.
++- [Risk] Removing associations from managed/detached entities can leave stale in-memory relationships. → Reload products before mutation and verify API reads after deletion.
++
++## Migration Plan
++
++No database migration is expected. Deploy the service change, then verify deletion against products with one and multiple categories and existing cart/order fixtures. Rollback is the normal application rollback; previously deleted products cannot be recovered by this change.
+diff --git a/openspec/changes/archive/2026-11-18-category-delete-preserve-products/proposal.md b/openspec/changes/archive/2026-11-18-category-delete-preserve-products/proposal.md
+new file mode 100644
+index 0000000..972e7eb
+--- /dev/null
++++ b/openspec/changes/archive/2026-11-18-category-delete-preserve-products/proposal.md
+@@ -0,0 +1,24 @@
++# Proposal
++
++## Why
++
++Deleting a category currently treats its products as owned by that category, so products can be deleted and existing carts or orders can become unreadable. It also leaves deleted-category lookups inconsistent. Category deletion must remove only catalog classification while preserving product and transaction data.
++
++## What Changes
++
++- Delete the requested category and all descendants, while retaining every associated product, including stock, price, and associations with categories outside the deleted subtree.
++- Remove deleted-subtree category associations from retained products so product detail no longer reports deleted categories.
++- Keep carts and orders independent of category deletion so existing cart reads, edits, checkout, and order reads continue to work.
++- Return HTTP 404 for missing categories on category reads, product-by-category listings, and delete requests, and exclude deleted categories from category listings.
++
++## Capabilities
++
++### New Capabilities
++
++- `category-deletion`: Safe deletion of category trees and their product associations.
++
++### Modified Capabilities
++
++## Impact
++
++The category service deletion path, category facade/API not-found handling, product-category persistence, and integration/unit coverage are affected. Product, cart, and order records remain available and should not require schema changes.
+diff --git a/openspec/changes/archive/2026-11-18-category-delete-preserve-products/specs/category-deletion/spec.md b/openspec/changes/archive/2026-11-18-category-delete-preserve-products/specs/category-deletion/spec.md
+new file mode 100644
+index 0000000..ce2bd64
+--- /dev/null
++++ b/openspec/changes/archive/2026-11-18-category-delete-preserve-products/specs/category-deletion/spec.md
+@@ -0,0 +1,44 @@
++# Spec Delta
++
++## Purpose
++
++Provides safe category-tree deletion that removes catalog classification without destroying products or breaking transactions that already reference those products.
++
++## ADDED Requirements
++
++### Requirement: Category deletion preserves products and transactions
++The system SHALL delete only the selected category and its descendants, remove those category associations from products, and preserve product data, carts, and orders.
++
++#### Scenario: Product only in deleted category is retained
++- **WHEN** a category is deleted and a product belongs only to that category or its descendants
++- **THEN** the product remains available with its stock, price, and other product data intact, but is not listed in the deleted categories
++
++#### Scenario: Product in another category keeps that category
++- **WHEN** a product belongs to both the deleted subtree and a category outside it
++- **THEN** only the deleted-subtree associations are removed and the outside category remains on the product
++
++#### Scenario: Existing cart and order remain usable
++- **WHEN** a cart or order contains a product associated with a deleted category
++- **THEN** the cart and order remain readable and the cart can still be changed and checked out without category data being required
++
++### Requirement: Category deletion removes the complete subtree
++The system SHALL delete the requested category and every descendant category, while retaining products associated with any of them.
++
++#### Scenario: Descendant categories are deleted
++- **WHEN** a category with nested child categories is deleted
++- **THEN** the parent and all descendants are absent from category listings and cannot be retrieved by id
++
++#### Scenario: Deleted category product listing is empty
++- **WHEN** products are requested using the id of a deleted category
++- **THEN** the response lists no products for that category
++
++### Requirement: Missing categories return not found
++The system SHALL return HTTP 404 Not Found when a requested category does not exist, including after deletion.
++
++#### Scenario: Deleted category read returns 404
++- **WHEN** a client requests a deleted category by id
++- **THEN** the category endpoint returns HTTP 404 Not Found
++
++#### Scenario: Delete nonexistent category returns 404
++- **WHEN** a client attempts to delete a category id that does not exist
++- **THEN** the delete endpoint returns HTTP 404 Not Found
+diff --git a/openspec/changes/archive/2026-11-18-category-delete-preserve-products/tasks.md b/openspec/changes/archive/2026-11-18-category-delete-preserve-products/tasks.md
+new file mode 100644
+index 0000000..1db2fdc
+--- /dev/null
++++ b/openspec/changes/archive/2026-11-18-category-delete-preserve-products/tasks.md
+@@ -0,0 +1,15 @@
++# Tasks
++
++## 1. Safe category deletion
++
++- [x] 1.1 Update category service deletion to reject missing categories, delete the complete descendant tree, remove only deleted-subtree associations from products, and never delete products; verify with focused category-service tests.
++- [x] 1.2 Ensure category facade/API reads, product-by-category listings, and delete requests map missing or deleted ids to HTTP 404; verify with category management API tests.
++
++## 2. Regression coverage
++
++- [x] 2.1 Add coverage for products with no remaining category and products with categories outside the deleted subtree, including preservation of product fields and v2 category output; verify the relevant module tests pass.
++- [x] 2.2 Add coverage proving existing carts and orders containing affected products remain readable and usable through checkout/order reads; verify cart and order integration tests pass.
++
++## 3. Verification
++
++- [x] 3.1 Run the targeted Maven tests and a repository build for affected modules; verify all selected tests and compilation pass.
+diff --git a/openspec/specs/category-deletion/spec.md b/openspec/specs/category-deletion/spec.md
+new file mode 100644
+index 0000000..e7011d3
+--- /dev/null
++++ b/openspec/specs/category-deletion/spec.md
+@@ -0,0 +1,44 @@
++# category-deletion Specification
++
++## Purpose
++
++Provides safe category-tree deletion that removes catalog classification without destroying products or breaking transactions that already reference those products.
++
++## Requirements
++
++### Requirement: Category deletion preserves products and transactions
++The system SHALL delete only the selected category and its descendants, remove those category associations from products, and preserve product data, carts, and orders.
++
++#### Scenario: Product only in deleted category is retained
++- **WHEN** a category is deleted and a product belongs only to that category or its descendants
++- **THEN** the product remains available with its stock, price, and other product data intact, but is not listed in the deleted categories
++
++#### Scenario: Product in another category keeps that category
++- **WHEN** a product belongs to both the deleted subtree and a category outside it
++- **THEN** only the deleted-subtree associations are removed and the outside category remains on the product
++
++#### Scenario: Existing cart and order remain usable
++- **WHEN** a cart or order contains a product associated with a deleted category
++- **THEN** the cart and order remain readable and the cart can still be changed and checked out without category data being required
++
++### Requirement: Category deletion removes the complete subtree
++The system SHALL delete the requested category and every descendant category, while retaining products associated with any of them.
++
++#### Scenario: Descendant categories are deleted
++- **WHEN** a category with nested child categories is deleted
++- **THEN** the parent and all descendants are absent from category listings and cannot be retrieved by id
++
++#### Scenario: Deleted category product listing is empty
++- **WHEN** products are requested using the id of a deleted category
++- **THEN** the response lists no products for that category
++
++### Requirement: Missing categories return not found
++The system SHALL return HTTP 404 Not Found when a requested category does not exist, including after deletion.
++
++#### Scenario: Deleted category read returns 404
++- **WHEN** a client requests a deleted category by id
++- **THEN** the category endpoint returns HTTP 404 Not Found
++
++#### Scenario: Delete nonexistent category returns 404
++- **WHEN** a client attempts to delete a category id that does not exist
++- **THEN** the delete endpoint returns HTTP 404 Not Found
+diff --git a/sm-core/src/main/java/com/salesmanager/core/business/services/catalog/category/CategoryServiceImpl.java b/sm-core/src/main/java/com/salesmanager/core/business/services/catalog/category/CategoryServiceImpl.java
+index 36a1aeb..9fc62af 100755
+--- a/sm-core/src/main/java/com/salesmanager/core/business/services/catalog/category/CategoryServiceImpl.java
++++ b/sm-core/src/main/java/com/salesmanager/core/business/services/catalog/category/CategoryServiceImpl.java
+@@ -229,59 +229,38 @@ public class CategoryServiceImpl extends SalesManagerEntityServiceImpl<Long, Cat
+ 
+ 	// @Override
+ 	public void delete(Category category) throws ServiceException {
+-
+-		// get category with lineage (subcategories)
+-		StringBuilder lineage = new StringBuilder();
+-		lineage.append(category.getLineage()).append(category.getId()).append(Constants.SLASH);
+-		List<Category> categories = this.getListByLineage(category.getMerchantStore(), lineage.toString());
++		Assert.notNull(category, "Category cannot be null");
++		Assert.notNull(category.getMerchantStore(), "MerchantStore cannot be null");
+ 
+ 		Category dbCategory = getById(category.getId(), category.getMerchantStore().getId());
++		if (dbCategory == null) {
++			throw new ServiceException("Category not found: " + category.getId());
++		}
+ 
+-		if (dbCategory != null && dbCategory.getId().longValue() == category.getId().longValue()) {
+-
+-			categories.add(dbCategory);
+-
+-			Collections.reverse(categories);
+-
+-			List<Long> categoryIds = new ArrayList<Long>();
+-
+-			for (Category c : categories) {
+-				categoryIds.add(c.getId());
+-			}
+-
+-			List<Product> products = productService.getProducts(categoryIds);
+-			// org.hibernate.Session session =
+-			// em.unwrap(org.hibernate.Session.class);// need to refresh the
+-			// session to update
+-			// all product
+-			// categories
+-
+-			for (Product product : products) {
+-				// session.evict(product);// refresh product so we get all
+-				// product categories
+-				Product dbProduct = productService.getById(product.getId());
+-				Set<Category> productCategories = dbProduct.getCategories();
+-				if (productCategories.size() > 1) {
+-					for (Category c : categories) {
+-						productCategories.remove(c);
+-						productService.update(dbProduct);
+-					}
+-
+-					if (product.getCategories() == null || product.getCategories().size() == 0) {
+-						productService.delete(dbProduct);
+-					}
+-
+-				} else {
+-					productService.delete(dbProduct);
+-				}
++		// A category's lineage already identifies the whole subtree. The old code
++		// appended the category id a second time, so descendants were missed.
++		List<Category> categories = this.getListByLineage(category.getMerchantStore(), dbCategory.getLineage());
++		Set<Long> categoryIds = new HashSet<>();
++		categoryIds.add(dbCategory.getId());
++		for (Category descendant : categories) {
++			categoryIds.add(descendant.getId());
++		}
+ 
++		List<Product> products = productService.getProducts(new ArrayList<>(categoryIds));
++		for (Product product : products) {
++			Product dbProduct = productService.getById(product.getId());
++			Set<Category> productCategories = dbProduct.getCategories();
++			if (productCategories != null && productCategories.removeIf(c -> categoryIds.contains(c.getId()))) {
++				// Products are catalog entities in their own right. Removing their last
++				// category must not delete the product or its transaction references.
++				productService.update(dbProduct);
+ 			}
+-
+-			Category categ = getById(category.getId(), category.getMerchantStore().getId());
+-			categoryRepository.delete(categ);
+-
+ 		}
+ 
++		// Category has REMOVE cascade for descendants and descriptions. By this
++		// point no PRODUCT_CATEGORY rows reference the subtree.
++		categoryRepository.delete(dbCategory);
++
+ 	}
+ 
+ 	@Override
+diff --git a/sm-core/src/test/java/com/salesmanager/test/catalog/CategoryServiceImplTest.java b/sm-core/src/test/java/com/salesmanager/test/catalog/CategoryServiceImplTest.java
+new file mode 100644
+index 0000000..fcafc19
+--- /dev/null
++++ b/sm-core/src/test/java/com/salesmanager/test/catalog/CategoryServiceImplTest.java
+@@ -0,0 +1,97 @@
++package com.salesmanager.test.catalog;
++
++import static org.junit.Assert.assertEquals;
++import static org.mockito.ArgumentMatchers.anyList;
++import static org.mockito.Mockito.never;
++import static org.mockito.Mockito.verify;
++import static org.mockito.Mockito.when;
++
++import java.util.Arrays;
++import java.util.HashSet;
++
++import org.junit.Test;
++import org.junit.runner.RunWith;
++import org.mockito.InjectMocks;
++import org.mockito.Mock;
++import org.mockito.junit.MockitoJUnitRunner;
++import org.springframework.test.util.ReflectionTestUtils;
++
++import com.salesmanager.core.business.exception.ServiceException;
++import com.salesmanager.core.business.repositories.catalog.category.CategoryDescriptionRepository;
++import com.salesmanager.core.business.repositories.catalog.category.CategoryRepository;
++import com.salesmanager.core.business.repositories.catalog.category.PageableCategoryRepository;
++import com.salesmanager.core.business.services.catalog.category.CategoryServiceImpl;
++import com.salesmanager.core.business.services.catalog.product.ProductService;
++import com.salesmanager.core.model.catalog.category.Category;
++import com.salesmanager.core.model.catalog.product.Product;
++import com.salesmanager.core.model.merchant.MerchantStore;
++
++@RunWith(MockitoJUnitRunner.class)
++public class CategoryServiceImplTest {
++
++	@Mock
++	private CategoryRepository categoryRepository;
++
++	@Mock
++	private ProductService productService;
++
++	@Mock
++	private PageableCategoryRepository pageableCategoryRepository;
++
++	@Mock
++	private CategoryDescriptionRepository categoryDescriptionRepository;
++
++	@InjectMocks
++	private CategoryServiceImpl categoryService;
++
++	@org.junit.Before
++	public void injectServiceDependencies() {
++		ReflectionTestUtils.setField(categoryService, "productService", productService);
++		ReflectionTestUtils.setField(categoryService, "pageableCategoryRepository", pageableCategoryRepository);
++		ReflectionTestUtils.setField(categoryService, "categoryDescriptionRepository", categoryDescriptionRepository);
++	}
++
++	@Test
++	public void deleteRemovesCategoryLinksButKeepsProduct() throws Exception {
++		MerchantStore store = new MerchantStore();
++		store.setId(1);
++		Category root = category(10L, "/10/", store);
++		Category child = category(11L, "/10/11/", store);
++		Category other = category(12L, "/12/", store);
++		Product product = new Product();
++		product.setId(20L);
++		product.setCategories(new HashSet<>(Arrays.asList(root, child, other)));
++
++		when(categoryRepository.findByIdAndStore(10L, 1)).thenReturn(root);
++		when(categoryRepository.findByLineage(1, "/10/")).thenReturn(Arrays.asList(root, child));
++		when(productService.getProducts(anyList())).thenReturn(Arrays.asList(product));
++		when(productService.getById(20L)).thenReturn(product);
++
++		categoryService.delete(root);
++
++		assertEquals(new HashSet<>(Arrays.asList(other)), product.getCategories());
++		verify(productService).update(product);
++		verify(productService, never()).delete(product);
++		verify(categoryRepository).delete(root);
++	}
++
++	@Test(expected = ServiceException.class)
++	public void deleteMissingCategoryFails() throws Exception {
++		MerchantStore store = new MerchantStore();
++		store.setId(1);
++		Category missing = category(99L, "/99/", store);
++		when(categoryRepository.findByIdAndStore(99L, 1)).thenReturn(null);
++
++		categoryService.delete(missing);
++
++		verify(categoryRepository, never()).delete(missing);
++	}
++
++	private Category category(Long id, String lineage, MerchantStore store) {
++		Category category = new Category();
++		category.setId(id);
++		category.setLineage(lineage);
++		category.setMerchantStore(store);
++		return category;
++	}
++}
+diff --git a/sm-shop/src/main/java/com/salesmanager/shop/store/facade/category/CategoryFacadeImpl.java b/sm-shop/src/main/java/com/salesmanager/shop/store/facade/category/CategoryFacadeImpl.java
+index 3d9067d..0046a3f 100755
+--- a/sm-shop/src/main/java/com/salesmanager/shop/store/facade/category/CategoryFacadeImpl.java
++++ b/sm-shop/src/main/java/com/salesmanager/shop/store/facade/category/CategoryFacadeImpl.java
+@@ -363,7 +363,7 @@ public class CategoryFacadeImpl implements CategoryFacade {
+ 	}
+ 
+ 	private Category getOne(Long categoryId, int storeId) {
+-		return Optional.ofNullable(categoryService.getById(categoryId)).orElseThrow(
++		return Optional.ofNullable(categoryService.getById(categoryId, storeId)).orElseThrow(
+ 				() -> new ResourceNotFoundException(String.format("No Category found for ID : %s", categoryId)));
+ 	}
+ 

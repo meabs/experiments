@@ -1,0 +1,294 @@
+diff --git a/openspec/changes/archive/2026-11-18-product-delete-resilience/.openspec.yaml b/openspec/changes/archive/2026-11-18-product-delete-resilience/.openspec.yaml
+new file mode 100644
+index 0000000..41484f3
+--- /dev/null
++++ b/openspec/changes/archive/2026-11-18-product-delete-resilience/.openspec.yaml
+@@ -0,0 +1,2 @@
++schema: spec-driven
++created: 2026-11-18
+diff --git a/openspec/changes/archive/2026-11-18-product-delete-resilience/design.md b/openspec/changes/archive/2026-11-18-product-delete-resilience/design.md
+new file mode 100644
+index 0000000..9702736
+--- /dev/null
++++ b/openspec/changes/archive/2026-11-18-product-delete-resilience/design.md
+@@ -0,0 +1,36 @@
++# Design
++
++## Context
++
++The current cart presentation path dereferences the catalog product for every line, and cart calculation/filtering also assumes that product remains available. Order read population already has snapshot fields on the order line but additionally looks up the live product to build the nested product representation. Product deletion therefore breaks both cart reads and order reads.
++
++## Goals / Non-Goals
++
++**Goals:**
++
++- Make deleted catalog rows a normal, recoverable state for cart hydration, mutation, calculation, and checkout.
++- Make order reads depend on persisted order-line data for the purchased values.
++- Preserve 404 semantics for active product lookup and add-to-cart.
++- Cover the complete requested endpoint matrix with focused integration/regression tests.
++
++**Non-Goals:**
++
++- Changing the meaning of product deletion, soft-delete schema, pricing rules, or order totals.
++- Reconstructing live catalog images/options for a deleted product when those values were not captured on the order line.
++
++## Decisions
++
++- **Clean stale cart lines at the cart boundary.** When a cart is loaded or prepared for mutation/calculation, identify lines whose product is absent or no longer valid, remove them from persistence, and calculate from the surviving set. This keeps all cart entry points consistent and prevents checkout from seeing stale lines. Keeping null lines and teaching every downstream calculator to ignore them would scatter the invariant across more paths.
++- **Keep order-line scalar snapshots authoritative.** Order response mapping will always populate SKU, name, quantity, unit price, and subtotal from the order line, and will make live-product enrichment optional. This preserves the historical purchase even if catalog lookup returns null. Re-linking orders to a replacement product would risk changing historical presentation.
++- **Translate missing active products to 404.** Product lookup and cart-add flows will retain their existing not-found exception handling, ensuring deleted products cannot be silently recreated in carts while successful lookups for other products remain unchanged.
++- **Test at API and service boundaries.** Add integration coverage for the endpoint contracts and targeted service/populator tests where null-product behavior is easiest to isolate. This protects both HTTP status codes and persisted recalculation/order snapshot behavior.
++
++## Risks / Trade-offs
++
++- [Risk] Existing carts may contain malformed lines with no product reference → treat them as stale and remove them during normalization, while logging enough context for diagnosis.
++- [Risk] Removing stale lines during a read changes persisted cart state → this is intentional cleanup required to make later PUT, multi-add, and checkout safe; keep it transactional with cart loading/mutation.
++- [Risk] Some order responses may expose a nested live product object → return the stable scalar order-line fields and omit only unavailable live enrichment, preserving the endpoint's existing shape as far as possible.
++
++## Migration Plan
++
++No data migration is required. Deploy the normalization and snapshot-read changes; existing stale cart lines are cleaned lazily on access, while existing order lines continue to use their stored values. Rollback is code rollback, with no destructive database operation introduced.
+diff --git a/openspec/changes/archive/2026-11-18-product-delete-resilience/proposal.md b/openspec/changes/archive/2026-11-18-product-delete-resilience/proposal.md
+new file mode 100644
+index 0000000..952b4ae
+--- /dev/null
++++ b/openspec/changes/archive/2026-11-18-product-delete-resilience/proposal.md
+@@ -0,0 +1,27 @@
++# Proposal
++
++## Why
++
++Deleting a discontinued product currently leaves carts and order-read paths dependent on a live catalog row, so previously valid carts and orders fail or lose their history. Merchants need product deletion to remove only the active catalog item while preserving cart usability and the immutable details of completed purchases.
++
++## What Changes
++
++- Make cart reads, recalculation, updates, multi-item operations, and checkout tolerate deleted products by removing deleted cart lines and recalculating quantity, subtotal, total, and order contents from the remaining lines.
++- Return HTTP 404 when an add-to-cart request or v2 product lookup targets a deleted product.
++- Preserve order-product snapshot fields (SKU, name, quantity, unit price, subtotal, and related presentation data) so all merchant and customer order endpoints remain readable after catalog deletion.
++- Keep persisted order totals and status updates independent of the deleted catalog product.
++- Add regression coverage for mixed and product-only carts, add-to-cart and lookup 404s, checkout, all order read paths, order status changes, and isolation of other products.
++
++## Capabilities
++
++### New Capabilities
++
++- `product-deletion-resilience`: Deleted catalog products no longer break carts or historical orders, while active-product and not-found behavior remains explicit.
++
++### Modified Capabilities
++
++None.
++
++## Impact
++
++Likely affected areas are the shopping-cart service/facade/populators and calculation path, product lookup and delete controllers/services, order-product persistence and read mappers/populators, checkout flow, and integration tests in `sm-shop` plus relevant core model/service tests. The public API contract changes only by making the specified deleted-product cases return 404 and by making existing cart/order endpoints resilient.
+diff --git a/openspec/changes/archive/2026-11-18-product-delete-resilience/specs/product-deletion-resilience/spec.md b/openspec/changes/archive/2026-11-18-product-delete-resilience/specs/product-deletion-resilience/spec.md
+new file mode 100644
+index 0000000..633a75b
+--- /dev/null
++++ b/openspec/changes/archive/2026-11-18-product-delete-resilience/specs/product-deletion-resilience/spec.md
+@@ -0,0 +1,56 @@
++# Spec Delta
++
++## Purpose
++
++Preserve shopping continuity and historical order records when merchants remove discontinued products from the active catalog, without allowing deleted products to be sold or rediscovered.
++
++## ADDED Requirements
++
++### Requirement: Deleted products are absent from active product access
++The system SHALL treat a deleted product as unavailable for active product retrieval and cart additions while leaving unrelated products accessible.
++
++#### Scenario: Deleted product lookup
++- **WHEN** a client requests `GET /api/v2/product/{sku}` for a deleted product
++- **THEN** the API returns HTTP 404 Not Found
++
++#### Scenario: Add deleted product
++- **WHEN** a client attempts to add a deleted product to a cart
++- **THEN** the API returns HTTP 404 Not Found and does not add a line
++
++#### Scenario: Other products remain available
++- **WHEN** a different, non-deleted product is looked up or added after another product is deleted
++- **THEN** the operation behaves as before
++
++### Requirement: Carts tolerate deleted products
++The system SHALL omit deleted-product lines from cart responses and future cart operations, recalculating quantity, subtotal, total, and checkout contents from the remaining lines.
++
++#### Scenario: Mixed cart is read after deletion
++- **WHEN** a cart contains an active product and a product that is later deleted, and the cart is requested
++- **THEN** the response contains only the active product and its quantity, subtotal, and total reflect only that product
++
++#### Scenario: Cart contains only a deleted product
++- **WHEN** the sole product in a cart is deleted and the cart is requested
++- **THEN** the cart is returned successfully with no products, quantity zero, subtotal zero, and total zero
++
++#### Scenario: Cart remains mutable
++- **WHEN** a cart with a deleted-product line is updated using `PUT /api/v1/cart/{code}` or `POST /api/v1/cart/{code}/multi`
++- **THEN** the operation succeeds using only remaining or newly valid products and never retains the deleted line
++
++#### Scenario: Checkout excludes deleted product
++- **WHEN** a cart containing a deleted-product line is checked out
++- **THEN** checkout succeeds when the remaining cart is otherwise valid and the deleted product is neither ordered nor charged
++
++### Requirement: Historical orders retain purchased product snapshots
++The system SHALL render an order line from the values captured at purchase time, without requiring the catalog product to still exist, and SHALL preserve order totals.
++
++#### Scenario: Order details after deletion
++- **WHEN** an order containing a subsequently deleted product is requested through a merchant or customer order endpoint
++- **THEN** the response succeeds and shows that line's original SKU, name, ordered quantity, price, and subtotal
++
++#### Scenario: Order list after deletion
++- **WHEN** merchant or customer order listings include an order containing a subsequently deleted product
++- **THEN** the listing succeeds and includes the preserved order line data without changing order totals
++
++#### Scenario: Order status update after deletion
++- **WHEN** a merchant changes the status of an order containing a subsequently deleted product
++- **THEN** the status update succeeds and the order's captured line values and totals remain unchanged
+diff --git a/openspec/changes/archive/2026-11-18-product-delete-resilience/tasks.md b/openspec/changes/archive/2026-11-18-product-delete-resilience/tasks.md
+new file mode 100644
+index 0000000..97e19f8
+--- /dev/null
++++ b/openspec/changes/archive/2026-11-18-product-delete-resilience/tasks.md
+@@ -0,0 +1,20 @@
++# Tasks
++
++## 1. Cart resilience
++
++- [x] 1.1 Normalize persisted cart lines whose product is deleted or unavailable, remove stale lines safely, and make cart reads return empty/filtered carts with recalculated quantity, subtotal, total, and totals; verify with service/populator tests for mixed and product-only carts.
++- [x] 1.2 Apply the same stale-line invariant to cart PUT, multi-add, and checkout flows, and preserve 404 behavior when adding a deleted SKU; verify with cart API integration tests including successful checkout without the deleted item.
++
++## 2. Historical order resilience
++
++- [x] 2.1 Make order product response mapping use persisted order-line SKU, name, quantity, price, and subtotal when the catalog product is missing, while treating live enrichment as optional; verify unit tests for deleted-product order lines.
++- [x] 2.2 Verify merchant detail/list, customer detail/list, and order-status update paths with an order whose product is deleted, including unchanged totals and captured line values.
++
++## 3. Product access and regression coverage
++
++- [x] 3.1 Ensure v2 SKU lookup returns HTTP 404 for deleted products and active products remain unaffected; verify with controller/API tests.
++- [x] 3.2 Run the focused cart/order/product test suites and a Maven compilation/package check, fixing regressions until all requested endpoint scenarios pass.
++
++## Workflow follow-up
++
++- Archive the completed OpenSpec change after implementation and verification.
+diff --git a/openspec/specs/product-deletion-resilience/spec.md b/openspec/specs/product-deletion-resilience/spec.md
+new file mode 100644
+index 0000000..4688021
+--- /dev/null
++++ b/openspec/specs/product-deletion-resilience/spec.md
+@@ -0,0 +1,55 @@
++# product-deletion-resilience Specification
++
++## Purpose
++Preserve shopping continuity and historical order records when merchants remove discontinued products from the active catalog, without allowing deleted products to be sold or rediscovered.
++
++## Requirements
++
++### Requirement: Deleted products are absent from active product access
++The system SHALL treat a deleted product as unavailable for active product retrieval and cart additions while leaving unrelated products accessible.
++
++#### Scenario: Deleted product lookup
++- **WHEN** a client requests `GET /api/v2/product/{sku}` for a deleted product
++- **THEN** the API returns HTTP 404 Not Found
++
++#### Scenario: Add deleted product
++- **WHEN** a client attempts to add a deleted product to a cart
++- **THEN** the API returns HTTP 404 Not Found and does not add a line
++
++#### Scenario: Other products remain available
++- **WHEN** a different, non-deleted product is looked up or added after another product is deleted
++- **THEN** the operation behaves as before
++
++### Requirement: Carts tolerate deleted products
++The system SHALL omit deleted-product lines from cart responses and future cart operations, recalculating quantity, subtotal, total, and checkout contents from the remaining lines.
++
++#### Scenario: Mixed cart is read after deletion
++- **WHEN** a cart contains an active product and a product that is later deleted, and the cart is requested
++- **THEN** the response contains only the active product and its quantity, subtotal, and total reflect only that product
++
++#### Scenario: Cart contains only a deleted product
++- **WHEN** the sole product in a cart is deleted and the cart is requested
++- **THEN** the cart is returned successfully with no products, quantity zero, subtotal zero, and total zero
++
++#### Scenario: Cart remains mutable
++- **WHEN** a cart with a deleted-product line is updated using `PUT /api/v1/cart/{code}` or `POST /api/v1/cart/{code}/multi`
++- **THEN** the operation succeeds using only remaining or newly valid products and never retains the deleted line
++
++#### Scenario: Checkout excludes deleted product
++- **WHEN** a cart containing a deleted-product line is checked out
++- **THEN** checkout succeeds when the remaining cart is otherwise valid and the deleted product is neither ordered nor charged
++
++### Requirement: Historical orders retain purchased product snapshots
++The system SHALL render an order line from the values captured at purchase time, without requiring the catalog product to still exist, and SHALL preserve order totals.
++
++#### Scenario: Order details after deletion
++- **WHEN** an order containing a subsequently deleted product is requested through a merchant or customer order endpoint
++- **THEN** the response succeeds and shows that line's original SKU, name, ordered quantity, price, and subtotal
++
++#### Scenario: Order list after deletion
++- **WHEN** merchant or customer order listings include an order containing a subsequently deleted product
++- **THEN** the listing succeeds and includes the preserved order line data without changing order totals
++
++#### Scenario: Order status update after deletion
++- **WHEN** a merchant changes the status of an order containing a subsequently deleted product
++- **THEN** the status update succeeds and the order's captured line values and totals remain unchanged
+diff --git a/sm-core/src/main/java/com/salesmanager/core/business/services/shoppingcart/ShoppingCartServiceImpl.java b/sm-core/src/main/java/com/salesmanager/core/business/services/shoppingcart/ShoppingCartServiceImpl.java
+index e0d1ce8..0fc638c 100755
+--- a/sm-core/src/main/java/com/salesmanager/core/business/services/shoppingcart/ShoppingCartServiceImpl.java
++++ b/sm-core/src/main/java/com/salesmanager/core/business/services/shoppingcart/ShoppingCartServiceImpl.java
+@@ -232,35 +232,32 @@ public class ShoppingCartServiceImpl extends SalesManagerEntityServiceImpl<Long,
+ 
+ 		try {
+ 
+-			boolean cartIsObsolete = false;
+ 			if (shoppingCart != null) {
+ 
+ 				Set<ShoppingCartItem> items = shoppingCart.getLineItems();
+ 				if (items == null || items.size() == 0) {
+-					shoppingCart.setObsolete(true);
++					shoppingCart.setObsolete(false);
+ 					return shoppingCart;
+ 
+ 				}
+ 
+-				// Set<ShoppingCartItem> shoppingCartItems = new
+-				// HashSet<ShoppingCartItem>();
++				List<ShoppingCartItem> staleItems = new ArrayList<>();
+ 				for (ShoppingCartItem item : items) {
+ 					LOGGER.debug("Populate item " + item.getId());
+ 					getPopulatedItem(item, store);
+ 					LOGGER.debug("Obsolete item ? " + item.isObsolete());
+ 					if (item.isObsolete()) {
+-						cartIsObsolete = true;
++						staleItems.add(item);
+ 					}
+ 				}
+ 
+-				Set<ShoppingCartItem> refreshedItems = new HashSet<>(items);
+-
+-				shoppingCart.setLineItems(refreshedItems);
+-				update(shoppingCart);
+-
+-				if (cartIsObsolete) {
+-					shoppingCart.setObsolete(true);
++				for (ShoppingCartItem staleItem : staleItems) {
++					deleteShoppingCartItem(staleItem.getId());
+ 				}
++				items.removeAll(staleItems);
++				shoppingCart.setLineItems(new HashSet<>(items));
++				update(shoppingCart);
++				shoppingCart.setObsolete(false);
+ 				return shoppingCart;
+ 			}
+ 
+diff --git a/sm-shop/src/main/java/com/salesmanager/shop/store/controller/shoppingCart/facade/ShoppingCartFacadeImpl.java b/sm-shop/src/main/java/com/salesmanager/shop/store/controller/shoppingCart/facade/ShoppingCartFacadeImpl.java
+index 7fdc139..d7acf48 100755
+--- a/sm-shop/src/main/java/com/salesmanager/shop/store/controller/shoppingCart/facade/ShoppingCartFacadeImpl.java
++++ b/sm-shop/src/main/java/com/salesmanager/shop/store/controller/shoppingCart/facade/ShoppingCartFacadeImpl.java
+@@ -192,7 +192,7 @@ public class ShoppingCartFacadeImpl implements ShoppingCartFacade {
+ 		Product product = productService.getBySku(shoppingCartItem.getSku(), store, store.getDefaultLanguage());
+ 
+ 		if (product == null) {
+-			throw new Exception("Item with sku " + shoppingCartItem.getSku() + " does not exist");
++			throw new ResourceNotFoundException("Item with sku " + shoppingCartItem.getSku() + " does not exist");
+ 		}
+ 
+ 		if (product.getMerchantStore().getId().intValue() != store.getId().intValue()) {

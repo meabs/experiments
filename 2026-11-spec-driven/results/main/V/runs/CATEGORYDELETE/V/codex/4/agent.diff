@@ -1,0 +1,125 @@
+diff --git a/sm-core/src/main/java/com/salesmanager/core/business/repositories/catalog/category/CategoryRepository.java b/sm-core/src/main/java/com/salesmanager/core/business/repositories/catalog/category/CategoryRepository.java
+index 3f6165b..c8751d0 100755
+--- a/sm-core/src/main/java/com/salesmanager/core/business/repositories/catalog/category/CategoryRepository.java
++++ b/sm-core/src/main/java/com/salesmanager/core/business/repositories/catalog/category/CategoryRepository.java
+@@ -4,12 +4,17 @@ import java.util.List;
+ import java.util.Optional;
+ 
+ import org.springframework.data.jpa.repository.JpaRepository;
++import org.springframework.data.jpa.repository.Modifying;
+ import org.springframework.data.jpa.repository.Query;
+ 
+ import com.salesmanager.core.model.catalog.category.Category;
+ 
+ 
+ public interface CategoryRepository extends JpaRepository<Category, Long>, CategoryRepositoryCustom {
++
++	@Modifying
++	@Query(value = "delete from PRODUCT_CATEGORY where CATEGORY_ID in (?1)", nativeQuery = true)
++	void deleteProductCategoryLinks(List<Long> categoryIds);
+ 	
+ 
+ 	@Query("select c from Category c left join fetch c.descriptions cd join fetch cd.language cdl join fetch c.merchantStore cm where cd.seUrl like ?2 and cm.id = ?1 order by c.sortOrder asc")
+diff --git a/sm-core/src/main/java/com/salesmanager/core/business/services/catalog/category/CategoryServiceImpl.java b/sm-core/src/main/java/com/salesmanager/core/business/services/catalog/category/CategoryServiceImpl.java
+index 36a1aeb..d983db1 100755
+--- a/sm-core/src/main/java/com/salesmanager/core/business/services/catalog/category/CategoryServiceImpl.java
++++ b/sm-core/src/main/java/com/salesmanager/core/business/services/catalog/category/CategoryServiceImpl.java
+@@ -13,6 +13,7 @@ import org.springframework.data.domain.Page;
+ import org.springframework.data.domain.PageRequest;
+ import org.springframework.data.domain.Pageable;
+ import org.springframework.stereotype.Service;
++import org.springframework.transaction.annotation.Transactional;
+ import org.springframework.util.Assert;
+ 
+ import com.salesmanager.core.business.constants.Constants;
+@@ -20,11 +21,9 @@ import com.salesmanager.core.business.exception.ServiceException;
+ import com.salesmanager.core.business.repositories.catalog.category.CategoryDescriptionRepository;
+ import com.salesmanager.core.business.repositories.catalog.category.CategoryRepository;
+ import com.salesmanager.core.business.repositories.catalog.category.PageableCategoryRepository;
+-import com.salesmanager.core.business.services.catalog.product.ProductService;
+ import com.salesmanager.core.business.services.common.generic.SalesManagerEntityServiceImpl;
+ import com.salesmanager.core.model.catalog.category.Category;
+ import com.salesmanager.core.model.catalog.category.CategoryDescription;
+-import com.salesmanager.core.model.catalog.product.Product;
+ import com.salesmanager.core.model.merchant.MerchantStore;
+ import com.salesmanager.core.model.reference.language.Language;
+ 
+@@ -34,9 +33,6 @@ public class CategoryServiceImpl extends SalesManagerEntityServiceImpl<Long, Cat
+ 
+   private CategoryRepository categoryRepository;
+ 
+-  @Inject
+-  private ProductService productService;
+-  
+   @Inject
+   private PageableCategoryRepository pageableCategoryRepository;
+   
+@@ -227,7 +223,8 @@ public class CategoryServiceImpl extends SalesManagerEntityServiceImpl<Long, Cat
+ 
+ 	}
+ 
+-	// @Override
++	@Override
++	@Transactional
+ 	public void delete(Category category) throws ServiceException {
+ 
+ 		// get category with lineage (subcategories)
+@@ -249,33 +246,9 @@ public class CategoryServiceImpl extends SalesManagerEntityServiceImpl<Long, Cat
+ 				categoryIds.add(c.getId());
+ 			}
+ 
+-			List<Product> products = productService.getProducts(categoryIds);
+-			// org.hibernate.Session session =
+-			// em.unwrap(org.hibernate.Session.class);// need to refresh the
+-			// session to update
+-			// all product
+-			// categories
+-
+-			for (Product product : products) {
+-				// session.evict(product);// refresh product so we get all
+-				// product categories
+-				Product dbProduct = productService.getById(product.getId());
+-				Set<Category> productCategories = dbProduct.getCategories();
+-				if (productCategories.size() > 1) {
+-					for (Category c : categories) {
+-						productCategories.remove(c);
+-						productService.update(dbProduct);
+-					}
+-
+-					if (product.getCategories() == null || product.getCategories().size() == 0) {
+-						productService.delete(dbProduct);
+-					}
+-
+-				} else {
+-					productService.delete(dbProduct);
+-				}
+-
+-			}
++			// Remove only the join-table links. Product rows (and therefore
++			// their stock, prices, carts and orders) must remain untouched.
++			categoryRepository.deleteProductCategoryLinks(categoryIds);
+ 
+ 			Category categ = getById(category.getId(), category.getMerchantStore().getId());
+ 			categoryRepository.delete(categ);
+diff --git a/sm-core/src/main/java/com/salesmanager/core/business/services/catalog/product/ProductService.java b/sm-core/src/main/java/com/salesmanager/core/business/services/catalog/product/ProductService.java
+index 3253ab0..c4211e3 100755
+--- a/sm-core/src/main/java/com/salesmanager/core/business/services/catalog/product/ProductService.java
++++ b/sm-core/src/main/java/com/salesmanager/core/business/services/catalog/product/ProductService.java
+@@ -98,4 +98,3 @@ public interface ProductService extends SalesManagerEntityService<Long, Product>
+ 
+ 
+ }
+-
+diff --git a/sm-shop/src/main/java/com/salesmanager/shop/store/facade/category/CategoryFacadeImpl.java b/sm-shop/src/main/java/com/salesmanager/shop/store/facade/category/CategoryFacadeImpl.java
+index 3d9067d..0046a3f 100755
+--- a/sm-shop/src/main/java/com/salesmanager/shop/store/facade/category/CategoryFacadeImpl.java
++++ b/sm-shop/src/main/java/com/salesmanager/shop/store/facade/category/CategoryFacadeImpl.java
+@@ -363,7 +363,7 @@ public class CategoryFacadeImpl implements CategoryFacade {
+ 	}
+ 
+ 	private Category getOne(Long categoryId, int storeId) {
+-		return Optional.ofNullable(categoryService.getById(categoryId)).orElseThrow(
++		return Optional.ofNullable(categoryService.getById(categoryId, storeId)).orElseThrow(
+ 				() -> new ResourceNotFoundException(String.format("No Category found for ID : %s", categoryId)));
+ 	}
+ 

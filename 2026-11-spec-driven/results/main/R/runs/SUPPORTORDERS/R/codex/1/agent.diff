@@ -1,0 +1,204 @@
+diff --git a/notes/plan.md b/notes/plan.md
+new file mode 100644
+index 0000000..cbbcc43
+--- /dev/null
++++ b/notes/plan.md
+@@ -0,0 +1,8 @@
++# Plan
++
++1. Make retained orders independently readable by changing the single-order fetch query to use left fetch joins for optional order relations, while preserving the existing scalar customer id, email, billing, and delivery data.
++2. Change the admin customer-order endpoint to query orders by the requested stored customer id even when the customer row no longer exists. Populate the response customer only when the account still exists, leaving it absent for retained historical orders.
++3. Repair order-list pagination and metadata: use a mathematically correct ceiling page count, keep matching totals on empty pages, return an empty order collection rather than a null/zero-total response, and ensure filtered queries remain constrained to the merchant when name/phone OR clauses are used.
++4. Preserve the existing delete and registration model so a newly registered customer gets a new id and cannot inherit old orders; add focused regression tests where the project’s test setup supports them.
++5. Build the affected Maven modules and run the relevant unit/integration test commands, recording any environment limitations in the final verification line.
++
+diff --git a/notes/research.md b/notes/research.md
+new file mode 100644
+index 0000000..c30f2ed
+--- /dev/null
++++ b/notes/research.md
+@@ -0,0 +1,33 @@
++# Research
++
++## Request paths and files
++
++- `sm-shop/src/main/java/com/salesmanager/shop/store/api/v1/order/OrderApi.java`
++  owns all three admin endpoints. `GET /private/orders/{id}` delegates to `OrderFacade.getReadableOrder`; `GET /private/orders/customers/{id}` first loads a `Customer` and returns HTTP 404 when it is absent; the paginated admin list builds an `OrderCriteria` and delegates to the facade.
++- `sm-shop/src/main/java/com/salesmanager/shop/store/controller/order/facade/OrderFacadeImpl.java`
++  converts core orders to the v0 admin response. The customer-scoped method passes `customerId` into the criteria. The criteria-based admin method calls `orderService.getOrders`, but returns an object with `recordsTotal=0` whenever the current page is empty, losing the count and page total. Single-order conversion tries to populate a customer only when the customer still exists, while the order populator retains billing, delivery, and placed email.
++- `sm-core/src/main/java/com/salesmanager/core/business/repositories/order/OrderRepository.java`
++  has the single-order query. Several `join fetch` clauses are inner joins, including products, totals, history, and product attributes/downloads; any missing related row can therefore make an otherwise retained order disappear.
++- `sm-core/src/main/java/com/salesmanager/core/business/repositories/order/OrderRepositoryImpl.java`
++  contains both list implementations. The admin criteria path is `listOrders`; the customer/admin legacy path is `listByStore`. Both filter by the scalar `o.customerId`, not by a customer relationship. `listOrders` orders newest first and applies filters, but uses `RepositoryHelper.paginateQuery` for page offsets and computes pages as `(count / pageSize) + 1`, which produces an incorrect extra page for exact multiples. `listByStore` is legacy and has no robust empty-page metadata handling.
++- `sm-core/src/main/java/com/salesmanager/core/business/utils/RepositoryHelper.java`
++  calculates page offsets correctly for zero-based pages, but its page count is `(count / size) + 1`; it also only applies the new pagination branch when callers explicitly disable legacy pagination.
++- `sm-core-model/src/main/java/com/salesmanager/core/model/order/Order.java`
++  deliberately stores `CUSTOMER_ID` as a nullable `Long` with the comment that an order can outlive a deleted customer. It separately stores `customerEmailAddress`, embedded billing, and embedded delivery, so historical order details do not require a live customer.
++- `sm-core/src/main/java/com/salesmanager/core/business/services/customer/CustomerServiceImpl.java` and `sm-shop/src/main/java/com/salesmanager/shop/store/controller/customer/facade/CustomerFacadeImpl.java`
++  delete the customer entity and attributes only; they do not delete or rewrite orders. This is compatible with retaining orders and permits a later registration with the same email to receive a new customer id.
++
++## Causes
++
++1. The customer-scoped endpoint treats a missing customer as an error before querying orders, so retained orders for a deleted customer can never be listed.
++2. The single-order query’s inner fetch joins can filter out a retained order at the database query level. The facade itself already tolerates a missing customer and leaves the response customer unset, but it cannot do so if the query returns no row.
++3. The admin list’s metadata is discarded for an empty page in `OrderFacadeImpl`; the response therefore reports zero totals instead of the matching count. Pagination metadata also has an off-by-one calculation in `RepositoryHelper`.
++4. The customer-scoped legacy conversion similarly returns an empty response without preserving the matching total, and its result query has a legacy pagination implementation that is less consistent with the required zero-based `page` contract.
++
++## Affected behavior
++
++- Admin order details, status updates, order history, and payment transaction reads all depend on resolving the order by id; the retained order must remain queryable without requiring customer existence.
++- Customer order lookup must be based on the stored order customer id and merchant store, not on the current customer row.
++- Re-registration safety is already provided by the order’s scalar customer id and the customer delete implementation; no email-based order lookup or reassignment must be introduced.
++- The response model is the deprecated v0 `ReadableOrderList`, whose `recordsTotal` and `totalPages` fields are consumed by the admin UI. Empty pages must still carry both totals and an empty (non-null where practical) order list.
++
+diff --git a/sm-core/src/main/java/com/salesmanager/core/business/repositories/order/OrderRepository.java b/sm-core/src/main/java/com/salesmanager/core/business/repositories/order/OrderRepository.java
+index 8b61989..e392d32 100755
+--- a/sm-core/src/main/java/com/salesmanager/core/business/repositories/order/OrderRepository.java
++++ b/sm-core/src/main/java/com/salesmanager/core/business/repositories/order/OrderRepository.java
+@@ -7,16 +7,16 @@ import com.salesmanager.core.model.order.Order;
+ 
+ public interface OrderRepository extends JpaRepository<Order, Long>, OrderRepositoryCustom {
+ 
+-    @Query("select o from Order o join fetch o.merchant om "
+-    		+ "join fetch o.orderProducts op "
+-    		+ "left join fetch o.delivery od left join fetch od.country left join fetch od.zone "
+-    		+ "left join fetch o.billing ob left join fetch ob.country left join fetch ob.zone "
+-    		+ "left join fetch o.orderAttributes oa "
+-    		+ "join fetch o.orderTotal ot left "
+-    		+ "join fetch o.orderHistory oh left "
+-    		+ "join fetch op.downloads opd left "
+-    		+ "join fetch op.orderAttributes opa "
+-    		+ "left join fetch op.prices opp where o.id = ?1 and om.id = ?2")
++    @Query("select distinct o from Order o join fetch o.merchant om "
++            + "left join fetch o.orderProducts op "
++            + "left join fetch o.delivery od left join fetch od.country left join fetch od.zone "
++            + "left join fetch o.billing ob left join fetch ob.country left join fetch ob.zone "
++            + "left join fetch o.orderAttributes oa "
++            + "left join fetch o.orderTotal ot "
++            + "left join fetch o.orderHistory oh "
++            + "left join fetch op.downloads opd "
++            + "left join fetch op.orderAttributes opa "
++            + "left join fetch op.prices opp where o.id = ?1 and om.id = ?2")
+ 	Order findOne(Long id, Integer merchantId);
+     
+ }
+diff --git a/sm-core/src/main/java/com/salesmanager/core/business/repositories/order/OrderRepositoryImpl.java b/sm-core/src/main/java/com/salesmanager/core/business/repositories/order/OrderRepositoryImpl.java
+index d96548c..540458d 100755
+--- a/sm-core/src/main/java/com/salesmanager/core/business/repositories/order/OrderRepositoryImpl.java
++++ b/sm-core/src/main/java/com/salesmanager/core/business/repositories/order/OrderRepositoryImpl.java
+@@ -149,7 +149,7 @@ public class OrderRepositoryImpl implements OrderRepositoryCustom {
+ 		}
+ 
+ 		
+-		String baseQuery = "select o from Order as o left join fetch o.delivery.country left join fetch o.delivery.zone left join fetch o.billing.country left join fetch o.billing.zone left join fetch o.orderTotal ot left join fetch o.orderProducts op left join fetch o.orderAttributes oa left join fetch op.orderAttributes opo left join fetch op.prices opp";
++		String baseQuery = "select distinct o from Order as o left join fetch o.delivery.country left join fetch o.delivery.zone left join fetch o.billing.country left join fetch o.billing.zone left join fetch o.orderTotal ot left join fetch o.orderProducts op left join fetch o.orderAttributes oa left join fetch op.orderAttributes opo left join fetch op.prices opp";
+ 		String countBaseQuery = "select count(o) from Order as o";
+ 		
+ 		countBuilderSelect.append(countBaseQuery);
+@@ -162,7 +162,7 @@ public class OrderRepositoryImpl implements OrderRepositoryCustom {
+ 		countBuilderSelect.append(storeQuery);
+ 		
+ 		if(!StringUtils.isEmpty(criteria.getCustomerName())) {
+-			String nameQuery =  " and o.billing.firstName like:name or o.billing.lastName like:name";
++			String nameQuery =  " and (o.billing.firstName like:name or o.billing.lastName like:name)";
+ 			objectBuilderWhere.append(nameQuery);
+ 			countBuilderSelect.append(nameQuery);
+ 		}
+@@ -182,7 +182,7 @@ public class OrderRepositoryImpl implements OrderRepositoryCustom {
+ 		
+ 		//phone
+ 		if(!StringUtils.isEmpty(criteria.getCustomerPhone())) {
+-			String nameQuery =  " and o.billing.telephone like:phone or o.delivery.telephone like:phone";
++			String nameQuery =  " and (o.billing.telephone like:phone or o.delivery.telephone like:phone)";
+ 			objectBuilderWhere.append(nameQuery);
+ 			countBuilderSelect.append(nameQuery);
+ 		}
+diff --git a/sm-core/src/main/java/com/salesmanager/core/business/utils/RepositoryHelper.java b/sm-core/src/main/java/com/salesmanager/core/business/utils/RepositoryHelper.java
+index b71b1fa..c7ef0f6 100644
+--- a/sm-core/src/main/java/com/salesmanager/core/business/utils/RepositoryHelper.java
++++ b/sm-core/src/main/java/com/salesmanager/core/business/utils/RepositoryHelper.java
+@@ -30,7 +30,7 @@ public class RepositoryHelper {
+ 			int firstResult = ((criteria.getStartPage()==0?0:criteria.getStartPage())) * criteria.getPageSize();
+ 			q.setFirstResult(firstResult);
+ 			q.setMaxResults(criteria.getPageSize());
+-			int lastPageNumber = (count.intValue() / criteria.getPageSize()) + 1;
++			int lastPageNumber = (count.intValue() + criteria.getPageSize() - 1) / criteria.getPageSize();
+ 			entityList.setTotalPages(lastPageNumber);
+ 			entityList.setTotalCount(count.intValue());
+ 		}
+diff --git a/sm-shop/src/main/java/com/salesmanager/shop/store/api/v1/order/OrderApi.java b/sm-shop/src/main/java/com/salesmanager/shop/store/api/v1/order/OrderApi.java
+index b0ca074..08bae55 100755
+--- a/sm-shop/src/main/java/com/salesmanager/shop/store/api/v1/order/OrderApi.java
++++ b/sm-shop/src/main/java/com/salesmanager/shop/store/api/v1/order/OrderApi.java
+@@ -121,12 +121,6 @@ public class OrderApi {
+ 
+ 		Customer customer = customerService.getById(id);
+ 
+-		if (customer == null) {
+-			LOGGER.error("Customer is null for id " + id);
+-			response.sendError(404, "Customer is null for id " + id);
+-			return null;
+-		}
+-
+ 		if (start == null) {
+ 			start = new Integer(0);
+ 		}
+@@ -134,12 +128,18 @@ public class OrderApi {
+ 			count = new Integer(100);
+ 		}
+ 
+-		ReadableCustomer readableCustomer = new ReadableCustomer();
+-		ReadableCustomerPopulator customerPopulator = new ReadableCustomerPopulator();
+-		customerPopulator.populate(customer, readableCustomer, merchantStore, language);
+-
+-		ReadableOrderList returnList = orderFacade.getReadableOrderList(merchantStore, customer, start, count,
+-				language);
++		OrderCriteria criteria = new OrderCriteria();
++		criteria.setCustomerId(id);
++		criteria.setPageSize(count);
++		criteria.setStartPage(start / count);
++		ReadableOrderList returnList = orderFacade.getReadableOrderList(criteria, merchantStore);
++
++		ReadableCustomer readableCustomer = null;
++		if (customer != null) {
++			readableCustomer = new ReadableCustomer();
++			ReadableCustomerPopulator customerPopulator = new ReadableCustomerPopulator();
++			customerPopulator.populate(customer, readableCustomer, merchantStore, language);
++		}
+ 
+ 		List<ReadableOrder> orders = returnList.getOrders();
+ 
+diff --git a/sm-shop/src/main/java/com/salesmanager/shop/store/controller/order/facade/OrderFacadeImpl.java b/sm-shop/src/main/java/com/salesmanager/shop/store/controller/order/facade/OrderFacadeImpl.java
+index 0da643b..5829d67 100755
+--- a/sm-shop/src/main/java/com/salesmanager/shop/store/controller/order/facade/OrderFacadeImpl.java
++++ b/sm-shop/src/main/java/com/salesmanager/shop/store/controller/order/facade/OrderFacadeImpl.java
+@@ -7,6 +7,7 @@ import java.time.ZoneId;
+ import java.time.ZonedDateTime;
+ import java.util.ArrayList;
+ import java.util.Collections;
++import java.util.Collections;
+ import java.util.Comparator;
+ import java.util.Date;
+ import java.util.HashMap;
+@@ -945,7 +946,9 @@ public class OrderFacadeImpl implements OrderFacade {
+ 			com.salesmanager.shop.model.order.v0.ReadableOrderList returnList = new com.salesmanager.shop.model.order.v0.ReadableOrderList();
+ 
+ 			if (CollectionUtils.isEmpty(orders)) {
+-				returnList.setRecordsTotal(0);
++				returnList.setOrders(Collections.emptyList());
++				returnList.setRecordsTotal(orderList.getTotalCount());
++				returnList.setTotalPages(orderList.getTotalPages());
+ 				return returnList;
+ 			}
+ 
+@@ -1010,7 +1013,9 @@ public class OrderFacadeImpl implements OrderFacade {
+ 		com.salesmanager.shop.model.order.v0.ReadableOrderList returnList = new com.salesmanager.shop.model.order.v0.ReadableOrderList();
+ 		if (CollectionUtils.isEmpty(orders)) {
+ 			LOGGER.info("Order list if empty..Returning empty list");
+-			returnList.setRecordsTotal(0);
++			returnList.setOrders(Collections.emptyList());
++			returnList.setRecordsTotal(orderList.getTotalCount());
++			returnList.setTotalPages(orderList.getTotalPages());
+ 			// returnList.setMessage("No results for store code " + store);
+ 			return returnList;
+ 		}

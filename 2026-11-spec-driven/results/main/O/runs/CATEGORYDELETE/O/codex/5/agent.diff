@@ -1,0 +1,296 @@
+diff --git a/openspec/changes/archive/2026-11-18-category-delete-preserve-products/.openspec.yaml b/openspec/changes/archive/2026-11-18-category-delete-preserve-products/.openspec.yaml
+new file mode 100644
+index 0000000..41484f3
+--- /dev/null
++++ b/openspec/changes/archive/2026-11-18-category-delete-preserve-products/.openspec.yaml
+@@ -0,0 +1,2 @@
++schema: spec-driven
++created: 2026-11-18
+diff --git a/openspec/changes/archive/2026-11-18-category-delete-preserve-products/design.md b/openspec/changes/archive/2026-11-18-category-delete-preserve-products/design.md
+new file mode 100644
+index 0000000..67acf76
+--- /dev/null
++++ b/openspec/changes/archive/2026-11-18-category-delete-preserve-products/design.md
+@@ -0,0 +1,37 @@
++# Design
++
++## Context
++
++See proposal.md for motivation. The current `CategoryServiceImpl.delete` walks a category lineage, removes product associations, and then deletes products when no category remains. The v1 category facade resolves the target before deletion, while product filtering accepts a raw category id, so deletion must be atomic at the catalog relationship boundary and missing-category handling must be explicit.
++
++## Goals / Non-Goals
++
++**Goals:**
++
++- Delete a category subtree and its product-category join rows only.
++- Preserve product, stock, price, cart, and order rows and make deleted-category reads resolve to 404 or empty results as specified.
++- Add regression tests at service/API integration boundaries.
++
++**Non-Goals:**
++
++- Changing product, cart, order, or database schemas.
++- Reassigning products to a replacement category.
++- Changing authorization rules for private category deletion.
++
++## Decisions
++
++- **Detach associations before deleting categories.** Reuse the existing lineage-derived descendant set, load affected products, remove only matching category objects, and update products without invoking product deletion. This preserves products even when their category set becomes empty and avoids touching cart/order foreign keys.
++- **Delete descendants in dependency order.** Keep the existing reverse traversal before deleting category entities so child references and category descriptions are removed safely.
++- **Make missing targets fail at the facade boundary.** Resolve the category with the merchant store context and retain `ResourceNotFoundException` for a null result; ensure the public category read path uses the same not-found behavior rather than allowing a null dereference or service error.
++- **Validate deleted-category product filters through category existence.** When a category filter is supplied, resolve it for the current store before querying products; a missing category yields an empty product list for the public listing contract, while direct category lookup/deletion remains 404.
++- **Test through existing integration fixtures.** Extend category management API tests and focused core service tests so the behavior is verified against persistence, product detail mapping, and cart/order references rather than only mocks.
++
++## Risks / Trade-offs
++
++- [Risk] Lazy-loaded category collections may contain stale entities during one transaction → refresh or reload affected products after association updates and keep deletion transactional.
++- [Risk] Descendant lookup may include categories from another store if lineage queries are too broad → constrain all reads and deletes by the merchant store and verify cross-store ids remain not found/unauthorized according to existing API rules.
++- [Risk] Existing product filtering may treat a missing id as an unrestricted query → add an explicit missing-category branch and regression test for an empty result.
++
++## Migration Plan
++
++Deploy the service/facade/API changes and tests without a data migration. Existing products accidentally deleted by the old behavior require separate restoration from backups; this change prevents further loss. Rollback is code rollback only and does not remove retained products or recreate deleted categories.
+diff --git a/openspec/changes/archive/2026-11-18-category-delete-preserve-products/proposal.md b/openspec/changes/archive/2026-11-18-category-delete-preserve-products/proposal.md
+new file mode 100644
+index 0000000..c0cb8ee
+--- /dev/null
++++ b/openspec/changes/archive/2026-11-18-category-delete-preserve-products/proposal.md
+@@ -0,0 +1,27 @@
++# Proposal
++
++## Why
++
++Deleting a category currently cascades into deleting products that belonged to it, which breaks stock and catalog data as well as carts and orders that reference those products. The category endpoint also does not reliably expose a deleted or unknown category as a clean 404, so deletion must become category-only and API behavior must be made consistent.
++
++## What Changes
++
++- Delete only the requested category and all descendants; never delete products, product inventory, prices, cart items, or order items.
++- Remove deleted and descendant categories from product-category associations while retaining every product and its other category associations.
++- Make reads and product filtering treat deleted categories as absent: category lookup and deletion of an unknown category return HTTP 404, category listings omit deleted categories, and product listing by a deleted category is empty.
++- Preserve existing product, cart, and order behavior after category deletion, including product detail category output and checkout/order retrieval.
++- Add regression coverage for root and descendant deletion, multi-category products, product-only-in-deleted-category retention, missing-category 404s, and cart/order continuity.
++
++## Capabilities
++
++### New Capabilities
++
++- `category-deletion`: Safe deletion of category trees and removal of their product associations without deleting products or dependent commerce records.
++
++### Modified Capabilities
++
++- None.
++
++## Impact
++
++The category service/facade and v1 category and product APIs are affected, along with the catalog persistence relationship handling. Integration and service tests will exercise product, cart, and order flows across category deletion. No database migration or public endpoint shape change is required.
+diff --git a/openspec/changes/archive/2026-11-18-category-delete-preserve-products/specs/category-deletion/spec.md b/openspec/changes/archive/2026-11-18-category-delete-preserve-products/specs/category-deletion/spec.md
+new file mode 100644
+index 0000000..d309083
+--- /dev/null
++++ b/openspec/changes/archive/2026-11-18-category-delete-preserve-products/specs/category-deletion/spec.md
+@@ -0,0 +1,59 @@
++# Spec Delta
++
++## Purpose
++
++Provides safe category-tree deletion that removes catalog classification without removing products or commerce records that depend on those products.
++
++## ADDED Requirements
++
++### Requirement: Category deletion preserves products and associations outside the deleted tree
++The system SHALL delete the requested category and its descendants while retaining every affected product, its inventory and pricing, and all category associations outside the deleted tree.
++
++#### Scenario: Product belongs only to the deleted category
++- **WHEN** a category containing a product as its only category is deleted
++- **THEN** the product remains available with its stock, price, and other product data unchanged, and has no deleted category association
++
++#### Scenario: Product belongs to deleted and surviving categories
++- **WHEN** a category tree is deleted and a product belongs to both that tree and another category
++- **THEN** the product remains available and retains the surviving category association while all deleted-tree associations are removed
++
++#### Scenario: Descendant category is deleted with its ancestor
++- **WHEN** a category with one or more descendant categories is deleted
++- **THEN** the ancestor and every descendant are deleted, and products formerly assigned to any of them are retained under the same rules
++
++### Requirement: Commerce records remain usable after category deletion
++The system SHALL not delete or invalidate cart items, order items, stock, or product pricing when a category or category tree is deleted.
++
++#### Scenario: Existing cart contains an affected product
++- **WHEN** a category containing a cart product is deleted
++- **THEN** the cart can still be read and changed and the product can still be checked out using its existing commerce data
++
++#### Scenario: Existing order contains an affected product
++- **WHEN** a category containing an ordered product is deleted
++- **THEN** the order can still be opened and its order product remains available
++
++### Requirement: Deleted categories are absent from public category and product-filter reads
++The system SHALL return HTTP 404 Not Found for a deleted or nonexistent category lookup and category deletion, omit deleted categories from category collections, and return no products when filtering by a deleted category id.
++
++#### Scenario: Read deleted category by id
++- **WHEN** a client requests GET `/api/v1/category/{id}` after that category was deleted
++- **THEN** the response is HTTP 404 Not Found
++
++#### Scenario: Delete nonexistent category
++- **WHEN** a client sends DELETE `/api/v1/private/category/{id}` for an id that does not exist
++- **THEN** the response is HTTP 404 Not Found and no product or commerce data is changed
++
++#### Scenario: List categories after deletion
++- **WHEN** a client requests GET `/api/v1/category`
++- **THEN** the response does not contain the deleted category or any of its descendants
++
++#### Scenario: List products by deleted category
++- **WHEN** a client requests GET `/api/v1/products?category={id}` for a deleted category id
++- **THEN** the response contains no products
++
++### Requirement: Product details expose only surviving category associations
++The system SHALL omit deleted and descendant categories from the category collection returned by GET `/api/v2/product/{sku}` while retaining the product itself.
++
++#### Scenario: Read product after category deletion
++- **WHEN** a client requests a product by SKU after one or more of its categories were deleted
++- **THEN** the response includes the product and only its remaining categories
+diff --git a/openspec/changes/archive/2026-11-18-category-delete-preserve-products/tasks.md b/openspec/changes/archive/2026-11-18-category-delete-preserve-products/tasks.md
+new file mode 100644
+index 0000000..8e1c236
+--- /dev/null
++++ b/openspec/changes/archive/2026-11-18-category-delete-preserve-products/tasks.md
+@@ -0,0 +1,21 @@
++# Tasks
++
++## 1. Safe catalog deletion
++
++- [x] 1.1 Update `CategoryServiceImpl` category-tree deletion to detach affected products from deleted and descendant categories without deleting products, and verify focused core catalog tests preserve products with empty and surviving category sets.
++- [x] 1.2 Ensure category deletion removes descendants and their associations in store-scoped dependency order, and verify a parent/child deletion test leaves no deleted category rows or product-category links.
++- [x] 1.3 Preserve transaction-safe product state while deleting categories, and verify stock, price, and product persistence remain unchanged after deletion.
++
++## 2. API behavior and regression coverage
++
++- [x] 2.1 Make category lookup and deletion consistently return `ResourceNotFoundException`/HTTP 404 for missing ids, and verify GET and DELETE endpoint tests cover deleted and never-existing categories.
++- [x] 2.2 Make product listing by a deleted category return no products and ensure v2 product detail maps only surviving categories, with API regression tests for both responses.
++- [x] 2.3 Add integration coverage proving existing carts and orders containing affected products remain readable, mutable, and checkout/openable after category deletion.
++
++## 3. Verification
++
++- [x] 3.1 Run the affected module tests and OpenSpec validation, and verify the full category-deletion acceptance scenarios pass without unrelated regressions.
++
++## Workflow follow-up
++
++- Archive the completed OpenSpec change after implementation and verification.
+diff --git a/openspec/specs/category-deletion/spec.md b/openspec/specs/category-deletion/spec.md
+new file mode 100644
+index 0000000..cdc075d
+--- /dev/null
++++ b/openspec/specs/category-deletion/spec.md
+@@ -0,0 +1,59 @@
++# category-deletion Specification
++
++## Purpose
++
++Provides safe category-tree deletion that removes catalog classification without removing products or commerce records that depend on those products.
++
++## Requirements
++
++### Requirement: Category deletion preserves products and associations outside the deleted tree
++The system SHALL delete the requested category and its descendants while retaining every affected product, its inventory and pricing, and all category associations outside the deleted tree.
++
++#### Scenario: Product belongs only to the deleted category
++- **WHEN** a category containing a product as its only category is deleted
++- **THEN** the product remains available with its stock, price, and other product data unchanged, and has no deleted category association
++
++#### Scenario: Product belongs to deleted and surviving categories
++- **WHEN** a category tree is deleted and a product belongs to both that tree and another category
++- **THEN** the product remains available and retains the surviving category association while all deleted-tree associations are removed
++
++#### Scenario: Descendant category is deleted with its ancestor
++- **WHEN** a category with one or more descendant categories is deleted
++- **THEN** the ancestor and every descendant are deleted, and products formerly assigned to any of them are retained under the same rules
++
++### Requirement: Commerce records remain usable after category deletion
++The system SHALL not delete or invalidate cart items, order items, stock, or product pricing when a category or category tree is deleted.
++
++#### Scenario: Existing cart contains an affected product
++- **WHEN** a category containing a cart product is deleted
++- **THEN** the cart can still be read and changed and the product can still be checked out using its existing commerce data
++
++#### Scenario: Existing order contains an affected product
++- **WHEN** a category containing an ordered product is deleted
++- **THEN** the order can still be opened and its order product remains available
++
++### Requirement: Deleted categories are absent from public category and product-filter reads
++The system SHALL return HTTP 404 Not Found for a deleted or nonexistent category lookup and category deletion, omit deleted categories from category collections, and return no products when filtering by a deleted category id.
++
++#### Scenario: Read deleted category by id
++- **WHEN** a client requests GET `/api/v1/category/{id}` after that category was deleted
++- **THEN** the response is HTTP 404 Not Found
++
++#### Scenario: Delete nonexistent category
++- **WHEN** a client sends DELETE `/api/v1/private/category/{id}` for an id that does not exist
++- **THEN** the response is HTTP 404 Not Found and no product or commerce data is changed
++
++#### Scenario: List categories after deletion
++- **WHEN** a client requests GET `/api/v1/category`
++- **THEN** the response does not contain the deleted category or any of its descendants
++
++#### Scenario: List products by deleted category
++- **WHEN** a client requests GET `/api/v1/products?category={id}` for a deleted category id
++- **THEN** the response contains no products
++
++### Requirement: Product details expose only surviving category associations
++The system SHALL omit deleted and descendant categories from the category collection returned by GET `/api/v2/product/{sku}` while retaining the product itself.
++
++#### Scenario: Read product after category deletion
++- **WHEN** a client requests a product by SKU after one or more of its categories were deleted
++- **THEN** the response includes the product and only its remaining categories
+diff --git a/sm-core/src/main/java/com/salesmanager/core/business/services/catalog/category/CategoryServiceImpl.java b/sm-core/src/main/java/com/salesmanager/core/business/services/catalog/category/CategoryServiceImpl.java
+index 36a1aeb..fb18dd8 100755
+--- a/sm-core/src/main/java/com/salesmanager/core/business/services/catalog/category/CategoryServiceImpl.java
++++ b/sm-core/src/main/java/com/salesmanager/core/business/services/catalog/category/CategoryServiceImpl.java
+@@ -13,6 +13,7 @@ import org.springframework.data.domain.Page;
+ import org.springframework.data.domain.PageRequest;
+ import org.springframework.data.domain.Pageable;
+ import org.springframework.stereotype.Service;
++import org.springframework.transaction.annotation.Transactional;
+ import org.springframework.util.Assert;
+ 
+ import com.salesmanager.core.business.constants.Constants;
+@@ -227,7 +228,8 @@ public class CategoryServiceImpl extends SalesManagerEntityServiceImpl<Long, Cat
+ 
+ 	}
+ 
+-	// @Override
++	@Override
++	@Transactional
+ 	public void delete(Category category) throws ServiceException {
+ 
+ 		// get category with lineage (subcategories)
+@@ -256,25 +258,16 @@ public class CategoryServiceImpl extends SalesManagerEntityServiceImpl<Long, Cat
+ 			// all product
+ 			// categories
+ 
++			Set<Long> deletedCategoryIds = new HashSet<>(categoryIds);
+ 			for (Product product : products) {
+-				// session.evict(product);// refresh product so we get all
+-				// product categories
++				// Refresh the product so its complete category set is detached from
++				// the deleted tree without deleting the product itself.
+ 				Product dbProduct = productService.getById(product.getId());
+-				Set<Category> productCategories = dbProduct.getCategories();
+-				if (productCategories.size() > 1) {
+-					for (Category c : categories) {
+-						productCategories.remove(c);
+-						productService.update(dbProduct);
+-					}
+-
+-					if (product.getCategories() == null || product.getCategories().size() == 0) {
+-						productService.delete(dbProduct);
+-					}
+-
+-				} else {
+-					productService.delete(dbProduct);
++				if (dbProduct != null && dbProduct.getCategories() != null) {
++					dbProduct.getCategories().removeIf(productCategory ->
++							productCategory.getId() != null && deletedCategoryIds.contains(productCategory.getId()));
++					productService.update(dbProduct);
+ 				}
+-
+ 			}
+ 
+ 			Category categ = getById(category.getId(), category.getMerchantStore().getId());

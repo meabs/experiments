@@ -1,0 +1,319 @@
+diff --git a/openspec/changes/archive/2026-11-18-preserve-deleted-customer-orders/.openspec.yaml b/openspec/changes/archive/2026-11-18-preserve-deleted-customer-orders/.openspec.yaml
+new file mode 100644
+index 0000000..41484f3
+--- /dev/null
++++ b/openspec/changes/archive/2026-11-18-preserve-deleted-customer-orders/.openspec.yaml
+@@ -0,0 +1,2 @@
++schema: spec-driven
++created: 2026-11-18
+diff --git a/openspec/changes/archive/2026-11-18-preserve-deleted-customer-orders/design.md b/openspec/changes/archive/2026-11-18-preserve-deleted-customer-orders/design.md
+new file mode 100644
+index 0000000..139fbd0
+--- /dev/null
++++ b/openspec/changes/archive/2026-11-18-preserve-deleted-customer-orders/design.md
+@@ -0,0 +1,36 @@
++# Design
++
++## Context
++
++The order API delegates filtering and pagination through `OrderCriteria`, the core order repository/service, and `OrderFacadeImpl`. Customer-order listing currently resolves a live `Customer` before querying, while order population obtains the customer separately and can already leave it unset when the lookup fails.
++
++## Goals / Non-Goals
++
++**Goals:**
++
++- Make the persisted order's customer id and snapshot fields sufficient for historical reads and administration.
++- Separate order lookup from live customer existence.
++- Correct page offset, filtered count, ordering, and page-count propagation through the existing response model.
++- Preserve registration uniqueness semantics so a deleted email can be reused without reattaching order ownership.
++
++**Non-Goals:**
++
++- Changing the public route shapes or order snapshot data model beyond what is needed to retain existing values.
++- Restoring deleted customer profiles or exposing historical orders through customer self-service authentication.
++
++## Decisions
++
++- Query customer history by `Order.customerId` directly, rather than loading `Customer`; this keeps historical ownership stable and naturally returns an empty result for unknown ids.
++- Keep the customer relation optional during read/population and guard customer enrichment; order snapshots remain the source for billing, delivery, and email fields. This preserves current live-customer responses while allowing a null customer.
++- Fix pagination at the criteria/repository boundary so filtering, descending order date, count, offset, total count, and total pages are computed by one query path. The API continues passing zero-based `page` and `count`.
++- Retain customer deletion as account deletion only; do not cascade-delete orders or rewrite their recorded customer id. Registration creates a new customer row and therefore cannot inherit the old id's orders.
++- Add focused service/repository/API regression tests for deleted-customer detail, customer-id listing, later/out-of-range pages, and email reuse.
++
++## Risks / Trade-offs
++
++- [Risk] Existing data may already have lost order fields through a prior cascade → Mitigation: preserve all currently available snapshots and cover the non-cascade deletion path; do not invent missing historical data.
++- [Risk] Pagination fixes can alter clients relying on the broken first-page behavior → Mitigation: retain response shape and defaults, and document/test zero-based page semantics.
++
++## Migration Plan
++
++Deploy the query and mapping changes without a data migration. Verify existing orders before and after customer deletion, then roll back the application release if regression tests or production smoke checks fail; order data remains untouched.
+diff --git a/openspec/changes/archive/2026-11-18-preserve-deleted-customer-orders/proposal.md b/openspec/changes/archive/2026-11-18-preserve-deleted-customer-orders/proposal.md
+new file mode 100644
+index 0000000..f23d1a5
+--- /dev/null
++++ b/openspec/changes/archive/2026-11-18-preserve-deleted-customer-orders/proposal.md
+@@ -0,0 +1,27 @@
++# Proposal
++
++## Why
++
++Order records are currently coupled to the lifecycle of their customer account, so deleting an account makes historical orders inaccessible to support staff. The admin order list also loses its pagination state after the first page, preventing reliable access to older orders.
++
++## What Changes
++
++- Preserve the customer id, placed-with email, billing and delivery data, order status, history, and payment transactions needed to read and manage an order after its customer is deleted.
++- Allow the order detail endpoint and customer-order endpoint to serve historical orders without requiring a live customer row; returned orders have no customer object when the account no longer exists.
++- Make customer-order lookup filter directly by the recorded customer id, newest first, and return an empty list with `recordsTotal: 0` when there are no matches.
++- Correct admin order pagination so `page` is zero-based, filters are applied consistently, results are newest first, totals describe the filtered set, and out-of-range pages retain those totals.
++- Keep re-registration with a deleted email as a distinct account with no access to the deleted account's historical orders.
++
++## Capabilities
++
++### New Capabilities
++
++- `historical-order-access`: Support durable retrieval and administration of orders independently of the current customer account.
++
++### Modified Capabilities
++
++- None.
++
++## Impact
++
++The order API, order facade, order repository/service query and mapping layers, customer deletion/registration behavior, and automated tests covering order persistence and admin pagination are affected. No API route is removed; existing live-customer order responses should remain compatible.
+diff --git a/openspec/changes/archive/2026-11-18-preserve-deleted-customer-orders/specs/historical-order-access/spec.md b/openspec/changes/archive/2026-11-18-preserve-deleted-customer-orders/specs/historical-order-access/spec.md
+new file mode 100644
+index 0000000..94d0c6a
+--- /dev/null
++++ b/openspec/changes/archive/2026-11-18-preserve-deleted-customer-orders/specs/historical-order-access/spec.md
+@@ -0,0 +1,47 @@
++# Spec Delta
++
++## Purpose
++
++Support staff must be able to retrieve, inspect, and administer historical orders for years after a customer account is closed, while a newly registered account remains isolated from the deleted account's order history.
++
++## ADDED Requirements
++
++### Requirement: Historical order detail remains available
++The system SHALL return an order by id after its customer account is deleted, preserving the order's billing, delivery, placed-with email, status, history, and payment transaction data, and representing the customer as absent.
++
++#### Scenario: Open an order after customer deletion
++- **WHEN** an administrator requests `GET /api/v1/private/orders/{id}` for an order whose customer no longer exists
++- **THEN** the response is successful and contains the order details without a customer object
++
++#### Scenario: Administer a detached order
++- **WHEN** an administrator changes the status or reads history or payment transactions for an order whose customer no longer exists
++- **THEN** the operation succeeds using the retained order record
++
++### Requirement: Customer order history is keyed by recorded customer id
++The system SHALL list every order recorded for a requested customer id, newest first, without requiring that a customer account currently exists, and SHALL report the matching order count in `recordsTotal`.
++
++#### Scenario: List orders for a deleted customer
++- **WHEN** an administrator requests `GET /api/v1/private/orders/customers/{id}` after deleting that customer
++- **THEN** all orders recorded with that customer id are returned newest first and `recordsTotal` equals their count
++
++#### Scenario: Customer id has no orders
++- **WHEN** an administrator requests customer-order history for an id with no recorded orders
++- **THEN** the response is successful with an empty order list and `recordsTotal` equal to 0
++
++### Requirement: Admin order pagination returns filtered pages
++The system SHALL return the zero-based requested page of orders matching the status, email, name, and id filters, newest first, with `recordsTotal` equal to the filtered count and `totalPages` equal to the number of pages for the requested count.
++
++#### Scenario: Browse a later filtered page
++- **WHEN** an administrator requests `GET /api/v1/private/orders?count=n&page=p` with filters and `p` is a valid page index
++- **THEN** the response contains that page's matching orders in descending recency order and reports totals for the complete filtered result
++
++#### Scenario: Browse past the last page
++- **WHEN** an administrator requests a page index beyond the last matching page
++- **THEN** the response contains no orders while retaining the matching `recordsTotal` and calculated `totalPages`
++
++### Requirement: Re-registered email creates an isolated account
++The system SHALL allow registration with the email of a deleted customer and SHALL not expose the deleted customer's orders to the newly created account.
++
++#### Scenario: Register after deletion
++- **WHEN** a new customer registers using the email address stored on a deleted customer's orders
++- **THEN** a distinct customer account is created and its customer-scoped order list contains none of the deleted customer's orders
+diff --git a/openspec/changes/archive/2026-11-18-preserve-deleted-customer-orders/tasks.md b/openspec/changes/archive/2026-11-18-preserve-deleted-customer-orders/tasks.md
+new file mode 100644
+index 0000000..9a71250
+--- /dev/null
++++ b/openspec/changes/archive/2026-11-18-preserve-deleted-customer-orders/tasks.md
+@@ -0,0 +1,15 @@
++# Tasks
++
++## 1. Preserve historical order access
++
++- [x] 1.1 Update customer deletion/order persistence and core order repository queries so deleting a customer does not remove or invalidate orders, and customer-id history queries work without a live customer; verify with focused core service/repository tests.
++- [x] 1.2 Update order facade/API mapping and detached-order administration paths to tolerate a missing customer while retaining billing, delivery, email, status, history, and transactions; verify with order API/facade tests.
++
++## 2. Correct admin pagination and account isolation
++
++- [x] 2.1 Correct admin order criteria pagination, filtered totals, total pages, and descending newest-first ordering for status, email, name, and id filters, including out-of-range pages; verify with pagination tests.
++- [x] 2.2 Add an integration/regression test covering delete, historical order detail/customer lookup, status/history/payment access, and re-registration with the deleted email receiving no old orders; verify the relevant Maven test command passes.
++
++## Workflow follow-up
++
++- Archive the completed OpenSpec change after implementation and verification.
+diff --git a/openspec/specs/historical-order-access/spec.md b/openspec/specs/historical-order-access/spec.md
+new file mode 100644
+index 0000000..af28130
+--- /dev/null
++++ b/openspec/specs/historical-order-access/spec.md
+@@ -0,0 +1,47 @@
++# historical-order-access Specification
++
++## Purpose
++
++Support staff must be able to retrieve, inspect, and administer historical orders for years after a customer account is closed, while a newly registered account remains isolated from the deleted account's order history.
++
++## Requirements
++
++### Requirement: Historical order detail remains available
++The system SHALL return an order by id after its customer account is deleted, preserving the order's billing, delivery, placed-with email, status, history, and payment transaction data, and representing the customer as absent.
++
++#### Scenario: Open an order after customer deletion
++- **WHEN** an administrator requests `GET /api/v1/private/orders/{id}` for an order whose customer no longer exists
++- **THEN** the response is successful and contains the order details without a customer object
++
++#### Scenario: Administer a detached order
++- **WHEN** an administrator changes the status or reads history or payment transactions for an order whose customer no longer exists
++- **THEN** the operation succeeds using the retained order record
++
++### Requirement: Customer order history is keyed by recorded customer id
++The system SHALL list every order recorded for a requested customer id, newest first, without requiring that a customer account currently exists, and SHALL report the matching order count in `recordsTotal`.
++
++#### Scenario: List orders for a deleted customer
++- **WHEN** an administrator requests `GET /api/v1/private/orders/customers/{id}` after deleting that customer
++- **THEN** all orders recorded with that customer id are returned newest first and `recordsTotal` equals their count
++
++#### Scenario: Customer id has no orders
++- **WHEN** an administrator requests customer-order history for an id with no recorded orders
++- **THEN** the response is successful with an empty order list and `recordsTotal` equal to 0
++
++### Requirement: Admin order pagination returns filtered pages
++The system SHALL return the zero-based requested page of orders matching the status, email, name, and id filters, newest first, with `recordsTotal` equal to the filtered count and `totalPages` equal to the number of pages for the requested count.
++
++#### Scenario: Browse a later filtered page
++- **WHEN** an administrator requests `GET /api/v1/private/orders?count=n&page=p` with filters and `p` is a valid page index
++- **THEN** the response contains that page's matching orders in descending recency order and reports totals for the complete filtered result
++
++#### Scenario: Browse past the last page
++- **WHEN** an administrator requests a page index beyond the last matching page
++- **THEN** the response contains no orders while retaining the matching `recordsTotal` and calculated `totalPages`
++
++### Requirement: Re-registered email creates an isolated account
++The system SHALL allow registration with the email of a deleted customer and SHALL not expose the deleted customer's orders to the newly created account.
++
++#### Scenario: Register after deletion
++- **WHEN** a new customer registers using the email address stored on a deleted customer's orders
++- **THEN** a distinct customer account is created and its customer-scoped order list contains none of the deleted customer's orders
+diff --git a/sm-core/src/main/java/com/salesmanager/core/business/repositories/order/OrderRepositoryImpl.java b/sm-core/src/main/java/com/salesmanager/core/business/repositories/order/OrderRepositoryImpl.java
+index d96548c..55eb38f 100755
+--- a/sm-core/src/main/java/com/salesmanager/core/business/repositories/order/OrderRepositoryImpl.java
++++ b/sm-core/src/main/java/com/salesmanager/core/business/repositories/order/OrderRepositoryImpl.java
+@@ -56,7 +56,7 @@ public class OrderRepositoryImpl implements OrderRepositoryCustom {
+ 		
+ 
+ 		if(!StringUtils.isBlank(criteria.getCustomerName())) {
+-			String nameQuery =" and o.billing.firstName like:nm or o.billing.lastName like:nm";
++			String nameQuery =" and (o.billing.firstName like:nm or o.billing.lastName like:nm)";
+ 			countBuilderWhere.append(nameQuery);
+ 			objectBuilderWhere.append(nameQuery);
+ 		}
+@@ -162,7 +162,7 @@ public class OrderRepositoryImpl implements OrderRepositoryCustom {
+ 		countBuilderSelect.append(storeQuery);
+ 		
+ 		if(!StringUtils.isEmpty(criteria.getCustomerName())) {
+-			String nameQuery =  " and o.billing.firstName like:name or o.billing.lastName like:name";
++			String nameQuery =  " and (o.billing.firstName like:name or o.billing.lastName like:name)";
+ 			objectBuilderWhere.append(nameQuery);
+ 			countBuilderSelect.append(nameQuery);
+ 		}
+@@ -182,7 +182,7 @@ public class OrderRepositoryImpl implements OrderRepositoryCustom {
+ 		
+ 		//phone
+ 		if(!StringUtils.isEmpty(criteria.getCustomerPhone())) {
+-			String nameQuery =  " and o.billing.telephone like:phone or o.delivery.telephone like:phone";
++			String nameQuery =  " and (o.billing.telephone like:phone or o.delivery.telephone like:phone)";
+ 			objectBuilderWhere.append(nameQuery);
+ 			countBuilderSelect.append(nameQuery);
+ 		}
+diff --git a/sm-core/src/main/java/com/salesmanager/core/business/utils/RepositoryHelper.java b/sm-core/src/main/java/com/salesmanager/core/business/utils/RepositoryHelper.java
+index b71b1fa..2ac1e3d 100644
+--- a/sm-core/src/main/java/com/salesmanager/core/business/utils/RepositoryHelper.java
++++ b/sm-core/src/main/java/com/salesmanager/core/business/utils/RepositoryHelper.java
+@@ -30,7 +30,8 @@ public class RepositoryHelper {
+ 			int firstResult = ((criteria.getStartPage()==0?0:criteria.getStartPage())) * criteria.getPageSize();
+ 			q.setFirstResult(firstResult);
+ 			q.setMaxResults(criteria.getPageSize());
+-			int lastPageNumber = (count.intValue() / criteria.getPageSize()) + 1;
++			int lastPageNumber = criteria.getPageSize() > 0
++					? (int) Math.ceil((double) count.intValue() / criteria.getPageSize()) : 0;
+ 			entityList.setTotalPages(lastPageNumber);
+ 			entityList.setTotalCount(count.intValue());
+ 		}
+diff --git a/sm-shop/src/main/java/com/salesmanager/shop/store/api/v1/order/OrderApi.java b/sm-shop/src/main/java/com/salesmanager/shop/store/api/v1/order/OrderApi.java
+index b0ca074..8b4c4f1 100755
+--- a/sm-shop/src/main/java/com/salesmanager/shop/store/api/v1/order/OrderApi.java
++++ b/sm-shop/src/main/java/com/salesmanager/shop/store/api/v1/order/OrderApi.java
+@@ -121,12 +121,6 @@ public class OrderApi {
+ 
+ 		Customer customer = customerService.getById(id);
+ 
+-		if (customer == null) {
+-			LOGGER.error("Customer is null for id " + id);
+-			response.sendError(404, "Customer is null for id " + id);
+-			return null;
+-		}
+-
+ 		if (start == null) {
+ 			start = new Integer(0);
+ 		}
+@@ -134,16 +128,19 @@ public class OrderApi {
+ 			count = new Integer(100);
+ 		}
+ 
+-		ReadableCustomer readableCustomer = new ReadableCustomer();
+-		ReadableCustomerPopulator customerPopulator = new ReadableCustomerPopulator();
+-		customerPopulator.populate(customer, readableCustomer, merchantStore, language);
+-
+-		ReadableOrderList returnList = orderFacade.getReadableOrderList(merchantStore, customer, start, count,
+-				language);
++		OrderCriteria criteria = new OrderCriteria();
++		criteria.setCustomerId(id);
++		criteria.setStartPage(start);
++		criteria.setPageSize(count);
++		criteria.setLegacyPagination(false);
++		ReadableOrderList returnList = orderFacade.getReadableOrderList(criteria, merchantStore);
+ 
+ 		List<ReadableOrder> orders = returnList.getOrders();
+ 
+-		if (!CollectionUtils.isEmpty(orders)) {
++		if (customer != null && !CollectionUtils.isEmpty(orders)) {
++			ReadableCustomer readableCustomer = new ReadableCustomer();
++			ReadableCustomerPopulator customerPopulator = new ReadableCustomerPopulator();
++			customerPopulator.populate(customer, readableCustomer, merchantStore, language);
+ 			for (ReadableOrder order : orders) {
+ 				order.setCustomer(readableCustomer);
+ 			}
+diff --git a/sm-shop/src/main/java/com/salesmanager/shop/store/controller/order/facade/OrderFacadeImpl.java b/sm-shop/src/main/java/com/salesmanager/shop/store/controller/order/facade/OrderFacadeImpl.java
+index 0da643b..ba7dbce 100755
+--- a/sm-shop/src/main/java/com/salesmanager/shop/store/controller/order/facade/OrderFacadeImpl.java
++++ b/sm-shop/src/main/java/com/salesmanager/shop/store/controller/order/facade/OrderFacadeImpl.java
+@@ -1116,11 +1116,11 @@ public class OrderFacadeImpl implements OrderFacade {
+ 
+ 		Long customerId = modelOrder.getCustomerId();
+ 		if (customerId != null) {
+-			ReadableCustomer readableCustomer = customerFacade.getCustomerById(customerId, store, language);
+-			if (readableCustomer == null) {
+-				LOGGER.warn("Customer id " + customerId + " not found in order " + orderId);
+-			} else {
++			try {
++				ReadableCustomer readableCustomer = customerFacade.getCustomerById(customerId, store, language);
+ 				readableOrder.setCustomer(readableCustomer);
++			} catch (ResourceNotFoundException e) {
++				LOGGER.warn("Customer id {} not found in order {}", customerId, orderId);
+ 			}
+ 		}
+ 

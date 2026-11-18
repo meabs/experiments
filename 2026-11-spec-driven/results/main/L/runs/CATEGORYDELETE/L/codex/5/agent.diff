@@ -1,0 +1,191 @@
+diff --git a/sm-core/src/main/java/com/salesmanager/core/business/services/catalog/category/CategoryServiceImpl.java b/sm-core/src/main/java/com/salesmanager/core/business/services/catalog/category/CategoryServiceImpl.java
+index 36a1aeb..5d05627 100755
+--- a/sm-core/src/main/java/com/salesmanager/core/business/services/catalog/category/CategoryServiceImpl.java
++++ b/sm-core/src/main/java/com/salesmanager/core/business/services/catalog/category/CategoryServiceImpl.java
+@@ -1,7 +1,6 @@
+ package com.salesmanager.core.business.services.catalog.category;
+ 
+ import java.util.ArrayList;
+-import java.util.Collections;
+ import java.util.HashSet;
+ import java.util.List;
+ import java.util.Optional;
+@@ -14,6 +13,7 @@ import org.springframework.data.domain.PageRequest;
+ import org.springframework.data.domain.Pageable;
+ import org.springframework.stereotype.Service;
+ import org.springframework.util.Assert;
++import org.springframework.transaction.annotation.Transactional;
+ 
+ import com.salesmanager.core.business.constants.Constants;
+ import com.salesmanager.core.business.exception.ServiceException;
+@@ -227,21 +227,20 @@ public class CategoryServiceImpl extends SalesManagerEntityServiceImpl<Long, Cat
+ 
+ 	}
+ 
+-	// @Override
++	@Override
++	@Transactional
+ 	public void delete(Category category) throws ServiceException {
+ 
+ 		// get category with lineage (subcategories)
+-		StringBuilder lineage = new StringBuilder();
+-		lineage.append(category.getLineage()).append(category.getId()).append(Constants.SLASH);
+-		List<Category> categories = this.getListByLineage(category.getMerchantStore(), lineage.toString());
++		List<Category> categories = this.getListByLineage(category.getMerchantStore(), category.getLineage());
+ 
+ 		Category dbCategory = getById(category.getId(), category.getMerchantStore().getId());
+ 
+ 		if (dbCategory != null && dbCategory.getId().longValue() == category.getId().longValue()) {
+ 
+-			categories.add(dbCategory);
+-
+-			Collections.reverse(categories);
++			if (categories.stream().noneMatch(c -> c.getId().equals(dbCategory.getId()))) {
++				categories.add(dbCategory);
++			}
+ 
+ 			List<Long> categoryIds = new ArrayList<Long>();
+ 
+@@ -257,24 +256,10 @@ public class CategoryServiceImpl extends SalesManagerEntityServiceImpl<Long, Cat
+ 			// categories
+ 
+ 			for (Product product : products) {
+-				// session.evict(product);// refresh product so we get all
+-				// product categories
+ 				Product dbProduct = productService.getById(product.getId());
+ 				Set<Category> productCategories = dbProduct.getCategories();
+-				if (productCategories.size() > 1) {
+-					for (Category c : categories) {
+-						productCategories.remove(c);
+-						productService.update(dbProduct);
+-					}
+-
+-					if (product.getCategories() == null || product.getCategories().size() == 0) {
+-						productService.delete(dbProduct);
+-					}
+-
+-				} else {
+-					productService.delete(dbProduct);
+-				}
+-
++				productCategories.removeIf(productCategory -> categoryIds.contains(productCategory.getId()));
++				productService.update(dbProduct);
+ 			}
+ 
+ 			Category categ = getById(category.getId(), category.getMerchantStore().getId());
+diff --git a/sm-shop/src/main/java/com/salesmanager/shop/store/api/v1/category/CategoryApi.java b/sm-shop/src/main/java/com/salesmanager/shop/store/api/v1/category/CategoryApi.java
+index 6c3ace2..6400c76 100755
+--- a/sm-shop/src/main/java/com/salesmanager/shop/store/api/v1/category/CategoryApi.java
++++ b/sm-shop/src/main/java/com/salesmanager/shop/store/api/v1/category/CategoryApi.java
+@@ -62,34 +62,21 @@ public class CategoryApi {
+ 	@Inject
+ 	private UserFacade userFacade;
+ 
+-	@GetMapping(value = "/category/{id}", produces = { APPLICATION_JSON_VALUE })
++	@GetMapping(value = "/category/{value}", produces = { APPLICATION_JSON_VALUE })
+ 	@ApiOperation(httpMethod = "GET", value = "Get category list for an given Category id", notes = "List current Category and child category")
+ 	@ApiResponses(value = {
+ 			@ApiResponse(code = 200, message = "List of category found", response = ReadableCategory.class) })
+ 	@ApiImplicitParams({ @ApiImplicitParam(name = "store", dataType = "string", defaultValue = "DEFAULT"),
+ 			@ApiImplicitParam(name = "lang", dataType = "string", defaultValue = "en") })
+ 	public ReadableCategory get(
+-			@PathVariable(name = "id") Long categoryId, 
++			@PathVariable(name = "value") String value,
+ 			@ApiIgnore MerchantStore merchantStore,
+-			@ApiIgnore Language language) {
+-		ReadableCategory category = categoryFacade.getById(merchantStore, categoryId, language);
+-		return category;
+-	}
+-
+-	@GetMapping(value = "/category/{friendlyUrl}", produces = { APPLICATION_JSON_VALUE })
+-	@ApiOperation(httpMethod = "GET", value = "Get category list for an given Category code", notes = "List current Category and child category")
+-	@ApiResponses(value = {
+-			@ApiResponse(code = 200, message = "List of category found", response = ReadableCategory.class) })
+-	@ApiImplicitParams({
+-			@ApiImplicitParam(name = "store", dataType = "string", defaultValue = "DEFAULT"),
+-			@ApiImplicitParam(name = "lang", dataType = "string", defaultValue = "en")
+-	})
+-	public ReadableCategory getByfriendlyUrl(
+-								@PathVariable(name = "friendlyUrl") String friendlyUrl,
+-								@ApiIgnore MerchantStore merchantStore,
+-								@ApiIgnore Language language) throws Exception {
+-		ReadableCategory category = categoryFacade.getCategoryByFriendlyUrl(merchantStore, friendlyUrl, language);
+-		return category;
++			@ApiIgnore Language language) throws Exception {
++		try {
++			return categoryFacade.getById(merchantStore, Long.valueOf(value), language);
++		} catch (NumberFormatException e) {
++			return categoryFacade.getCategoryByFriendlyUrl(merchantStore, value, language);
++		}
+ 	}
+ 
+ 	@ResponseStatus(HttpStatus.OK)
+diff --git a/sm-shop/src/main/java/com/salesmanager/shop/store/facade/category/CategoryFacadeImpl.java b/sm-shop/src/main/java/com/salesmanager/shop/store/facade/category/CategoryFacadeImpl.java
+index 3d9067d..a91fc11 100755
+--- a/sm-shop/src/main/java/com/salesmanager/shop/store/facade/category/CategoryFacadeImpl.java
++++ b/sm-shop/src/main/java/com/salesmanager/shop/store/facade/category/CategoryFacadeImpl.java
+@@ -358,15 +358,10 @@ public class CategoryFacadeImpl implements CategoryFacade {
+ 
+ 	@Override
+ 	public void deleteCategory(Long categoryId, MerchantStore store) {
+-		Category category = getOne(categoryId, store.getId());
++		Category category = getById(store, categoryId);
+ 		deleteCategory(category);
+ 	}
+ 
+-	private Category getOne(Long categoryId, int storeId) {
+-		return Optional.ofNullable(categoryService.getById(categoryId)).orElseThrow(
+-				() -> new ResourceNotFoundException(String.format("No Category found for ID : %s", categoryId)));
+-	}
+-
+ 	@Override
+ 	public List<ReadableProductVariant> categoryProductVariants(Long categoryId, MerchantStore store,
+ 			Language language) {
+diff --git a/sm-shop/src/test/java/com/salesmanager/test/shop/integration/category/CategoryManagementAPIIntegrationTest.java b/sm-shop/src/test/java/com/salesmanager/test/shop/integration/category/CategoryManagementAPIIntegrationTest.java
+index 86987a8..ba21a7e 100755
+--- a/sm-shop/src/test/java/com/salesmanager/test/shop/integration/category/CategoryManagementAPIIntegrationTest.java
++++ b/sm-shop/src/test/java/com/salesmanager/test/shop/integration/category/CategoryManagementAPIIntegrationTest.java
+@@ -333,11 +333,34 @@ public class CategoryManagementAPIIntegrationTest extends ServicesTestSupport {
+     }
+ 
+     @Test
+-    public void deleteCategory() throws Exception {
++    public void deleteMissingCategoryReturnsNotFound() throws Exception {
+ 
+         final HttpEntity<String> httpEntity = new HttpEntity<>(getHeader());
+ 
+-        testRestTemplate.exchange("/services/DEFAULT/category/100", HttpMethod.DELETE, httpEntity, Category.class);
++        ResponseEntity<Void> response = testRestTemplate.exchange("/api/v1/private/category/9223372036854775807", HttpMethod.DELETE,
++                httpEntity, Void.class);
++
++        assertThat(response.getStatusCode(), is(HttpStatus.NOT_FOUND));
++    }
++
++    @Test
++    public void deleteCategoryRemovesCategoryButKeepsApiConsistent() throws Exception {
++        PersistableCategory category = super.category("DELETE_CATEGORY_" + System.currentTimeMillis());
++        HttpEntity<PersistableCategory> request = new HttpEntity<>(category, getHeader());
++
++        ResponseEntity<PersistableCategory> created = testRestTemplate.postForEntity("/api/v1/private/category", request,
++                PersistableCategory.class);
++        assertThat(created.getStatusCode(), is(CREATED));
++
++        Long categoryId = created.getBody().getId();
++        HttpEntity<String> httpEntity = new HttpEntity<>(getHeader());
++        ResponseEntity<Void> deleted = testRestTemplate.exchange("/api/v1/private/category/" + categoryId, HttpMethod.DELETE,
++                httpEntity, Void.class);
++        assertThat(deleted.getStatusCode(), is(OK));
++
++        ResponseEntity<ReadableCategory> fetched = testRestTemplate.exchange("/api/v1/category/" + categoryId, HttpMethod.GET,
++                httpEntity, ReadableCategory.class);
++        assertThat(fetched.getStatusCode(), is(HttpStatus.NOT_FOUND));
+     }
+ 
+     @Test
+@@ -465,4 +488,4 @@ public class CategoryManagementAPIIntegrationTest extends ServicesTestSupport {
+     }
+         **/
+ 
+-}
+\ No newline at end of file
++}

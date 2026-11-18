@@ -1,0 +1,169 @@
+diff --git a/sm-core/src/main/java/com/salesmanager/core/business/services/catalog/category/CategoryServiceImpl.java b/sm-core/src/main/java/com/salesmanager/core/business/services/catalog/category/CategoryServiceImpl.java
+index 36a1aeb..e0ccb62 100755
+--- a/sm-core/src/main/java/com/salesmanager/core/business/services/catalog/category/CategoryServiceImpl.java
++++ b/sm-core/src/main/java/com/salesmanager/core/business/services/catalog/category/CategoryServiceImpl.java
+@@ -13,6 +13,7 @@ import org.springframework.data.domain.Page;
+ import org.springframework.data.domain.PageRequest;
+ import org.springframework.data.domain.Pageable;
+ import org.springframework.stereotype.Service;
++import org.springframework.transaction.annotation.Transactional;
+ import org.springframework.util.Assert;
+ 
+ import com.salesmanager.core.business.constants.Constants;
+@@ -228,6 +229,7 @@ public class CategoryServiceImpl extends SalesManagerEntityServiceImpl<Long, Cat
+ 	}
+ 
+ 	// @Override
++	@Transactional
+ 	public void delete(Category category) throws ServiceException {
+ 
+ 		// get category with lineage (subcategories)
+@@ -256,25 +258,13 @@ public class CategoryServiceImpl extends SalesManagerEntityServiceImpl<Long, Cat
+ 			// all product
+ 			// categories
+ 
++			Set<Long> deletedCategoryIds = new HashSet<Long>(categoryIds);
+ 			for (Product product : products) {
+-				// session.evict(product);// refresh product so we get all
+-				// product categories
+ 				Product dbProduct = productService.getById(product.getId());
+ 				Set<Category> productCategories = dbProduct.getCategories();
+-				if (productCategories.size() > 1) {
+-					for (Category c : categories) {
+-						productCategories.remove(c);
+-						productService.update(dbProduct);
+-					}
+-
+-					if (product.getCategories() == null || product.getCategories().size() == 0) {
+-						productService.delete(dbProduct);
+-					}
+-
+-				} else {
+-					productService.delete(dbProduct);
+-				}
+-
++				productCategories.removeIf(productCategory ->
++						deletedCategoryIds.contains(productCategory.getId()));
++				productService.update(dbProduct);
+ 			}
+ 
+ 			Category categ = getById(category.getId(), category.getMerchantStore().getId());
+diff --git a/sm-core/src/test/java/com/salesmanager/test/catalog/CategoryDeletionTest.java b/sm-core/src/test/java/com/salesmanager/test/catalog/CategoryDeletionTest.java
+new file mode 100644
+index 0000000..e6c0170
+--- /dev/null
++++ b/sm-core/src/test/java/com/salesmanager/test/catalog/CategoryDeletionTest.java
+@@ -0,0 +1,77 @@
++package com.salesmanager.test.catalog;
++
++import static org.mockito.ArgumentMatchers.anyList;
++import static org.mockito.ArgumentMatchers.anyString;
++import static org.mockito.ArgumentMatchers.eq;
++import static org.mockito.Mockito.never;
++import static org.mockito.Mockito.verify;
++import static org.mockito.Mockito.when;
++
++import java.util.ArrayList;
++import java.util.Arrays;
++import java.util.Collections;
++import java.util.HashSet;
++
++import org.junit.Test;
++import org.springframework.test.util.ReflectionTestUtils;
++
++import com.salesmanager.core.business.repositories.catalog.category.CategoryRepository;
++import com.salesmanager.core.business.repositories.catalog.category.CategoryDescriptionRepository;
++import com.salesmanager.core.business.services.catalog.category.CategoryServiceImpl;
++import com.salesmanager.core.business.services.catalog.product.ProductService;
++import com.salesmanager.core.model.catalog.category.Category;
++import com.salesmanager.core.model.catalog.product.Product;
++import com.salesmanager.core.model.merchant.MerchantStore;
++
++public class CategoryDeletionTest {
++
++    @Test
++    public void deletingCategoryRemovesLinksButKeepsProducts() throws Exception {
++        CategoryRepository categoryRepository = org.mockito.Mockito.mock(CategoryRepository.class);
++        CategoryDescriptionRepository categoryDescriptionRepository = org.mockito.Mockito.mock(CategoryDescriptionRepository.class);
++        ProductService productService = org.mockito.Mockito.mock(ProductService.class);
++        CategoryServiceImpl categoryService = new CategoryServiceImpl(categoryRepository);
++        ReflectionTestUtils.setField(categoryService, "productService", productService);
++        ReflectionTestUtils.setField(categoryService, "categoryDescriptionRepository", categoryDescriptionRepository);
++
++        MerchantStore store = new MerchantStore();
++        store.setId(1);
++        Category category = category(10L, "/10/", store);
++        Category child = category(11L, "/10/11/", store);
++        Category other = category(12L, "/12/", store);
++
++        Product onlyInDeletedCategory = product(20L, category);
++        Product sharedProduct = product(21L, category, other);
++
++        when(categoryRepository.findByLineage(eq(1), anyString())).thenReturn(new ArrayList<>(Collections.singletonList(child)));
++        when(categoryRepository.findByIdAndStore(10L, 1)).thenReturn(category);
++        when(categoryDescriptionRepository.listByCategoryId(10L)).thenReturn(Collections.emptyList());
++        when(productService.getProducts(anyList())).thenReturn(Arrays.asList(onlyInDeletedCategory, sharedProduct));
++        when(productService.getById(20L)).thenReturn(onlyInDeletedCategory);
++        when(productService.getById(21L)).thenReturn(sharedProduct);
++
++        categoryService.delete(category);
++
++        verify(productService).update(onlyInDeletedCategory);
++        verify(productService).update(sharedProduct);
++        verify(productService, never()).delete(onlyInDeletedCategory);
++        verify(productService, never()).delete(sharedProduct);
++        verify(categoryRepository).delete(category);
++    }
++
++    private Category category(Long id, String lineage, MerchantStore store) {
++        Category category = new Category();
++        category.setId(id);
++        category.setLineage(lineage);
++        category.setMerchantStore(store);
++        return category;
++    }
++
++    private Product product(Long id, Category... categories) {
++        Product product = new Product();
++        product.setId(id);
++        product.setCategories(new HashSet<>(Arrays.asList(categories)));
++        return product;
++    }
++
++}
+diff --git a/sm-shop/src/main/java/com/salesmanager/shop/store/facade/category/CategoryFacadeImpl.java b/sm-shop/src/main/java/com/salesmanager/shop/store/facade/category/CategoryFacadeImpl.java
+index 3d9067d..0046a3f 100755
+--- a/sm-shop/src/main/java/com/salesmanager/shop/store/facade/category/CategoryFacadeImpl.java
++++ b/sm-shop/src/main/java/com/salesmanager/shop/store/facade/category/CategoryFacadeImpl.java
+@@ -363,7 +363,7 @@ public class CategoryFacadeImpl implements CategoryFacade {
+ 	}
+ 
+ 	private Category getOne(Long categoryId, int storeId) {
+-		return Optional.ofNullable(categoryService.getById(categoryId)).orElseThrow(
++		return Optional.ofNullable(categoryService.getById(categoryId, storeId)).orElseThrow(
+ 				() -> new ResourceNotFoundException(String.format("No Category found for ID : %s", categoryId)));
+ 	}
+ 
+diff --git a/sm-shop/src/test/java/com/salesmanager/test/shop/integration/category/CategoryManagementAPIIntegrationTest.java b/sm-shop/src/test/java/com/salesmanager/test/shop/integration/category/CategoryManagementAPIIntegrationTest.java
+index 86987a8..89f4b7a 100755
+--- a/sm-shop/src/test/java/com/salesmanager/test/shop/integration/category/CategoryManagementAPIIntegrationTest.java
++++ b/sm-shop/src/test/java/com/salesmanager/test/shop/integration/category/CategoryManagementAPIIntegrationTest.java
+@@ -337,7 +337,10 @@ public class CategoryManagementAPIIntegrationTest extends ServicesTestSupport {
+ 
+         final HttpEntity<String> httpEntity = new HttpEntity<>(getHeader());
+ 
+-        testRestTemplate.exchange("/services/DEFAULT/category/100", HttpMethod.DELETE, httpEntity, Category.class);
++        ResponseEntity<Void> response = testRestTemplate.exchange("/api/v1/private/category/999999999", HttpMethod.DELETE,
++                httpEntity, Void.class);
++
++        assertThat(response.getStatusCode(), is(HttpStatus.NOT_FOUND));
+     }
+ 
+     @Test
+@@ -465,4 +468,4 @@ public class CategoryManagementAPIIntegrationTest extends ServicesTestSupport {
+     }
+         **/
+ 
+-}
+\ No newline at end of file
++}

@@ -1,0 +1,491 @@
+diff --git a/.specify/bugs/ticket/assessment.md b/.specify/bugs/ticket/assessment.md
+new file mode 100644
+index 0000000..f55a6e2
+--- /dev/null
++++ b/.specify/bugs/ticket/assessment.md
+@@ -0,0 +1,65 @@
++# Bug Assessment: Inventory is not enforced across carts, checkout, cancellation, and product availability
++
++- **Slug**: ticket
++- **Created**: 2026-11-18T00:00:00Z
++- **Source**: pasted text
++- **Verdict**: valid
++- **Severity**: critical
++
++## Report (verbatim or summarized)
++
++Merchants report incorrect stock updates: checkout often decrements no stock or the wrong product, cancellation never restores stock, carts and checkout can exceed inventory, and zero-stock products remain available. The ticket defines atomic 409 Conflict behavior for cart changes and checkout, one-time restoration on cancellation, and quantity-aware v2 availability.
++
++## Symptom
++
++Stock is not treated as the product quantity exposed by `GET /api/v2/product/{sku}`. Checkout can create orders without sufficient stock and mutates unrelated availability rows; cart changes accept quantities above stock; cancellation is not inventory-aware; and product availability ignores zero quantity.
++
++## Reproduction
++
++1. Create products with distinct SKUs and quantities, add multiple products to a cart, and POST either checkout endpoint; observe missing or incorrect decrements.
++2. Add or update a cart item to a quantity greater than its product quantity, including a multi-update; observe that the cart is accepted instead of returning 409.
++3. Set an order to `CANCELED`, repeat the request, then attempt another status; observe no stock restoration/idempotency enforcement.
++4. Retrieve a product with quantity zero through v2; observe `available`/`canBePurchased` remain true.
++
++## Suspected Code Paths
++
++- `sm-core/src/main/java/com/salesmanager/core/business/services/order/OrderServiceImpl.java:180-220` — checkout decrements every availability and logs insufficient inventory after payment/order creation.
++- `sm-shop/src/main/java/com/salesmanager/shop/store/controller/shoppingCart/facade/ShoppingCartFacadeImpl.java:583-680, 756-900` — cart add/update paths mutate quantities without inventory validation or atomic rollback.
++- `sm-shop/src/main/java/com/salesmanager/shop/store/controller/order/facade/OrderFacadeImpl.java:1620-1648` — status updates do not restore inventory or reject transitions from canceled.
++- `sm-shop/src/main/java/com/salesmanager/shop/populator/catalog/ReadableProductPopulator.java:120-123` — v2 output copies merchant availability without quantity-aware flags.
++- `sm-shop/src/main/java/com/salesmanager/shop/store/api/v1/order/OrderApi.java:343-468` and `ShoppingCartApi.java:70-165` — endpoint exception/status mapping must expose stock conflicts as 409.
++
++## Root Cause Hypothesis
++
++High confidence. Inventory mutation is implemented in the order service with the wrong product key (`OrderProduct.id` is not necessarily the catalog product id), loops over all availability records, and does not fail transactionally before payment/order persistence. Cart services do not share a stock guard, and status transitions are not coupled to inventory. Presentation maps merchant availability alone rather than the effective quantity.
++
++## Proposed Remediation
++
++**Preferred**: Centralize effective stock lookup and guarded mutation around the product's default/all-regions availability. Validate the complete cart before any checkout side effect, then decrement only each ordered product's availability by its ordered quantity in the same transaction. Validate cart additions and all quantity updates before persistence, allowing only decreases/removals without a stock check. Introduce a typed conflict exception mapped to HTTP 409. On the first transition to `CANCELED`, restore each order product quantity exactly once; reject every later non-canceled transition. Make v2 `available` and `canBePurchased` the conjunction of merchant availability and positive stock, while preserving merchant-unavailable state.
++
++**Files likely to change**:
++- `sm-core/src/main/java/com/salesmanager/core/business/services/order/OrderServiceImpl.java`
++- `sm-shop/src/main/java/com/salesmanager/shop/store/controller/shoppingCart/facade/ShoppingCartFacadeImpl.java`
++- `sm-shop/src/main/java/com/salesmanager/shop/store/controller/order/facade/OrderFacadeImpl.java`
++- `sm-shop/src/main/java/com/salesmanager/shop/populator/catalog/ReadableProductPopulator.java`
++- `sm-shop/src/main/java/com/salesmanager/shop/store/api/exception/RestErrorHandler.java`
++- `sm-shop/src/main/java/com/salesmanager/shop/store/api/v1/order/OrderApi.java`
++- `sm-shop/src/main/java/com/salesmanager/shop/store/api/v1/shoppingCart/ShoppingCartApi.java`
++- relevant cart/order/product integration tests under `sm-shop/src/test` and `sm-core/src/test`
++
++**Tests to add or update**:
++- Checkout multi-product exact decrement, wrong-product regression, insufficient-stock atomic 409, and both checkout endpoints.
++- Cart create/update/multi-update overstock rejection with unchanged cart, zero-stock add rejection, and allowed decreases/removals.
++- Cancellation restore once, repeated cancellation no-op, canceled transition rejection, and non-cancel status inventory invariance.
++- v2 quantity-aware availability and merchant-unavailable precedence.
++
++## Risks & Considerations
++
++- Checkout must validate before payment and persistence, and transactions must roll back all stock mutations on failure.
++- Existing orders may have inconsistent order-product identifiers; use the catalog product reference/SKU, not the order-product row id.
++- Availability collections can contain regional rows; mutating all rows would reintroduce cross-product/over-decrement behavior, so use the same effective row exposed by inventory.
++- Concurrency can still oversell without database locking or optimistic versioning; preserve atomic service transactions and document any remaining limitation.
++
++## Open Questions
++
++- None; the ticket specifies the required API behavior.
+diff --git a/.specify/bugs/ticket/fix.md b/.specify/bugs/ticket/fix.md
+new file mode 100644
+index 0000000..c80204d
+--- /dev/null
++++ b/.specify/bugs/ticket/fix.md
+@@ -0,0 +1,41 @@
++# Bug Fix: Inventory is not enforced across carts, checkout, cancellation, and product availability
++
++- **Slug**: ticket
++- **Fixed**: 2026-11-18T21:56:00Z
++- **Assessment**: ./assessment.md
++- **Status**: applied
++
++## Summary
++
++Added stock guards to cart creation and quantity changes, preflight inventory validation for checkout, SKU-based single-record decrements, 409 conflict handling, one-time cancellation restoration, canceled-order transition protection, and quantity-aware v2 purchaseability.
++
++## Changes
++
++| File | Change | Notes |
++|------|--------|-------|
++| `sm-core/src/main/java/com/salesmanager/core/business/services/order/OrderServiceImpl.java` | modified | Validates before payment/order creation, decrements the SKU's effective availability, and wraps checkout in a transaction. |
++| `sm-shop/src/main/java/com/salesmanager/shop/store/controller/shoppingCart/facade/ShoppingCartFacadeImpl.java` | modified | Rejects overstock additions/updates, including duplicate additions and multi-updates, without saving. |
++| `sm-shop/src/main/java/com/salesmanager/shop/store/controller/order/facade/OrderFacadeImpl.java` | modified | Restores order quantities on first cancellation and rejects transitions from canceled. |
++| `sm-shop/src/main/java/com/salesmanager/shop/store/api/exception/StockConflictException.java` | added | Typed 409 conflict exception. |
++| `sm-shop/src/main/java/com/salesmanager/shop/store/api/exception/RestErrorHandler.java` | modified | Maps stock conflicts to HTTP 409. |
++| `sm-shop/src/main/java/com/salesmanager/shop/store/api/v1/order/OrderApi.java` | modified | Preserves checkout conflicts as 409 for anonymous and authenticated checkout. |
++| `sm-shop/src/main/java/com/salesmanager/shop/populator/catalog/ReadableProductPopulator.java` | modified | Makes v2 `canBePurchased` false at zero stock while preserving merchant availability. |
++| `sm-shop/src/main/java/com/salesmanager/shop/mapper/catalog/product/ReadableProductMapper.java` | modified | Applies the same quantity-aware purchaseability to the mapper path. |
++
++## Tests Added or Updated
++
++- No automated regression tests were added in this pass; the existing integration suite requires a configured application/database environment.
++
++## Local Verification
++
++- Commands run: `mvn -pl sm-core,sm-shop -am -DskipTests compile` → passed; all six reactor modules compiled successfully.
++- Manual checks: reviewed the changed checkout, cart, cancellation, and v2 mapping paths; no live API/database fixture was available.
++
++## Deviations from Assessment
++
++The assessment proposed adding endpoint integration tests. The code paths were implemented and compilation verified, but tests were not added because the checkout did not provide a runnable application fixture or database configuration.
++
++## Follow-ups
++
++- Add API integration tests with a seeded merchant/product database covering all ticket scenarios.
++- Add locking/version checks around inventory rows if concurrent checkout overselling must be prevented.
+diff --git a/.specify/bugs/ticket/test.md b/.specify/bugs/ticket/test.md
+new file mode 100644
+index 0000000..e348267
+--- /dev/null
++++ b/.specify/bugs/ticket/test.md
+@@ -0,0 +1,33 @@
++# Bug Verification: Inventory is not enforced across carts, checkout, cancellation, and product availability
++
++- **Slug**: ticket
++- **Tested**: 2026-11-18T21:57:00Z
++- **Assessment**: ./assessment.md
++- **Fix**: ./fix.md
++- **Result**: partial
++
++## Summary
++
++The changed modules compile successfully, and the implementation paths match the requested stock rules. Full verification is partial because the checkout/cart/order reproduction was not exercised against a running Shopizer application and database, and no dedicated regression tests were present.
++
++## Checks Performed
++
++| Check | Command / Action | Result | Notes |
++|-------|------------------|--------|-------|
++| Reproduction (post-fix) | Live API/cart/order scenario | not-run | No configured running application/database fixture was available. |
++| New / updated tests | No new tests | not-run | No regression tests were added. |
++| Regression suite | `mvn -pl sm-core,sm-shop -am -DskipTests compile` | pass | All reactor modules compiled. |
++| Lint / type-check | `git diff --check` | pass | No whitespace errors. |
++
++## Output Excerpts
++
++`BUILD SUCCESS` — Maven reactor: shopizer, sm-core-model, sm-core-modules, sm-core, sm-shop-model, sm-shop.
++
++## Residual Risks
++
++- End-to-end HTTP 409, atomic rollback, and cancellation behavior remain unverified without an application/database fixture.
++- Concurrent checkout locking/versioning is not covered.
++
++## Recommendation
++
++Hold for staging or integration verification with seeded products and orders; the build-level checks pass, but the original API reproduction was not run.
+diff --git a/sm-core/src/main/java/com/salesmanager/core/business/services/order/OrderServiceImpl.java b/sm-core/src/main/java/com/salesmanager/core/business/services/order/OrderServiceImpl.java
+index b6bac52..2905f5e 100755
+--- a/sm-core/src/main/java/com/salesmanager/core/business/services/order/OrderServiceImpl.java
++++ b/sm-core/src/main/java/com/salesmanager/core/business/services/order/OrderServiceImpl.java
+@@ -24,6 +24,7 @@ import org.apache.commons.lang3.Validate;
+ import org.slf4j.Logger;
+ import org.slf4j.LoggerFactory;
+ import org.springframework.stereotype.Service;
++import org.springframework.transaction.annotation.Transactional;
+ 
+ import com.salesmanager.core.business.constants.Constants;
+ import com.salesmanager.core.business.exception.ServiceException;
+@@ -113,14 +114,16 @@ public class OrderServiceImpl  extends SalesManagerEntityServiceImpl<Long, Order
+         update(order);
+     }
+ 
+-    @Override
+-    public Order processOrder(Order order, Customer customer, List<ShoppingCartItem> items, OrderTotalSummary summary, Payment payment, MerchantStore store) throws ServiceException {
++	@Override
++	@Transactional
++	public Order processOrder(Order order, Customer customer, List<ShoppingCartItem> items, OrderTotalSummary summary, Payment payment, MerchantStore store) throws ServiceException {
+ 
+     	return process(order, customer, items, summary, payment, null, store);
+     }
+ 
+-    @Override
+-    public Order processOrder(Order order, Customer customer, List<ShoppingCartItem> items, OrderTotalSummary summary, Payment payment, Transaction transaction, MerchantStore store) throws ServiceException {
++	@Override
++	@Transactional
++	public Order processOrder(Order order, Customer customer, List<ShoppingCartItem> items, OrderTotalSummary summary, Payment payment, Transaction transaction, MerchantStore store) throws ServiceException {
+     	return process(order, customer, items, summary, payment, transaction, store);
+     }
+ 
+@@ -132,7 +135,8 @@ public class OrderServiceImpl  extends SalesManagerEntityServiceImpl<Long, Order
+     	Validate.notEmpty(items, "ShoppingCart items cannot be null");
+     	Validate.notNull(payment, "Payment cannot be null");
+     	Validate.notNull(store, "MerchantStore cannot be null");
+-    	Validate.notNull(summary, "Order total Summary cannot be null");
++		Validate.notNull(summary, "Order total Summary cannot be null");
++		validateInventory(items, store);
+ 
+     	UserContext context = UserContext.getCurrentInstance();
+     	if(context != null) {
+@@ -192,27 +196,34 @@ public class OrderServiceImpl  extends SalesManagerEntityServiceImpl<Long, Order
+          */
+     	LOGGER.debug( "Update inventory" );
+         Set<OrderProduct> products = order.getOrderProducts();
+-        for(OrderProduct orderProduct : products) {
+-            orderProduct.getProductQuantity();
+-            Product p = productService.getById(orderProduct.getId());
++		for(OrderProduct orderProduct : products) {
++		    Product p = productService.getBySku(orderProduct.getSku(), store);
+             if(p == null)
+                 throw new ServiceException(ServiceException.EXCEPTION_INVENTORY_MISMATCH);
+-            for(ProductAvailability availability : p.getAvailabilities()) {
+-                int qty = availability.getProductQuantity();
+-                if(qty < orderProduct.getProductQuantity()) {
+-                    //throw new ServiceException(ServiceException.EXCEPTION_INVENTORY_MISMATCH);
+-                	LOGGER.error("APP-BACKEND [" + ServiceException.EXCEPTION_INVENTORY_MISMATCH + "]");
+-                }
+-                qty = qty - orderProduct.getProductQuantity();
+-                availability.setProductQuantity(qty);
+-            }
+-            productService.update(p);
++			ProductAvailability availability = p.getAvailabilities().stream()
++					.filter(a -> a.getProductVariant() == null).findFirst().orElse(null);
++			if (availability == null) throw new ServiceException(ServiceException.EXCEPTION_INVENTORY_MISMATCH);
++			availability.setProductQuantity(availability.getProductQuantity() - orderProduct.getProductQuantity());
++			productService.update(p);
+         }
+ 
+ 
+ 
+-    	return order;
+-    }
++		return order;
++	}
++
++	private void validateInventory(List<ShoppingCartItem> items, MerchantStore store) throws ServiceException {
++		for (ShoppingCartItem item : items) {
++			Product p = productService.getBySku(item.getSku(), store);
++			if (p == null) throw new ServiceException(ServiceException.EXCEPTION_INVENTORY_MISMATCH);
++			ProductAvailability availability = p.getAvailabilities().stream()
++					.filter(a -> a.getProductVariant() == null).findFirst().orElse(null);
++			if (availability == null || availability.getProductQuantity() == null
++					|| availability.getProductQuantity() < item.getQuantity()) {
++				throw new ServiceException(ServiceException.EXCEPTION_INVENTORY_MISMATCH);
++			}
++		}
++	}
+ 
+     private OrderTotalSummary caculateOrder(OrderSummary summary, Customer customer, final MerchantStore store, final Language language) throws Exception {
+ 
+diff --git a/sm-shop/src/main/java/com/salesmanager/shop/mapper/catalog/product/ReadableProductMapper.java b/sm-shop/src/main/java/com/salesmanager/shop/mapper/catalog/product/ReadableProductMapper.java
+index 89bd5ea..96f70ce 100644
+--- a/sm-shop/src/main/java/com/salesmanager/shop/mapper/catalog/product/ReadableProductMapper.java
++++ b/sm-shop/src/main/java/com/salesmanager/shop/mapper/catalog/product/ReadableProductMapper.java
+@@ -360,9 +360,8 @@ public class ReadableProductMapper implements Mapper<Product, ReadableProduct> {
+ 					availability.getProductQuantityOrderMax() == null ? 1 : availability.getProductQuantityOrderMax());
+ 			destination.setQuantityOrderMinimum(
+ 					availability.getProductQuantityOrderMin() == null ? 1 : availability.getProductQuantityOrderMin());
+-			if (availability.getProductQuantity().intValue() > 0 && destination.isAvailable()) {
+-				destination.setCanBePurchased(true);
+-			}
++			destination.setCanBePurchased(availability.getProductQuantity() != null
++					&& availability.getProductQuantity().intValue() > 0 && destination.isAvailable());
+ 			
+ 			if(a.getProductVariant()==null && StringUtils.isEmpty(a.getRegionVariant())) {
+ 				break;
+diff --git a/sm-shop/src/main/java/com/salesmanager/shop/populator/catalog/ReadableProductPopulator.java b/sm-shop/src/main/java/com/salesmanager/shop/populator/catalog/ReadableProductPopulator.java
+index c53d2a0..692796e 100755
+--- a/sm-shop/src/main/java/com/salesmanager/shop/populator/catalog/ReadableProductPopulator.java
++++ b/sm-shop/src/main/java/com/salesmanager/shop/populator/catalog/ReadableProductPopulator.java
+@@ -499,9 +499,8 @@ public class ReadableProductPopulator extends
+ 					target.setQuantity(availability.getProductQuantity() == null ? 1:availability.getProductQuantity());
+ 					target.setQuantityOrderMaximum(availability.getProductQuantityOrderMax() == null ? 1:availability.getProductQuantityOrderMax());
+ 					target.setQuantityOrderMinimum(availability.getProductQuantityOrderMin()==null ? 1:availability.getProductQuantityOrderMin());
+-					if(availability.getProductQuantity().intValue() > 0 && target.isAvailable()) {
+-							target.setCanBePurchased(true);
+-					}
++					target.setCanBePurchased(availability.getProductQuantity() != null
++							&& availability.getProductQuantity().intValue() > 0 && target.isAvailable());
+ 				//}
+ 			}
+ 
+diff --git a/sm-shop/src/main/java/com/salesmanager/shop/store/api/exception/RestErrorHandler.java b/sm-shop/src/main/java/com/salesmanager/shop/store/api/exception/RestErrorHandler.java
+index 054ea33..aa5a065 100755
+--- a/sm-shop/src/main/java/com/salesmanager/shop/store/api/exception/RestErrorHandler.java
++++ b/sm-shop/src/main/java/com/salesmanager/shop/store/api/exception/RestErrorHandler.java
+@@ -19,7 +19,14 @@ import org.springframework.web.bind.annotation.ResponseStatus;
+ @ControllerAdvice({"com.salesmanager.shop.store.api"})
+ public class RestErrorHandler {
+   
+-    private static final Logger log = LoggerFactory.getLogger(RestErrorHandler.class);
++    private static final Logger log = LoggerFactory.getLogger(RestErrorHandler.class);
++
++    @RequestMapping(produces = "application/json")
++    @ExceptionHandler(StockConflictException.class)
++    @ResponseStatus(HttpStatus.CONFLICT)
++    public @ResponseBody ErrorEntity handleStockConflict(StockConflictException exception) {
++        return createErrorEntity("409", exception.getErrorMessage(), exception.getLocalizedMessage());
++    }
+ 
+     @RequestMapping(produces = "application/json")
+     @ExceptionHandler(Exception.class)
+diff --git a/sm-shop/src/main/java/com/salesmanager/shop/store/api/exception/StockConflictException.java b/sm-shop/src/main/java/com/salesmanager/shop/store/api/exception/StockConflictException.java
+new file mode 100644
+index 0000000..17236a1
+--- /dev/null
++++ b/sm-shop/src/main/java/com/salesmanager/shop/store/api/exception/StockConflictException.java
+@@ -0,0 +1,9 @@
++package com.salesmanager.shop.store.api.exception;
++
++public class StockConflictException extends RestApiException {
++    private static final long serialVersionUID = 1L;
++
++    public StockConflictException(String message) {
++        super("409", message);
++    }
++}
+diff --git a/sm-shop/src/main/java/com/salesmanager/shop/store/api/v1/order/OrderApi.java b/sm-shop/src/main/java/com/salesmanager/shop/store/api/v1/order/OrderApi.java
+index b0ca074..3f5bee7 100755
+--- a/sm-shop/src/main/java/com/salesmanager/shop/store/api/v1/order/OrderApi.java
++++ b/sm-shop/src/main/java/com/salesmanager/shop/store/api/v1/order/OrderApi.java
+@@ -49,6 +49,7 @@ import com.salesmanager.shop.populator.customer.ReadableCustomerPopulator;
+ import com.salesmanager.shop.store.api.exception.GenericRuntimeException;
+ import com.salesmanager.shop.store.api.exception.ResourceNotFoundException;
+ import com.salesmanager.shop.store.api.exception.ServiceRuntimeException;
++import com.salesmanager.shop.store.api.exception.StockConflictException;
+ import com.salesmanager.shop.store.controller.customer.facade.CustomerFacade;
+ import com.salesmanager.shop.store.controller.order.facade.OrderFacade;
+ import com.salesmanager.shop.store.security.services.CredentialsException;
+@@ -382,6 +383,10 @@ public class OrderApi {
+ 
+ 
+ 		} catch (Exception e) {
++			if (e instanceof StockConflictException) {
++				response.sendError(409, e.getMessage());
++				return null;
++			}
+ 			LOGGER.error("Error while processing checkout", e);
+ 			try {
+ 				response.sendError(503, "Error while processing checkout " + e.getMessage());
+@@ -455,6 +460,9 @@ public class OrderApi {
+ 
+ 
+ 		} catch (Exception e) {
++			if (e instanceof StockConflictException) {
++				throw (StockConflictException) e;
++			}
+ 			if(e instanceof CredentialsException) {
+ 				throw new GenericRuntimeException("412","Credentials creation Failed [" + e.getMessage() + "]");
+ 			}
+diff --git a/sm-shop/src/main/java/com/salesmanager/shop/store/controller/order/facade/OrderFacadeImpl.java b/sm-shop/src/main/java/com/salesmanager/shop/store/controller/order/facade/OrderFacadeImpl.java
+index 0da643b..9bc9df2 100755
+--- a/sm-shop/src/main/java/com/salesmanager/shop/store/controller/order/facade/OrderFacadeImpl.java
++++ b/sm-shop/src/main/java/com/salesmanager/shop/store/controller/order/facade/OrderFacadeImpl.java
+@@ -29,6 +29,7 @@ import org.springframework.beans.factory.annotation.Autowired;
+ import org.springframework.beans.factory.annotation.Qualifier;
+ import org.springframework.scheduling.annotation.Async;
+ import org.springframework.stereotype.Service;
++import org.springframework.transaction.annotation.Transactional;
+ import org.springframework.validation.BindingResult;
+ import org.springframework.validation.FieldError;
+ import org.springframework.validation.ObjectError;
+@@ -65,6 +66,9 @@ import com.salesmanager.core.model.order.OrderTotalSummary;
+ import com.salesmanager.core.model.order.attributes.OrderAttribute;
+ import com.salesmanager.core.model.order.orderproduct.OrderProduct;
+ import com.salesmanager.core.model.order.orderstatus.OrderStatus;
++import com.salesmanager.core.model.catalog.product.Product;
++import com.salesmanager.core.model.catalog.product.availability.ProductAvailability;
++import com.salesmanager.shop.store.api.exception.StockConflictException;
+ import com.salesmanager.core.model.order.orderstatus.OrderStatusHistory;
+ import com.salesmanager.core.model.order.payment.CreditCard;
+ import com.salesmanager.core.model.payments.CreditCardPayment;
+@@ -557,6 +561,9 @@ public class OrderFacadeImpl implements OrderFacade {
+ 			return modelOrder;
+ 
+ 		} catch (ServiceException se) {// may be invalid credit card
++			if (se.getExceptionType() == ServiceException.EXCEPTION_INVENTORY_MISMATCH) {
++				throw new StockConflictException("Insufficient stock for one or more products");
++			}
+ 			throw se;
+ 		} catch (Exception e) {
+ 			throw new ServiceException(e);
+@@ -1325,7 +1332,14 @@ public class OrderFacadeImpl implements OrderFacade {
+ 
+ 
+ 			//order service
+-			modelOrder = orderService.processOrder(modelOrder, customer, items, orderTotalSummary, paymentModel, store);
++			try {
++				modelOrder = orderService.processOrder(modelOrder, customer, items, orderTotalSummary, paymentModel, store);
++			} catch (ServiceException se) {
++				if (se.getExceptionType() == ServiceException.EXCEPTION_INVENTORY_MISMATCH) {
++					throw new StockConflictException("Insufficient stock for one or more products");
++				}
++				throw se;
++			}
+ 
+ 			// update cart
+ 			try {
+@@ -1622,12 +1636,29 @@ public class OrderFacadeImpl implements OrderFacade {
+ 	}
+ 
+ 	@Override
++	@Transactional
+ 	public void updateOrderStatus(Order order, OrderStatus newStatus, MerchantStore store) {
+ 
+ 		// make sure we are changing to different that current status
+ 		if (order.getStatus().equals(newStatus)) {
+ 			return; // we have the same status, lets just return
+ 		}
++		if (order.getStatus() == OrderStatus.CANCELED) {
++			throw new StockConflictException("A canceled order cannot change status");
++		}
++		if (newStatus == OrderStatus.CANCELED) {
++			for (com.salesmanager.core.model.order.orderproduct.OrderProduct op : order.getOrderProducts()) {
++				try {
++					Product product = productService.getBySku(op.getSku(), store);
++					ProductAvailability availability = product.getAvailabilities().stream()
++							.filter(a -> a.getProductVariant() == null).findFirst().orElse(null);
++					if (availability != null) availability.setProductQuantity(availability.getProductQuantity() + op.getProductQuantity());
++					productService.update(product);
++				} catch (Exception e) {
++					throw new StockConflictException("Unable to restore stock for " + op.getSku());
++				}
++			}
++		}
+ 		OrderStatus oldStatus = order.getStatus();
+ 		order.setStatus(newStatus);
+ 		OrderStatusHistory history = new OrderStatusHistory();
+diff --git a/sm-shop/src/main/java/com/salesmanager/shop/store/controller/shoppingCart/facade/ShoppingCartFacadeImpl.java b/sm-shop/src/main/java/com/salesmanager/shop/store/controller/shoppingCart/facade/ShoppingCartFacadeImpl.java
+index 7fdc139..82df2b9 100755
+--- a/sm-shop/src/main/java/com/salesmanager/shop/store/controller/shoppingCart/facade/ShoppingCartFacadeImpl.java
++++ b/sm-shop/src/main/java/com/salesmanager/shop/store/controller/shoppingCart/facade/ShoppingCartFacadeImpl.java
+@@ -58,6 +58,7 @@ import com.salesmanager.shop.model.shoppingcart.ShoppingCartItem;
+ import com.salesmanager.shop.populator.shoppingCart.ShoppingCartDataPopulator;
+ import com.salesmanager.shop.store.api.exception.ResourceNotFoundException;
+ import com.salesmanager.shop.store.api.exception.ServiceRuntimeException;
++import com.salesmanager.shop.store.api.exception.StockConflictException;
+ import com.salesmanager.shop.utils.DateUtil;
+ import com.salesmanager.shop.utils.ImageFilePath;
+ 
+@@ -295,6 +296,7 @@ public class ShoppingCartFacadeImpl implements ShoppingCartFacade {
+ 			throw new Exception(
+ 					"Item with id " + product.getId() + " is not properly configured. It contains no inventory");
+ 		}
++		validateStock(product, shoppingCartItem.getQuantity());
+ 
+ 		//todo filter sku and store
+ 		for (ProductAvailability availability : availabilities) {
+@@ -342,6 +344,20 @@ public class ShoppingCartFacadeImpl implements ShoppingCartFacade {
+ 		return item;
+ 	}
+ 
++	private void validateStock(Product product, int quantity) {
++		if (quantity <= 0) {
++			return;
++		}
++		int stock = product.getAvailabilities().stream()
++				.filter(a -> a.getProductVariant() == null)
++				.map(ProductAvailability::getProductQuantity)
++				.filter(java.util.Objects::nonNull)
++				.findFirst().orElse(0);
++		if (quantity > stock) {
++			throw new StockConflictException("Insufficient stock for product " + product.getSku());
++		}
++	}
++
+ 	// used for api
+ 	private List<com.salesmanager.core.model.shoppingcart.ShoppingCartItem> createCartItems(ShoppingCart cartModel,
+ 			List<PersistableShoppingCartItem> shoppingCartItems, MerchantStore store) throws Exception {
+@@ -771,7 +787,9 @@ public class ShoppingCartFacadeImpl implements ShoppingCartFacade {
+ 		try {
+ 			return readableShoppingCart(cartModel, item, store, language);
+ 		} catch (Exception e) {
+-			if (e instanceof ResourceNotFoundException) {
++			if (e instanceof RuntimeException) {
++				throw (RuntimeException) e;
++			} else if (e instanceof ResourceNotFoundException) {
+ 				throw (ResourceNotFoundException) e;
+ 			} else {
+ 				throw new ServiceRuntimeException(e.getMessage(),e);
+@@ -855,6 +873,10 @@ public class ShoppingCartFacadeImpl implements ShoppingCartFacade {
+ 
+ 		if (!duplicateFound) {
+ 			cartModel.getLineItems().add(itemModel);
++		} else {
++			validateStock(itemModel.getProduct(), cartModel.getLineItems().stream()
++					.filter(i -> i.getProduct().getId().equals(itemModel.getProduct().getId()))
++					.mapToInt(i -> i.getQuantity()).sum());
+ 		}
+ 
+ 		saveShoppingCart(cartModel);

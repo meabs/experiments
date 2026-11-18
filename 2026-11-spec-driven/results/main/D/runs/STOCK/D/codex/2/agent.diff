@@ -1,0 +1,487 @@
+diff --git a/sm-core/src/main/java/com/salesmanager/core/business/exception/InsufficientInventoryException.java b/sm-core/src/main/java/com/salesmanager/core/business/exception/InsufficientInventoryException.java
+new file mode 100644
+index 0000000..5d3e128
+--- /dev/null
++++ b/sm-core/src/main/java/com/salesmanager/core/business/exception/InsufficientInventoryException.java
+@@ -0,0 +1,9 @@
++package com.salesmanager.core.business.exception;
++
++public class InsufficientInventoryException extends RuntimeException {
++    private static final long serialVersionUID = 1L;
++
++    public InsufficientInventoryException(String message) {
++        super(message);
++    }
++}
+diff --git a/sm-core/src/main/java/com/salesmanager/core/business/services/order/OrderService.java b/sm-core/src/main/java/com/salesmanager/core/business/services/order/OrderService.java
+index 4a076e3..64e3a66 100755
+--- a/sm-core/src/main/java/com/salesmanager/core/business/services/order/OrderService.java
++++ b/sm-core/src/main/java/com/salesmanager/core/business/services/order/OrderService.java
+@@ -24,6 +24,8 @@ import com.salesmanager.core.model.shoppingcart.ShoppingCartItem;
+ 
+ public interface OrderService extends SalesManagerEntityService<Long, Order> {
+ 
++	void restoreInventory(Order order, MerchantStore store);
++
+     void addOrderStatusHistory(Order order, OrderStatusHistory history)
+                     throws ServiceException;
+ 
+diff --git a/sm-core/src/main/java/com/salesmanager/core/business/services/order/OrderServiceImpl.java b/sm-core/src/main/java/com/salesmanager/core/business/services/order/OrderServiceImpl.java
+index b6bac52..eefb2b5 100755
+--- a/sm-core/src/main/java/com/salesmanager/core/business/services/order/OrderServiceImpl.java
++++ b/sm-core/src/main/java/com/salesmanager/core/business/services/order/OrderServiceImpl.java
+@@ -24,9 +24,11 @@ import org.apache.commons.lang3.Validate;
+ import org.slf4j.Logger;
+ import org.slf4j.LoggerFactory;
+ import org.springframework.stereotype.Service;
++import org.springframework.transaction.annotation.Transactional;
+ 
+ import com.salesmanager.core.business.constants.Constants;
+ import com.salesmanager.core.business.exception.ServiceException;
++import com.salesmanager.core.business.exception.InsufficientInventoryException;
+ import com.salesmanager.core.business.modules.order.InvoiceModule;
+ import com.salesmanager.core.business.repositories.order.OrderRepository;
+ import com.salesmanager.core.business.services.catalog.product.ProductService;
+@@ -114,12 +116,14 @@ public class OrderServiceImpl  extends SalesManagerEntityServiceImpl<Long, Order
+     }
+ 
+     @Override
++    @Transactional(rollbackFor = Exception.class)
+     public Order processOrder(Order order, Customer customer, List<ShoppingCartItem> items, OrderTotalSummary summary, Payment payment, MerchantStore store) throws ServiceException {
+ 
+     	return process(order, customer, items, summary, payment, null, store);
+     }
+ 
+     @Override
++    @Transactional(rollbackFor = Exception.class)
+     public Order processOrder(Order order, Customer customer, List<ShoppingCartItem> items, OrderTotalSummary summary, Payment payment, Transaction transaction, MerchantStore store) throws ServiceException {
+     	return process(order, customer, items, summary, payment, transaction, store);
+     }
+@@ -143,6 +147,8 @@ public class OrderServiceImpl  extends SalesManagerEntityServiceImpl<Long, Order
+     	}
+ 
+ 
++        reserveInventory(order.getOrderProducts(), store);
++
+     	//first process payment
+     	Transaction processTransaction = paymentService.processPayment(customer, store, payment, items, order);
+ 
+@@ -187,31 +193,56 @@ public class OrderServiceImpl  extends SalesManagerEntityServiceImpl<Long, Order
+     		}
+     	}
+ 
+-        /**
+-         * decrement inventory
+-         */
+-    	LOGGER.debug( "Update inventory" );
+-        Set<OrderProduct> products = order.getOrderProducts();
+-        for(OrderProduct orderProduct : products) {
+-            orderProduct.getProductQuantity();
+-            Product p = productService.getById(orderProduct.getId());
+-            if(p == null)
+-                throw new ServiceException(ServiceException.EXCEPTION_INVENTORY_MISMATCH);
+-            for(ProductAvailability availability : p.getAvailabilities()) {
+-                int qty = availability.getProductQuantity();
+-                if(qty < orderProduct.getProductQuantity()) {
+-                    //throw new ServiceException(ServiceException.EXCEPTION_INVENTORY_MISMATCH);
+-                	LOGGER.error("APP-BACKEND [" + ServiceException.EXCEPTION_INVENTORY_MISMATCH + "]");
+-                }
+-                qty = qty - orderProduct.getProductQuantity();
+-                availability.setProductQuantity(qty);
++	return order;
++    }
++
++    private void reserveInventory(Set<OrderProduct> products, MerchantStore store) throws ServiceException {
++        for (OrderProduct orderProduct : products) {
++            Product product = productService.getBySku(orderProduct.getSku(), store, store.getDefaultLanguage());
++            ProductAvailability availability = inventoryAvailability(product);
++            if (product == null || availability == null || availability.getProductQuantity() == null
++                    || availability.getProductQuantity() < orderProduct.getProductQuantity()) {
++                throw new InsufficientInventoryException("Insufficient stock for product " + orderProduct.getSku());
+             }
+-            productService.update(p);
+         }
++        for (OrderProduct orderProduct : products) {
++            Product product = productService.getBySku(orderProduct.getSku(), store, store.getDefaultLanguage());
++            ProductAvailability availability = inventoryAvailability(product);
++            availability.setProductQuantity(availability.getProductQuantity() - orderProduct.getProductQuantity());
++            productService.update(product);
++        }
++    }
+ 
++    @Override
++    @Transactional
++    public void restoreInventory(Order order, MerchantStore store) {
++        try {
++            for (OrderProduct orderProduct : order.getOrderProducts()) {
++                Product product = productService.getBySku(orderProduct.getSku(), store, store.getDefaultLanguage());
++                ProductAvailability availability = inventoryAvailability(product);
++                if (availability == null) {
++                    throw new InsufficientInventoryException("No stock record for product " + orderProduct.getSku());
++                }
++                availability.setProductQuantity(availability.getProductQuantity() + orderProduct.getProductQuantity());
++                productService.update(product);
++            }
++        } catch (ServiceException e) {
++            throw new IllegalStateException("Unable to restore inventory", e);
++        }
++    }
+ 
+-
+-    	return order;
++    private ProductAvailability inventoryAvailability(Product product) {
++        if (product == null || product.getAvailabilities() == null || product.getAvailabilities().isEmpty()) {
++            return null;
++        }
++        ProductAvailability selected = product.getAvailabilities().iterator().next();
++        for (ProductAvailability availability : product.getAvailabilities()) {
++            if (availability.getProductVariant() == null && Constants.ALL_REGIONS.equals(availability.getRegion())) {
++                selected = availability;
++                break;
++            }
++        }
++        return selected;
+     }
+ 
+     private OrderTotalSummary caculateOrder(OrderSummary summary, Customer customer, final MerchantStore store, final Language language) throws Exception {
+diff --git a/sm-shop/src/main/java/com/salesmanager/shop/mapper/catalog/product/ReadableProductMapper.java b/sm-shop/src/main/java/com/salesmanager/shop/mapper/catalog/product/ReadableProductMapper.java
+index 89bd5ea..daef088 100644
+--- a/sm-shop/src/main/java/com/salesmanager/shop/mapper/catalog/product/ReadableProductMapper.java
++++ b/sm-shop/src/main/java/com/salesmanager/shop/mapper/catalog/product/ReadableProductMapper.java
+@@ -355,13 +355,17 @@ public class ReadableProductMapper implements Mapper<Product, ReadableProduct> {
+ 			
+ 			
+ 			availability = a;
+-			destination.setQuantity(availability.getProductQuantity() == null ? 1 : availability.getProductQuantity());
++			int stock = availability.getProductQuantity() == null ? 0 : availability.getProductQuantity();
++			destination.setQuantity(stock);
+ 			destination.setQuantityOrderMaximum(
+ 					availability.getProductQuantityOrderMax() == null ? 1 : availability.getProductQuantityOrderMax());
+ 			destination.setQuantityOrderMinimum(
+ 					availability.getProductQuantityOrderMin() == null ? 1 : availability.getProductQuantityOrderMin());
+-			if (availability.getProductQuantity().intValue() > 0 && destination.isAvailable()) {
++			if (stock > 0 && destination.isAvailable()) {
+ 				destination.setCanBePurchased(true);
++			} else if (stock == 0) {
++				destination.setAvailable(false);
++				destination.setCanBePurchased(false);
+ 			}
+ 			
+ 			if(a.getProductVariant()==null && StringUtils.isEmpty(a.getRegionVariant())) {
+diff --git a/sm-shop/src/main/java/com/salesmanager/shop/store/api/exception/ConflictException.java b/sm-shop/src/main/java/com/salesmanager/shop/store/api/exception/ConflictException.java
+new file mode 100644
+index 0000000..fd4f2a4
+--- /dev/null
++++ b/sm-shop/src/main/java/com/salesmanager/shop/store/api/exception/ConflictException.java
+@@ -0,0 +1,9 @@
++package com.salesmanager.shop.store.api.exception;
++
++public class ConflictException extends ServiceRuntimeException {
++    private static final long serialVersionUID = 1L;
++
++    public ConflictException(String message) {
++        super("409", message);
++    }
++}
+diff --git a/sm-shop/src/main/java/com/salesmanager/shop/store/api/exception/RestErrorHandler.java b/sm-shop/src/main/java/com/salesmanager/shop/store/api/exception/RestErrorHandler.java
+index 054ea33..f3b8ed6 100755
+--- a/sm-shop/src/main/java/com/salesmanager/shop/store/api/exception/RestErrorHandler.java
++++ b/sm-shop/src/main/java/com/salesmanager/shop/store/api/exception/RestErrorHandler.java
+@@ -13,7 +13,8 @@ import org.springframework.web.bind.annotation.ControllerAdvice;
+ import org.springframework.web.bind.annotation.ExceptionHandler;
+ import org.springframework.web.bind.annotation.RequestMapping;
+ import org.springframework.web.bind.annotation.ResponseBody;
+-import org.springframework.web.bind.annotation.ResponseStatus;
++import org.springframework.web.bind.annotation.ResponseStatus;
++import org.springframework.http.ResponseEntity;
+ 
+ @Order(Ordered.HIGHEST_PRECEDENCE)
+ @ControllerAdvice({"com.salesmanager.shop.store.api"})
+@@ -41,17 +42,17 @@ public class RestErrorHandler {
+      * Generic exception serviceException handler
+      */
+     @RequestMapping(produces = "application/json")
+-    @ExceptionHandler(ServiceRuntimeException.class)
+-    @ResponseStatus(HttpStatus.BAD_REQUEST)
+-    public @ResponseBody ErrorEntity handleServiceException(ServiceRuntimeException exception) {
++    @ExceptionHandler(ServiceRuntimeException.class)
++    public @ResponseBody ResponseEntity<ErrorEntity> handleServiceException(ServiceRuntimeException exception) {
+         log.error(exception.getErrorMessage(), exception);
+-        Throwable rootCause = exception.getCause();
+-        while (rootCause.getCause() != null && rootCause.getCause() != rootCause) {
+-            rootCause = rootCause.getCause();
+-        }
+-        ErrorEntity errorEntity = createErrorEntity(exception.getErrorCode()!=null?exception.getErrorCode():"500", exception.getErrorMessage(),
+-        		rootCause.getMessage());
+-        return errorEntity;
++        Throwable rootCause = exception.getCause();
++        while (rootCause != null && rootCause.getCause() != null && rootCause.getCause() != rootCause) {
++            rootCause = rootCause.getCause();
++        }
++        ErrorEntity errorEntity = createErrorEntity(exception.getErrorCode()!=null?exception.getErrorCode():"500", exception.getErrorMessage(),
++                rootCause == null ? exception.getErrorMessage() : rootCause.getMessage());
++        HttpStatus status = "409".equals(exception.getErrorCode()) ? HttpStatus.CONFLICT : HttpStatus.BAD_REQUEST;
++        return ResponseEntity.status(status).body(errorEntity);
+     }
+ 
+     @RequestMapping(produces = "application/json")
+diff --git a/sm-shop/src/main/java/com/salesmanager/shop/store/api/v1/order/OrderApi.java b/sm-shop/src/main/java/com/salesmanager/shop/store/api/v1/order/OrderApi.java
+index b0ca074..cefcc2f 100755
+--- a/sm-shop/src/main/java/com/salesmanager/shop/store/api/v1/order/OrderApi.java
++++ b/sm-shop/src/main/java/com/salesmanager/shop/store/api/v1/order/OrderApi.java
+@@ -12,6 +12,7 @@ import javax.servlet.http.HttpServletResponse;
+ import javax.validation.Valid;
+ 
+ import com.salesmanager.core.business.services.order.OrderService;
++import com.salesmanager.core.business.exception.InsufficientInventoryException;
+ import com.salesmanager.core.model.order.orderstatus.OrderStatus;
+ import org.apache.commons.collections4.CollectionUtils;
+ import org.apache.commons.lang3.StringUtils;
+@@ -49,6 +50,7 @@ import com.salesmanager.shop.populator.customer.ReadableCustomerPopulator;
+ import com.salesmanager.shop.store.api.exception.GenericRuntimeException;
+ import com.salesmanager.shop.store.api.exception.ResourceNotFoundException;
+ import com.salesmanager.shop.store.api.exception.ServiceRuntimeException;
++import com.salesmanager.shop.store.api.exception.ConflictException;
+ import com.salesmanager.shop.store.controller.customer.facade.CustomerFacade;
+ import com.salesmanager.shop.store.controller.order.facade.OrderFacade;
+ import com.salesmanager.shop.store.security.services.CredentialsException;
+@@ -381,7 +383,10 @@ public class OrderApi {
+ 
+ 
+ 
++		} catch (InsufficientInventoryException e) {
++			throw new ConflictException(e.getMessage());
+ 		} catch (Exception e) {
++			if (e instanceof ConflictException) throw (ConflictException)e;
+ 			LOGGER.error("Error while processing checkout", e);
+ 			try {
+ 				response.sendError(503, "Error while processing checkout " + e.getMessage());
+@@ -454,7 +459,10 @@ public class OrderApi {
+ 			return orderFacadeV1.orderConfirmation(modelOrder, customer, merchantStore, language);
+ 
+ 
++		} catch (InsufficientInventoryException e) {
++			throw new ConflictException(e.getMessage());
+ 		} catch (Exception e) {
++			if (e instanceof ConflictException) throw (ConflictException)e;
+ 			if(e instanceof CredentialsException) {
+ 				throw new GenericRuntimeException("412","Credentials creation Failed [" + e.getMessage() + "]");
+ 			}
+diff --git a/sm-shop/src/main/java/com/salesmanager/shop/store/api/v1/shoppingCart/ShoppingCartApi.java b/sm-shop/src/main/java/com/salesmanager/shop/store/api/v1/shoppingCart/ShoppingCartApi.java
+index 7c300f2..6897d9a 100755
+--- a/sm-shop/src/main/java/com/salesmanager/shop/store/api/v1/shoppingCart/ShoppingCartApi.java
++++ b/sm-shop/src/main/java/com/salesmanager/shop/store/api/v1/shoppingCart/ShoppingCartApi.java
+@@ -37,6 +37,7 @@ import com.salesmanager.shop.model.shoppingcart.ReadableShoppingCart;
+ import com.salesmanager.shop.store.api.exception.OperationNotAllowedException;
+ import com.salesmanager.shop.store.api.exception.ResourceNotFoundException;
+ import com.salesmanager.shop.store.api.exception.ServiceRuntimeException;
++import com.salesmanager.shop.store.api.exception.ConflictException;
+ import com.salesmanager.shop.store.controller.customer.facade.v1.CustomerFacade;
+ import com.salesmanager.shop.store.controller.shoppingCart.facade.ShoppingCartFacade;
+ 
+@@ -105,6 +106,7 @@ public class ShoppingCartApi {
+ 			return new ResponseEntity<>(cart, HttpStatus.CREATED);
+ 
+ 		} catch (Exception e) {
++			if (e instanceof ConflictException) throw (ConflictException)e;
+ 			if(e instanceof ResourceNotFoundException) {
+ 				throw (ResourceNotFoundException)e;
+ 			} else {
+@@ -136,6 +138,7 @@ public class ShoppingCartApi {
+ 			return new ResponseEntity<>(cart, HttpStatus.CREATED);
+ 
+ 		} catch (Exception e) {
++			if (e instanceof ConflictException) throw (ConflictException)e;
+ 			if(e instanceof ResourceNotFoundException) {
+ 				throw (ResourceNotFoundException)e;
+ 			} else {
+diff --git a/sm-shop/src/main/java/com/salesmanager/shop/store/controller/order/facade/OrderFacadeImpl.java b/sm-shop/src/main/java/com/salesmanager/shop/store/controller/order/facade/OrderFacadeImpl.java
+index 0da643b..61f3ce8 100755
+--- a/sm-shop/src/main/java/com/salesmanager/shop/store/controller/order/facade/OrderFacadeImpl.java
++++ b/sm-shop/src/main/java/com/salesmanager/shop/store/controller/order/facade/OrderFacadeImpl.java
+@@ -1628,7 +1628,13 @@ public class OrderFacadeImpl implements OrderFacade {
+ 		if (order.getStatus().equals(newStatus)) {
+ 			return; // we have the same status, lets just return
+ 		}
++		if (order.getStatus() == OrderStatus.CANCELED) {
++			throw new com.salesmanager.shop.store.api.exception.ConflictException("A canceled order cannot change status");
++		}
+ 		OrderStatus oldStatus = order.getStatus();
++		if (newStatus == OrderStatus.CANCELED) {
++			orderService.restoreInventory(order, store);
++		}
+ 		order.setStatus(newStatus);
+ 		OrderStatusHistory history = new OrderStatusHistory();
+ 
+diff --git a/sm-shop/src/main/java/com/salesmanager/shop/store/controller/shoppingCart/facade/ShoppingCartFacadeImpl.java b/sm-shop/src/main/java/com/salesmanager/shop/store/controller/shoppingCart/facade/ShoppingCartFacadeImpl.java
+index 7fdc139..6fd2765 100755
+--- a/sm-shop/src/main/java/com/salesmanager/shop/store/controller/shoppingCart/facade/ShoppingCartFacadeImpl.java
++++ b/sm-shop/src/main/java/com/salesmanager/shop/store/controller/shoppingCart/facade/ShoppingCartFacadeImpl.java
+@@ -57,6 +57,7 @@ import com.salesmanager.shop.model.shoppingcart.ShoppingCartData;
+ import com.salesmanager.shop.model.shoppingcart.ShoppingCartItem;
+ import com.salesmanager.shop.populator.shoppingCart.ShoppingCartDataPopulator;
+ import com.salesmanager.shop.store.api.exception.ResourceNotFoundException;
++import com.salesmanager.shop.store.api.exception.ConflictException;
+ import com.salesmanager.shop.store.api.exception.ServiceRuntimeException;
+ import com.salesmanager.shop.utils.DateUtil;
+ import com.salesmanager.shop.utils.ImageFilePath;
+@@ -156,7 +157,9 @@ public class ShoppingCartFacadeImpl implements ShoppingCartFacade {
+ 					if (CollectionUtils.isEmpty(cartItem.getAttributes())) {
+ 						if (!duplicateFound) {
+ 							if (!shoppingCartItem.isProductVirtual()) {
+-								cartItem.setQuantity(cartItem.getQuantity() + shoppingCartItem.getQuantity());
++								int newQuantity = cartItem.getQuantity() + shoppingCartItem.getQuantity();
++								ensureStock(cartItem.getProduct(), newQuantity);
++								cartItem.setQuantity(newQuantity);
+ 							}
+ 							duplicateFound = true;
+ 							break;
+@@ -212,17 +215,15 @@ public class ShoppingCartFacadeImpl implements ShoppingCartFacade {
+ 
+ 		}
+ 
+-		for (ProductAvailability availability : availabilities) {
+-			if (availability.getProductQuantity() == null || availability.getProductQuantity().intValue() == 0) {
+-				throw new Exception("Item with id " + product.getId() + " is not available");
+-			}
++		if (shoppingCartItem.getQuantity() > 0) {
++			ensureStock(product, shoppingCartItem.getQuantity(), availabilities);
+ 		}
+ 
+-		if (!product.isAvailable()) {
++		if (shoppingCartItem.getQuantity() > 0 && !product.isAvailable()) {
+ 			throw new Exception("Item with id " + product.getId() + " is not available");
+ 		}
+ 
+-		if (!DateUtil.dateBeforeEqualsDate(product.getDateAvailable(), new Date())) {
++		if (shoppingCartItem.getQuantity() > 0 && !DateUtil.dateBeforeEqualsDate(product.getDateAvailable(), new Date())) {
+ 			throw new Exception("Item with id " + product.getId() + " is not available");
+ 		}
+ 
+@@ -271,11 +272,11 @@ public class ShoppingCartFacadeImpl implements ShoppingCartFacade {
+ 					"Item with id " + shoppingCartItem.getProduct() + " does not belong to merchant " + store.getId());
+ 		}
+ 
+-		if (!product.isAvailable()) {
++		if (shoppingCartItem.getQuantity() > 0 && !product.isAvailable()) {
+ 			throw new Exception("Product with sku " + product.getSku() + " is not available");
+ 		}
+ 
+-		if (!DateUtil.dateBeforeEqualsDate(product.getDateAvailable(), new Date())) {
++		if (shoppingCartItem.getQuantity() > 0 && !DateUtil.dateBeforeEqualsDate(product.getDateAvailable(), new Date())) {
+ 			throw new Exception("Item with sku " + product.getSku() + " is not available");
+ 		}
+ 
+@@ -297,10 +298,8 @@ public class ShoppingCartFacadeImpl implements ShoppingCartFacade {
+ 		}
+ 
+ 		//todo filter sku and store
+-		for (ProductAvailability availability : availabilities) {
+-			if (availability.getProductQuantity() == null || availability.getProductQuantity().intValue() == 0) {
+-				throw new Exception("Product with id " + product.getId() + " is not available");
+-			}
++		if (shoppingCartItem.getQuantity() > 0) {
++			ensureStock(product, shoppingCartItem.getQuantity(), availabilities);
+ 		}
+ 
+ 		/**
+@@ -385,7 +384,7 @@ public class ShoppingCartFacadeImpl implements ShoppingCartFacade {
+ 			 * Check if product is available Check if product quantity is 0 Check if date
+ 			 * available <= now
+ 			 */
+-			if (shoppingCartItem.getQuantity() > 0 && !p.isAvailable()) {
++			if (shoppingCartItem.getQuantity() > 0 && !isReduction(cartModel, p.getSku(), shoppingCartItem.getQuantity()) && !p.isAvailable()) {
+ 				throw new Exception("Item with id " + p.getId() + " is not available");
+ 			}
+ 
+@@ -394,13 +393,11 @@ public class ShoppingCartFacadeImpl implements ShoppingCartFacade {
+ 				throw new Exception("Item with id " + p.getId() + " is not properly configured");
+ 			}
+ 
+-			for (ProductAvailability availability : availabilities) {
+-				if (shoppingCartItem.getQuantity() > 0 && availability.getProductQuantity() == null || availability.getProductQuantity().intValue() == 0) {
+-					throw new Exception("Item with id " + p.getId() + " is not available");
+-				}
++			if (shoppingCartItem.getQuantity() > 0 && !isReduction(cartModel, p.getSku(), shoppingCartItem.getQuantity())) {
++				ensureStock(p, shoppingCartItem.getQuantity(), availabilities);
+ 			}
+ 
+-			if (!DateUtil.dateBeforeEqualsDate(p.getDateAvailable(), new Date())) {
++			if (shoppingCartItem.getQuantity() > 0 && !isReduction(cartModel, p.getSku(), shoppingCartItem.getQuantity()) && !DateUtil.dateBeforeEqualsDate(p.getDateAvailable(), new Date())) {
+ 				throw new Exception("Item with id " + p.getId() + " is not available");
+ 			}
+ 			// end qty & availablility checks
+@@ -678,6 +675,32 @@ public class ShoppingCartFacadeImpl implements ShoppingCartFacade {
+ 
+ 	}
+ 
++	private void ensureStock(Product product, int requestedQuantity) {
++		ensureStock(product, requestedQuantity, product.getAvailabilities());
++	}
++
++	private boolean isReduction(ShoppingCart cart, String sku, int requestedQuantity) {
++		if (cart == null || CollectionUtils.isEmpty(cart.getLineItems())) return false;
++		for (com.salesmanager.core.model.shoppingcart.ShoppingCartItem item : cart.getLineItems()) {
++			if (sku.equals(item.getSku()) && requestedQuantity < item.getQuantity()) return true;
++		}
++		return false;
++	}
++
++	private void ensureStock(Product product, int requestedQuantity, Set<ProductAvailability> availabilities) {
++		if (requestedQuantity <= 0) {
++			return;
++		}
++		if (CollectionUtils.isEmpty(availabilities)) {
++			throw new ConflictException("Product " + product.getSku() + " has no stock");
++		}
++		for (ProductAvailability availability : availabilities) {
++			if (availability.getProductQuantity() == null || requestedQuantity > availability.getProductQuantity()) {
++				throw new ConflictException("Insufficient stock for product " + product.getSku());
++			}
++		}
++	}
++
+ 	private ShoppingCart getCartModel(final String cartId, final MerchantStore store) {
+ 		if (StringUtils.isNotBlank(cartId)) {
+ 			try {
+@@ -877,7 +900,16 @@ public class ShoppingCartFacadeImpl implements ShoppingCartFacade {
+ 	private ReadableShoppingCart modifyCart(ShoppingCart cartModel, PersistableShoppingCartItem item,
+ 			MerchantStore store, Language language) throws Exception {
+ 
+-		com.salesmanager.core.model.shoppingcart.ShoppingCartItem itemModel = createCartItem(cartModel, item, store);
++		boolean reduction = false;
++		if (!CollectionUtils.isEmpty(cartModel.getLineItems())) {
++			for (com.salesmanager.core.model.shoppingcart.ShoppingCartItem existing : cartModel.getLineItems()) {
++				if (existing.getSku().equals(item.getProduct()) && item.getQuantity() < existing.getQuantity()) {
++					reduction = true;
++					break;
++				}
++			}
++		}
++		com.salesmanager.core.model.shoppingcart.ShoppingCartItem itemModel = createCartItem(cartModel, item, store, reduction);
+ 
+ 		boolean itemModified = false;
+ 		// check if existing product
+@@ -952,6 +984,22 @@ public class ShoppingCartFacadeImpl implements ShoppingCartFacade {
+ 
+ 	}
+ 
++	private com.salesmanager.core.model.shoppingcart.ShoppingCartItem createCartItem(ShoppingCart cartModel,
++			PersistableShoppingCartItem shoppingCartItem, MerchantStore store, boolean reduction) throws Exception {
++		if (!reduction) {
++			return createCartItem(cartModel, shoppingCartItem, store);
++		}
++		Product product = productService.getBySku(shoppingCartItem.getProduct(), store, store.getDefaultLanguage());
++		if (product == null) {
++			throw new ResourceNotFoundException("Product with sku " + shoppingCartItem.getProduct() + " does not exist");
++		}
++		com.salesmanager.core.model.shoppingcart.ShoppingCartItem item = shoppingCartService.populateShoppingCartItem(product, store);
++		item.setQuantity(shoppingCartItem.getQuantity());
++		item.setShoppingCart(cartModel);
++		item.setSku(product.getSku());
++		return item;
++	}
++
+ 	/**
+ 	 * Update cart based on the Items coming in with cartItems, Items not in
+ 	 * incoming will not be affected, Items with Qty set to 0 will be removed from

@@ -1,0 +1,279 @@
+diff --git a/sm-core/src/main/java/com/salesmanager/core/business/services/shoppingcart/ShoppingCartServiceImpl.java b/sm-core/src/main/java/com/salesmanager/core/business/services/shoppingcart/ShoppingCartServiceImpl.java
+index e0d1ce8..056136c 100755
+--- a/sm-core/src/main/java/com/salesmanager/core/business/services/shoppingcart/ShoppingCartServiceImpl.java
++++ b/sm-core/src/main/java/com/salesmanager/core/business/services/shoppingcart/ShoppingCartServiceImpl.java
+@@ -232,35 +232,41 @@ public class ShoppingCartServiceImpl extends SalesManagerEntityServiceImpl<Long,
+ 
+ 		try {
+ 
+-			boolean cartIsObsolete = false;
+ 			if (shoppingCart != null) {
+ 
+ 				Set<ShoppingCartItem> items = shoppingCart.getLineItems();
+ 				if (items == null || items.size() == 0) {
+-					shoppingCart.setObsolete(true);
++					// An empty cart is still a valid cart.  In particular, a cart can
++					// become empty when its only product is deleted.
++					shoppingCart.setObsolete(false);
+ 					return shoppingCart;
+ 
+ 				}
+ 
+-				// Set<ShoppingCartItem> shoppingCartItems = new
+-				// HashSet<ShoppingCartItem>();
++				List<ShoppingCartItem> obsoleteItems = new ArrayList<>();
+ 				for (ShoppingCartItem item : items) {
+ 					LOGGER.debug("Populate item " + item.getId());
+ 					getPopulatedItem(item, store);
+ 					LOGGER.debug("Obsolete item ? " + item.isObsolete());
+ 					if (item.isObsolete()) {
+-						cartIsObsolete = true;
++						obsoleteItems.add(item);
+ 					}
+ 				}
+ 
++				for (ShoppingCartItem item : obsoleteItems) {
++					if (item.getAttributes() != null) {
++						item.getAttributes().forEach(attribute -> shoppingCartAttributeItemRepository.deleteById(attribute.getId()));
++					}
++					shoppingCartItemRepository.deleteById(item.getId());
++				}
++
++				items.removeAll(obsoleteItems);
+ 				Set<ShoppingCartItem> refreshedItems = new HashSet<>(items);
+ 
+ 				shoppingCart.setLineItems(refreshedItems);
+ 				update(shoppingCart);
+ 
+-				if (cartIsObsolete) {
+-					shoppingCart.setObsolete(true);
+-				}
++				shoppingCart.setObsolete(false);
+ 				return shoppingCart;
+ 			}
+ 
+@@ -292,7 +298,14 @@ public class ShoppingCartServiceImpl extends SalesManagerEntityServiceImpl<Long,
+ 	@Transactional
+ 	private void getPopulatedItem(final ShoppingCartItem item, MerchantStore store) throws Exception {
+ 
+-		Product product = productService.getBySku(item.getSku(), store, store.getDefaultLanguage());
++		Product product;
++		try {
++			product = productService.getBySku(item.getSku(), store, store.getDefaultLanguage());
++		} catch (ServiceException e) {
++			// ProductService reports a missing SKU as a ServiceException.  A deleted
++			// product is an obsolete cart line, not a broken cart.
++			product = null;
++		}
+ 
+ 		if (product == null) {
+ 			item.setObsolete(true);
+diff --git a/sm-core/src/test/java/com/salesmanager/test/shoppingcart/ShoppingCartServiceImplTest.java b/sm-core/src/test/java/com/salesmanager/test/shoppingcart/ShoppingCartServiceImplTest.java
+new file mode 100644
+index 0000000..7c54d90
+--- /dev/null
++++ b/sm-core/src/test/java/com/salesmanager/test/shoppingcart/ShoppingCartServiceImplTest.java
+@@ -0,0 +1,76 @@
++package com.salesmanager.test.shoppingcart;
++
++import static org.junit.Assert.assertFalse;
++import static org.junit.Assert.assertTrue;
++import static org.mockito.ArgumentMatchers.any;
++import static org.mockito.ArgumentMatchers.anyString;
++import static org.mockito.Mockito.doThrow;
++import static org.mockito.Mockito.verify;
++
++import java.util.HashSet;
++import java.lang.reflect.Field;
++
++import org.junit.Test;
++import org.mockito.InjectMocks;
++import org.mockito.Mock;
++import org.mockito.MockitoAnnotations;
++
++import com.salesmanager.core.business.exception.ServiceException;
++import com.salesmanager.core.business.repositories.shoppingcart.ShoppingCartAttributeRepository;
++import com.salesmanager.core.business.repositories.shoppingcart.ShoppingCartItemRepository;
++import com.salesmanager.core.business.repositories.shoppingcart.ShoppingCartRepository;
++import com.salesmanager.core.business.services.catalog.product.ProductService;
++import com.salesmanager.core.business.services.shoppingcart.ShoppingCartServiceImpl;
++import com.salesmanager.core.model.merchant.MerchantStore;
++import com.salesmanager.core.model.shoppingcart.ShoppingCart;
++import com.salesmanager.core.model.shoppingcart.ShoppingCartItem;
++
++public class ShoppingCartServiceImplTest {
++	@Mock
++	private ShoppingCartRepository cartRepository;
++	@Mock
++	private ShoppingCartItemRepository itemRepository;
++	@Mock
++	private ShoppingCartAttributeRepository attributeRepository;
++	@Mock
++	private ProductService productService;
++	@InjectMocks
++	private ShoppingCartServiceImpl service;
++
++	@Test
++	public void deletedProductIsRemovedWithoutInvalidatingCart() throws Exception {
++		MockitoAnnotations.initMocks(this);
++		inject(service, "productService", productService);
++		inject(service, "shoppingCartItemRepository", itemRepository);
++		inject(service, "shoppingCartAttributeItemRepository", attributeRepository);
++
++		MerchantStore store = new MerchantStore();
++		store.setId(1);
++		ShoppingCart cart = new ShoppingCart();
++		cart.setShoppingCartCode("cart-code");
++		cart.setMerchantStore(store);
++		ShoppingCartItem item = new ShoppingCartItem();
++		item.setId(42L);
++		item.setSku("deleted-sku");
++		item.setShoppingCart(cart);
++		cart.setLineItems(new HashSet<ShoppingCartItem>());
++		cart.getLineItems().add(item);
++
++		org.mockito.Mockito.when(cartRepository.findByCode(1, "cart-code")).thenReturn(cart);
++		doThrow(new ServiceException("missing")).when(productService)
++				.getBySku(anyString(), any(MerchantStore.class), any());
++
++		ShoppingCart result = service.getByCode("cart-code", store);
++
++		assertTrue(result != null);
++		assertTrue(result.getLineItems().isEmpty());
++		assertFalse(result.isObsolete());
++		verify(itemRepository).deleteById(42L);
++	}
++
++	private static void inject(Object target, String name, Object value) throws Exception {
++		Field field = target.getClass().getDeclaredField(name);
++		field.setAccessible(true);
++		field.set(target, value);
++	}
++}
+diff --git a/sm-shop/src/main/java/com/salesmanager/shop/mapper/order/ReadableOrderProductMapper.java b/sm-shop/src/main/java/com/salesmanager/shop/mapper/order/ReadableOrderProductMapper.java
+index f0bec6f..c4ac784 100644
+--- a/sm-shop/src/main/java/com/salesmanager/shop/mapper/order/ReadableOrderProductMapper.java
++++ b/sm-shop/src/main/java/com/salesmanager/shop/mapper/order/ReadableOrderProductMapper.java
+@@ -26,7 +26,6 @@ import com.salesmanager.shop.model.catalog.product.ReadableProduct;
+ import com.salesmanager.shop.model.order.ReadableOrderProduct;
+ import com.salesmanager.shop.model.order.ReadableOrderProductAttribute;
+ import com.salesmanager.shop.store.api.exception.ConversionRuntimeException;
+-import com.salesmanager.shop.store.api.exception.ServiceRuntimeException;
+ import com.salesmanager.shop.utils.ImageFilePath;
+ 
+ @Component
+@@ -105,7 +104,10 @@ public class ReadableOrderProductMapper implements Mapper<OrderProduct, Readable
+ 			try {
+ 				product = productService.getBySku(productSku, store, language);
+ 			} catch (ServiceException e) {
+-				throw new ServiceRuntimeException(e);
++				// The order product contains its own historical SKU, name, quantity and
++				// price.  A deleted catalog product only means its optional live
++				// product presentation is unavailable.
++				product = null;
+ 			}
+ 			if (product != null) {
+ 				
+diff --git a/sm-shop/src/main/java/com/salesmanager/shop/populator/order/ReadableOrderProductPopulator.java b/sm-shop/src/main/java/com/salesmanager/shop/populator/order/ReadableOrderProductPopulator.java
+index 54bb5f9..90a7930 100755
+--- a/sm-shop/src/main/java/com/salesmanager/shop/populator/order/ReadableOrderProductPopulator.java
++++ b/sm-shop/src/main/java/com/salesmanager/shop/populator/order/ReadableOrderProductPopulator.java
+@@ -15,7 +15,6 @@ import com.salesmanager.shop.model.catalog.product.ReadableProduct;
+ import com.salesmanager.shop.model.order.ReadableOrderProduct;
+ import com.salesmanager.shop.model.order.ReadableOrderProductAttribute;
+ import com.salesmanager.shop.populator.catalog.ReadableProductPopulator;
+-import com.salesmanager.shop.store.api.exception.ServiceRuntimeException;
+ import com.salesmanager.shop.utils.ImageFilePath;
+ import org.apache.commons.lang3.StringUtils;
+ import org.apache.commons.lang3.Validate;
+@@ -102,7 +101,9 @@ public class ReadableOrderProductPopulator extends
+ 				try {
+ 					product = productService.getBySku(productSku, store, language);
+ 				} catch (ServiceException e) {
+-					throw new ServiceRuntimeException(e);
++					// Product details are optional here; the order snapshot below remains
++					// readable after the catalog product is deleted.
++					product = null;
+ 				}
+ 				if(product!=null) {
+ 					
+diff --git a/sm-shop/src/main/java/com/salesmanager/shop/store/facade/product/ProductFacadeV2Impl.java b/sm-shop/src/main/java/com/salesmanager/shop/store/facade/product/ProductFacadeV2Impl.java
+index fad03cc..a65ff69 100644
+--- a/sm-shop/src/main/java/com/salesmanager/shop/store/facade/product/ProductFacadeV2Impl.java
++++ b/sm-shop/src/main/java/com/salesmanager/shop/store/facade/product/ProductFacadeV2Impl.java
+@@ -94,7 +94,7 @@ public class ProductFacadeV2Impl implements ProductFacade {
+ 		try {
+ 			product = productService.getBySku(sku, store, language);
+ 		} catch (ServiceException e) {
+-			throw new ServiceRuntimeException(e);
++			throw new ResourceNotFoundException("Product [" + sku + "] not found for merchant [" + store.getCode() + "]");
+ 		}
+ 
+ 		if (product == null) {
+diff --git a/sm-shop/src/test/java/com/salesmanager/test/shop/order/ReadableOrderProductMapperTest.java b/sm-shop/src/test/java/com/salesmanager/test/shop/order/ReadableOrderProductMapperTest.java
+new file mode 100644
+index 0000000..2ae6d93
+--- /dev/null
++++ b/sm-shop/src/test/java/com/salesmanager/test/shop/order/ReadableOrderProductMapperTest.java
+@@ -0,0 +1,61 @@
++package com.salesmanager.test.shop.order;
++
++import static org.junit.Assert.assertEquals;
++import static org.junit.Assert.assertTrue;
++import static org.mockito.ArgumentMatchers.any;
++import static org.mockito.ArgumentMatchers.anyString;
++import static org.mockito.Mockito.when;
++
++import java.math.BigDecimal;
++
++import org.junit.Test;
++import org.mockito.InjectMocks;
++import org.mockito.Mock;
++import org.mockito.MockitoAnnotations;
++
++import com.salesmanager.core.business.exception.ServiceException;
++import com.salesmanager.core.business.services.catalog.pricing.PricingService;
++import com.salesmanager.core.business.services.catalog.product.ProductService;
++import com.salesmanager.core.model.merchant.MerchantStore;
++import com.salesmanager.core.model.order.orderproduct.OrderProduct;
++import com.salesmanager.core.model.reference.language.Language;
++import com.salesmanager.shop.mapper.catalog.product.ReadableProductMapper;
++import com.salesmanager.shop.mapper.order.ReadableOrderProductMapper;
++import com.salesmanager.shop.model.order.ReadableOrderProduct;
++
++public class ReadableOrderProductMapperTest {
++	@Mock
++	private PricingService pricingService;
++	@Mock
++	private ProductService productService;
++	@Mock
++	private ReadableProductMapper readableProductMapper;
++	@InjectMocks
++	private ReadableOrderProductMapper mapper;
++
++	@Test
++	public void deletedProductStillUsesOrderSnapshot() throws Exception {
++		MockitoAnnotations.initMocks(this);
++
++		MerchantStore store = new MerchantStore();
++		Language language = new Language();
++		OrderProduct source = new OrderProduct();
++		source.setId(7L);
++		source.setSku("deleted-sku");
++		source.setProductName("Bought name");
++		source.setProductQuantity(2);
++		source.setOneTimeCharge(new BigDecimal("12.50"));
++		when(pricingService.getDisplayAmount(any(BigDecimal.class), any(MerchantStore.class)))
++				.thenAnswer(invocation -> invocation.getArgument(0, BigDecimal.class).toPlainString());
++		when(productService.getBySku(anyString(), any(MerchantStore.class), any(Language.class)))
++				.thenThrow(new ServiceException("missing"));
++
++		ReadableOrderProduct result = mapper.convert(source, store, language);
++
++		assertEquals("deleted-sku", result.getSku());
++		assertEquals("Bought name", result.getProductName());
++		assertTrue(result.getOrderedQuantity() == 2);
++		assertEquals("12.50", result.getPrice());
++		assertEquals("25.00", result.getSubTotal());
++	}
++}

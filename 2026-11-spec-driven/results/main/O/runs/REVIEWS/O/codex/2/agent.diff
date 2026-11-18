@@ -1,0 +1,500 @@
+diff --git a/openspec/changes/archive/2026-11-18-fix-product-reviews/.openspec.yaml b/openspec/changes/archive/2026-11-18-fix-product-reviews/.openspec.yaml
+new file mode 100644
+index 0000000..41484f3
+--- /dev/null
++++ b/openspec/changes/archive/2026-11-18-fix-product-reviews/.openspec.yaml
+@@ -0,0 +1,2 @@
++schema: spec-driven
++created: 2026-11-18
+diff --git a/openspec/changes/archive/2026-11-18-fix-product-reviews/design.md b/openspec/changes/archive/2026-11-18-fix-product-reviews/design.md
+new file mode 100644
+index 0000000..9233899
+--- /dev/null
++++ b/openspec/changes/archive/2026-11-18-fix-product-reviews/design.md
+@@ -0,0 +1,13 @@
++# Design
++
++## Approach
++
++- Replace the public review's nested `ReadableCustomer` with a deliberately small reviewer projection containing only first name, while retaining the write DTO for customerId/productId/language input.
++- Use bean validation for integer-compatible 1–5 ratings and controller-level authenticated-principal/customer checks for HTTP 400/403/409 behavior before invoking persistence.
++- Load reviews by id and verify their product id in both update and delete paths; update the loaded entity rather than allowing request ids to select an unrelated record.
++- Centralize aggregate rebuilding in `ProductReviewServiceImpl`: query all reviews for the product, sum ratings with `BigDecimal`, divide to scale 1 with `RoundingMode.HALF_UP`, set zero values for an empty set, persist the review mutation, then persist the product.
++- Ensure delete invokes the same aggregate rebuild after removal and that product read mappers preserve the exact stored one-decimal rating and count.
++
++## Testing
++
++Add focused service/controller integration coverage for response field filtering, rating boundaries and fractional values, identity mismatch, duplicate review conflict, cross-product 404s, and aggregate values after create/update/delete including empty products.
+diff --git a/openspec/changes/archive/2026-11-18-fix-product-reviews/proposal.md b/openspec/changes/archive/2026-11-18-fix-product-reviews/proposal.md
+new file mode 100644
+index 0000000..8469d1c
+--- /dev/null
++++ b/openspec/changes/archive/2026-11-18-fix-product-reviews/proposal.md
+@@ -0,0 +1,28 @@
++# Proposal
++
++## Why
++
++Product reviews currently expose the full customer representation publicly, accept invalid ratings, allow duplicate submissions to become server errors, and leave product aggregates stale after merchant changes. This harms privacy and makes review APIs unreliable and product ratings incorrect.
++
++## What Changes
++
++- Return a privacy-safe public review DTO containing only review id, rating, description, date, and reviewer first name.
++- Validate customer review ratings as whole numbers from 1 through 5 and return 400 for invalid requests.
++- Enforce that the authenticated customer owns the submitted customer id, and return 403 when it does not.
++- Return 409 for a customer's second review of the same product without persisting it.
++- Make merchant update and delete operations address reviews by both product and review id, returning 404 for missing or mismatched reviews.
++- Recalculate product average rating and count from the complete review set after create, update, and delete, using one decimal place with half-up rounding and zero values when empty.
++
++## Capabilities
++
++### New Capabilities
++
++- `product-reviews`: Public review privacy, customer submission rules, merchant review management, and product rating aggregation.
++
++### Modified Capabilities
++
++- None.
++
++## Impact
++
++The v1 product review controller and request/response models, product review service and repository, review populators/facades, and product read mappers are affected. Integration and service tests should cover privacy, validation, authorization, duplicate conflict, product scoping, and aggregate recalculation.
+diff --git a/openspec/changes/archive/2026-11-18-fix-product-reviews/specs/product-reviews/spec.md b/openspec/changes/archive/2026-11-18-fix-product-reviews/specs/product-reviews/spec.md
+new file mode 100644
+index 0000000..8d0848b
+--- /dev/null
++++ b/openspec/changes/archive/2026-11-18-fix-product-reviews/specs/product-reviews/spec.md
+@@ -0,0 +1,59 @@
++# Product Reviews Specification
++
++## Purpose
++
++Product reviews provide safe public feedback, controlled customer submission, merchant moderation, and accurate product rating aggregates.
++
++## ADDED Requirements
++
++### Requirement: Public reviews expose only safe review fields
++The public product review list at `GET /api/v1/product/{id}/reviews` SHALL return each review's id, rating, description, date, and the reviewer's first name only. It SHALL NOT serialize the reviewer's email, billing address, delivery address, or any other customer fields.
++
++#### Scenario: Public review response is privacy-safe
++- **WHEN** a product has a review by a customer with contact and address data
++- **THEN** the response contains the review fields and reviewer first name
++- **AND** the response contains no email, billing address, delivery address, or nested customer object with additional fields
++
++### Requirement: Customer review submissions enforce identity, rating, and uniqueness
++The authenticated customer review endpoint `POST /api/v1/auth/products/{id}/reviews` SHALL accept only whole-number ratings from 1 through 5. An invalid rating SHALL return HTTP 400, a customer id different from the authenticated customer SHALL return HTTP 403, and an existing review by that customer for that product SHALL return HTTP 409. Refused requests SHALL not persist a review or alter product aggregates.
++
++#### Scenario: Valid customer review is created
++- **WHEN** an authenticated customer submits a valid review for a product using their own customer id
++- **THEN** the review is stored and the product aggregate is recalculated
++
++#### Scenario: Invalid rating is rejected
++- **WHEN** a customer submits a non-whole rating or a rating below 1 or above 5
++- **THEN** the endpoint returns HTTP 400
++- **AND** no review is stored
++
++#### Scenario: Customer id mismatch is forbidden
++- **WHEN** an authenticated customer submits a review using another customer's id
++- **THEN** the endpoint returns HTTP 403
++- **AND** no review is stored
++
++#### Scenario: Duplicate customer review conflicts
++- **WHEN** a customer submits a second review for the same product
++- **THEN** the endpoint returns HTTP 409
++- **AND** no second review is stored
++
++### Requirement: Merchant review updates and deletes are product-scoped
++Merchant update and delete endpoints at `/api/v1/private/products/{id}/reviews/{reviewId}` SHALL operate only when the review exists and belongs to the path product. Otherwise they SHALL return HTTP 404. Updates SHALL support rating and description changes, and deletes SHALL remove the review.
++
++#### Scenario: Merchant updates an existing product review
++- **WHEN** a merchant updates a review whose id belongs to the path product
++- **THEN** the review's rating or description is changed and the product aggregate is recalculated
++
++#### Scenario: Missing or cross-product review is not found
++- **WHEN** a merchant updates or deletes a missing review or a review belonging to another product
++- **THEN** the endpoint returns HTTP 404
++
++### Requirement: Product rating aggregates stay accurate
++After every successful review create, update, or delete, the product SHALL store the average of all review ratings rounded to one decimal place using half-up rounding and the count of reviews. A product with no reviews SHALL expose rating 0 and ratingCount 0 through `GET /api/v2/product/{sku}`.
++
++#### Scenario: Aggregate recalculates after review mutation
++- **WHEN** a review is added, edited, or removed
++- **THEN** the product's rating and ratingCount equal the current complete review set
++
++#### Scenario: Empty product has zero aggregate
++- **WHEN** a product has no reviews
++- **THEN** its rating is 0 and ratingCount is 0
+diff --git a/openspec/changes/archive/2026-11-18-fix-product-reviews/tasks.md b/openspec/changes/archive/2026-11-18-fix-product-reviews/tasks.md
+new file mode 100644
+index 0000000..88e26a6
+--- /dev/null
++++ b/openspec/changes/archive/2026-11-18-fix-product-reviews/tasks.md
+@@ -0,0 +1,7 @@
++# Tasks
++
++- [x] Inspect and update product review request/response models and populators so public responses expose only id, rating, description, date, and reviewer first name, while input validation accepts only whole ratings 1–5.
++- [x] Update the v1 review controller and authentication/error handling for 400 invalid ratings, 403 customer-id mismatch, 409 duplicate reviews, and product-scoped 404 update/delete behavior.
++- [x] Rework product review persistence and aggregate recalculation so create, update, and delete derive one-decimal half-up averages and exact counts from all current reviews, including zero/zero when empty.
++- [x] Add or update automated tests covering privacy, validation, authorization, duplicate refusal, merchant product scoping, and aggregate correctness.
++- [x] Run relevant Maven verification and OpenSpec validation, then review the resulting diff.
+diff --git a/openspec/specs/product-reviews/spec.md b/openspec/specs/product-reviews/spec.md
+new file mode 100644
+index 0000000..be35df1
+--- /dev/null
++++ b/openspec/specs/product-reviews/spec.md
+@@ -0,0 +1,58 @@
++# product-reviews Specification
++
++## Purpose
++Product reviews provide safe public feedback, controlled customer submission, merchant moderation, and accurate product rating aggregates.
++
++## Requirements
++
++### Requirement: Public reviews expose only safe review fields
++The public product review list at `GET /api/v1/product/{id}/reviews` SHALL return each review's id, rating, description, date, and the reviewer's first name only. It SHALL NOT serialize the reviewer's email, billing address, delivery address, or any other customer fields.
++
++#### Scenario: Public review response is privacy-safe
++- **WHEN** a product has a review by a customer with contact and address data
++- **THEN** the response contains the review fields and reviewer first name
++- **AND** the response contains no email, billing address, delivery address, or nested customer object with additional fields
++
++### Requirement: Customer review submissions enforce identity, rating, and uniqueness
++The authenticated customer review endpoint `POST /api/v1/auth/products/{id}/reviews` SHALL accept only whole-number ratings from 1 through 5. An invalid rating SHALL return HTTP 400, a customer id different from the authenticated customer SHALL return HTTP 403, and an existing review by that customer for that product SHALL return HTTP 409. Refused requests SHALL not persist a review or alter product aggregates.
++
++#### Scenario: Valid customer review is created
++- **WHEN** an authenticated customer submits a valid review for a product using their own customer id
++- **THEN** the review is stored and the product aggregate is recalculated
++
++#### Scenario: Invalid rating is rejected
++- **WHEN** a customer submits a non-whole rating or a rating below 1 or above 5
++- **THEN** the endpoint returns HTTP 400
++- **AND** no review is stored
++
++#### Scenario: Customer id mismatch is forbidden
++- **WHEN** an authenticated customer submits a review using another customer's id
++- **THEN** the endpoint returns HTTP 403
++- **AND** no review is stored
++
++#### Scenario: Duplicate customer review conflicts
++- **WHEN** a customer submits a second review for the same product
++- **THEN** the endpoint returns HTTP 409
++- **AND** no second review is stored
++
++### Requirement: Merchant review updates and deletes are product-scoped
++Merchant update and delete endpoints at `/api/v1/private/products/{id}/reviews/{reviewId}` SHALL operate only when the review exists and belongs to the path product. Otherwise they SHALL return HTTP 404. Updates SHALL support rating and description changes, and deletes SHALL remove the review.
++
++#### Scenario: Merchant updates an existing product review
++- **WHEN** a merchant updates a review whose id belongs to the path product
++- **THEN** the review's rating or description is changed and the product aggregate is recalculated
++
++#### Scenario: Missing or cross-product review is not found
++- **WHEN** a merchant updates or deletes a missing review or a review belonging to another product
++- **THEN** the endpoint returns HTTP 404
++
++### Requirement: Product rating aggregates stay accurate
++After every successful review create, update, or delete, the product SHALL store the average of all review ratings rounded to one decimal place using half-up rounding and the count of reviews. A product with no reviews SHALL expose rating 0 and ratingCount 0 through `GET /api/v2/product/{sku}`.
++
++#### Scenario: Aggregate recalculates after review mutation
++- **WHEN** a review is added, edited, or removed
++- **THEN** the product's rating and ratingCount equal the current complete review set
++
++#### Scenario: Empty product has zero aggregate
++- **WHEN** a product has no reviews
++- **THEN** its rating is 0 and ratingCount is 0
+diff --git a/sm-core/src/main/java/com/salesmanager/core/business/services/catalog/product/review/ProductReviewServiceImpl.java b/sm-core/src/main/java/com/salesmanager/core/business/services/catalog/product/review/ProductReviewServiceImpl.java
+index e4068ce..b02f5bd 100755
+--- a/sm-core/src/main/java/com/salesmanager/core/business/services/catalog/product/review/ProductReviewServiceImpl.java
++++ b/sm-core/src/main/java/com/salesmanager/core/business/services/catalog/product/review/ProductReviewServiceImpl.java
+@@ -2,6 +2,7 @@ package com.salesmanager.core.business.services.catalog.product.review;
+ 
+ import java.math.BigDecimal;
+ import java.util.List;
++import java.math.RoundingMode;
+ 
+ import javax.inject.Inject;
+ 
+@@ -66,32 +67,8 @@ public class ProductReviewServiceImpl extends
+ 		//refresh product
+ 		Product product = productService.getById(review.getProduct().getId());
+ 		
+-		//ajust product rating
+-		Integer count = 0;
+-		if(product.getProductReviewCount()!=null) {
+-			count = product.getProductReviewCount();
+-		}
+-				
+-		
+-		
+-
+-		BigDecimal averageRating = product.getProductReviewAvg();
+-		if(averageRating==null) {
+-			averageRating = new BigDecimal(0);
+-		}
+-		//get reviews
+-
+-		
+-		BigDecimal totalRating = averageRating.multiply(new BigDecimal(count));
+-		totalRating = totalRating.add(new BigDecimal(review.getReviewRating()));
+-		
+-		count = count + 1;
+-		double avg = totalRating.doubleValue() / count;
+-		
+-		product.setProductReviewAvg(new BigDecimal(avg));
+-		product.setProductReviewCount(count);
+ 		super.save(review);
+-		
++		recalculate(product);
+ 		productService.update(product);
+ 		
+ 		review.setProduct(product);
+@@ -106,6 +83,27 @@ public class ProductReviewServiceImpl extends
+ 		this.saveOrUpdate(review);
+ 	}
+ 
++	@Override
++	public void delete(ProductReview review) throws ServiceException {
++		Product product = review.getProduct();
++		super.delete(review);
++		if (product != null) {
++			recalculate(product);
++			productService.update(product);
++		}
++	}
++
++	private void recalculate(Product product) {
++		List<ProductReview> reviews = productReviewRepository.findByProduct(product.getId());
++		BigDecimal total = BigDecimal.ZERO;
++		for (ProductReview current : reviews) {
++			total = total.add(BigDecimal.valueOf(current.getReviewRating()));
++		}
++		int count = reviews.size();
++		product.setProductReviewCount(count);
++		product.setProductReviewAvg(count == 0 ? BigDecimal.ZERO : total.divide(BigDecimal.valueOf(count), 1, RoundingMode.HALF_UP));
++	}
++
+ 	/* (non-Javadoc)
+ 	 * @see com.salesmanager.core.business.services.catalog.product.review.ProductReviewService#getByProductNoObjects(com.salesmanager.core.model.catalog.product.Product)
+ 	 */
+diff --git a/sm-shop-model/src/main/java/com/salesmanager/shop/model/catalog/product/ProductReviewEntity.java b/sm-shop-model/src/main/java/com/salesmanager/shop/model/catalog/product/ProductReviewEntity.java
+index f2c8263..e7f3727 100755
+--- a/sm-shop-model/src/main/java/com/salesmanager/shop/model/catalog/product/ProductReviewEntity.java
++++ b/sm-shop-model/src/main/java/com/salesmanager/shop/model/catalog/product/ProductReviewEntity.java
+@@ -7,6 +7,7 @@ import javax.validation.constraints.Min;
+ import javax.validation.constraints.NotNull;
+ 
+ import javax.validation.constraints.NotEmpty;
++import javax.validation.constraints.Digits;
+ 
+ import com.salesmanager.shop.model.entity.ShopEntity;
+ 
+@@ -25,6 +26,7 @@ public class ProductReviewEntity extends ShopEntity implements Serializable {
+ 	@NotNull
+ 	@Min(1)
+ 	@Max(5)
++	@Digits(integer = 1, fraction = 0)
+ 	private Double rating;
+ 	public String getDescription() {
+ 		return description;
+diff --git a/sm-shop-model/src/main/java/com/salesmanager/shop/model/catalog/product/ReadableProductReview.java b/sm-shop-model/src/main/java/com/salesmanager/shop/model/catalog/product/ReadableProductReview.java
+index 4c5a1c6..c806af8 100755
+--- a/sm-shop-model/src/main/java/com/salesmanager/shop/model/catalog/product/ReadableProductReview.java
++++ b/sm-shop-model/src/main/java/com/salesmanager/shop/model/catalog/product/ReadableProductReview.java
+@@ -2,20 +2,17 @@ package com.salesmanager.shop.model.catalog.product;
+ 
+ import java.io.Serializable;
+ 
+-import com.salesmanager.shop.model.customer.ReadableCustomer;
+-
+-
+ public class ReadableProductReview extends ProductReviewEntity implements Serializable {
+ 
+ 	/**
+ 	 * 
+ 	 */
+ 	private static final long serialVersionUID = 1L;
+-	private ReadableCustomer customer;
+-	public ReadableCustomer getCustomer() {
++	private ReadableReviewCustomer customer;
++	public ReadableReviewCustomer getCustomer() {
+ 		return customer;
+ 	}
+-	public void setCustomer(ReadableCustomer customer) {
++	public void setCustomer(ReadableReviewCustomer customer) {
+ 		this.customer = customer;
+ 	}
+ 
+diff --git a/sm-shop-model/src/main/java/com/salesmanager/shop/model/catalog/product/ReadableReviewCustomer.java b/sm-shop-model/src/main/java/com/salesmanager/shop/model/catalog/product/ReadableReviewCustomer.java
+new file mode 100644
+index 0000000..2f2f603
+--- /dev/null
++++ b/sm-shop-model/src/main/java/com/salesmanager/shop/model/catalog/product/ReadableReviewCustomer.java
+@@ -0,0 +1,16 @@
++package com.salesmanager.shop.model.catalog.product;
++
++import java.io.Serializable;
++
++public class ReadableReviewCustomer implements Serializable {
++    private static final long serialVersionUID = 1L;
++    private String firstName;
++
++    public String getFirstName() {
++        return firstName;
++    }
++
++    public void setFirstName(String firstName) {
++        this.firstName = firstName;
++    }
++}
+diff --git a/sm-shop/src/main/java/com/salesmanager/shop/populator/catalog/PersistableProductReviewPopulator.java b/sm-shop/src/main/java/com/salesmanager/shop/populator/catalog/PersistableProductReviewPopulator.java
+index 5483b34..1da84e7 100755
+--- a/sm-shop/src/main/java/com/salesmanager/shop/populator/catalog/PersistableProductReviewPopulator.java
++++ b/sm-shop/src/main/java/com/salesmanager/shop/populator/catalog/PersistableProductReviewPopulator.java
+@@ -62,6 +62,7 @@ public class PersistableProductReviewPopulator extends
+ 			if(target==null) {
+ 				target = new ProductReview();
+ 			}
++			target.setId(source.getId());
+ 			
+ 			Customer customer = customerService.getById(source.getCustomerId());
+ 			
+diff --git a/sm-shop/src/main/java/com/salesmanager/shop/populator/catalog/ReadableProductReviewPopulator.java b/sm-shop/src/main/java/com/salesmanager/shop/populator/catalog/ReadableProductReviewPopulator.java
+index 94e0108..1f9f6a3 100755
+--- a/sm-shop/src/main/java/com/salesmanager/shop/populator/catalog/ReadableProductReviewPopulator.java
++++ b/sm-shop/src/main/java/com/salesmanager/shop/populator/catalog/ReadableProductReviewPopulator.java
+@@ -9,8 +9,7 @@ import com.salesmanager.core.model.catalog.product.review.ProductReviewDescripti
+ import com.salesmanager.core.model.merchant.MerchantStore;
+ import com.salesmanager.core.model.reference.language.Language;
+ import com.salesmanager.shop.model.catalog.product.ReadableProductReview;
+-import com.salesmanager.shop.model.customer.ReadableCustomer;
+-import com.salesmanager.shop.populator.customer.ReadableCustomerPopulator;
++import com.salesmanager.shop.model.catalog.product.ReadableReviewCustomer;
+ import com.salesmanager.shop.utils.DateUtil;
+ 
+ public class ReadableProductReviewPopulator extends
+@@ -23,9 +22,10 @@ public class ReadableProductReviewPopulator extends
+ 
+ 		
+ 		try {
+-			ReadableCustomerPopulator populator = new ReadableCustomerPopulator();
+-			ReadableCustomer customer = new ReadableCustomer();
+-			populator.populate(source.getCustomer(), customer, store, language);
++			ReadableReviewCustomer customer = new ReadableReviewCustomer();
++			if (source.getCustomer() != null && source.getCustomer().getBilling() != null) {
++				customer.setFirstName(source.getCustomer().getBilling().getFirstName());
++			}
+ 
+ 			target.setId(source.getId());
+ 			target.setDate(DateUtil.formatDate(source.getReviewDate()));
+diff --git a/sm-shop/src/main/java/com/salesmanager/shop/store/api/v1/product/ProductReviewApi.java b/sm-shop/src/main/java/com/salesmanager/shop/store/api/v1/product/ProductReviewApi.java
+index 688493e..05cd69a 100755
+--- a/sm-shop/src/main/java/com/salesmanager/shop/store/api/v1/product/ProductReviewApi.java
++++ b/sm-shop/src/main/java/com/salesmanager/shop/store/api/v1/product/ProductReviewApi.java
+@@ -20,6 +20,7 @@ import org.springframework.web.bind.annotation.ResponseStatus;
+ 
+ import com.salesmanager.core.business.services.catalog.product.ProductService;
+ import com.salesmanager.core.business.services.catalog.product.review.ProductReviewService;
++import com.salesmanager.core.business.services.customer.CustomerService;
+ import com.salesmanager.core.model.catalog.product.Product;
+ import com.salesmanager.core.model.catalog.product.review.ProductReview;
+ import com.salesmanager.core.model.merchant.MerchantStore;
+@@ -28,6 +29,7 @@ import com.salesmanager.shop.constants.Constants;
+ import com.salesmanager.shop.model.catalog.product.PersistableProductReview;
+ import com.salesmanager.shop.model.catalog.product.ReadableProductReview;
+ import com.salesmanager.shop.store.controller.product.facade.ProductCommonFacade;
++import com.salesmanager.shop.store.controller.user.facade.UserFacade;
+ 
+ import io.swagger.annotations.ApiImplicitParam;
+ import io.swagger.annotations.ApiImplicitParams;
+@@ -43,6 +45,10 @@ public class ProductReviewApi {
+ 
+   @Inject private ProductReviewService productReviewService;
+ 
++  @Inject private CustomerService customerService;
++
++  @Inject private UserFacade userFacade;
++
+   private static final Logger LOGGER = LoggerFactory.getLogger(ProductReviewApi.class);
+ 
+   @RequestMapping(
+@@ -68,22 +74,28 @@ public class ProductReviewApi {
+       HttpServletResponse response) {
+ 
+     try {
+-      // rating already exist
+-      ProductReview prodReview =
+-          productReviewService.getByProductAndCustomer(
+-              review.getProductId(), review.getCustomerId());
+-      if (prodReview != null) {
+-        response.sendError(500, "A review already exist for this customer and product");
++      review.setProductId(id);
++
++      if (review.getRating() == null || review.getRating() < 1 || review.getRating() > 5
++          || review.getRating() % 1 != 0) {
++        response.sendError(400, "Rating must be a whole number from 1 to 5");
+         return null;
+       }
+ 
+-      // rating maximum 5
+-      if (review.getRating() > Constants.MAX_REVIEW_RATING_SCORE) {
+-        response.sendError(503, "Maximum rating score is " + Constants.MAX_REVIEW_RATING_SCORE);
++      String authenticatedUser = userFacade.authenticatedUser();
++      if (authenticatedUser == null || customerService.getByNick(authenticatedUser) == null
++          || !review.getCustomerId().equals(customerService.getByNick(authenticatedUser).getId())) {
++        response.sendError(403, "Customer id does not match the authenticated customer");
+         return null;
+       }
+ 
+-      review.setProductId(id);
++      ProductReview prodReview =
++          productReviewService.getByProductAndCustomer(
++              id, review.getCustomerId());
++      if (prodReview != null) {
++        response.sendError(409, "A review already exists for this customer and product");
++        return null;
++      }
+ 
+       productCommonFacade.saveOrUpdateReview(review, merchantStore, language);
+ 
+@@ -152,7 +164,7 @@ public class ProductReviewApi {
+   })
+   public PersistableProductReview update(
+       @PathVariable final Long id,
+-      @PathVariable final Long reviewId,
++      @PathVariable("reviewid") final Long reviewId,
+       @Valid @RequestBody PersistableProductReview review,
+       @ApiIgnore MerchantStore merchantStore,
+       @ApiIgnore Language language,
+@@ -166,18 +178,20 @@ public class ProductReviewApi {
+         return null;
+       }
+ 
+-      if (prodReview.getCustomer().getId().longValue() != review.getCustomerId().longValue()) {
++      if (!prodReview.getProduct().getId().equals(id)) {
+         response.sendError(404, "Product review with id " + reviewId + " does not exist");
+         return null;
+       }
+ 
+-      // rating maximum 5
+-      if (review.getRating() > Constants.MAX_REVIEW_RATING_SCORE) {
+-        response.sendError(503, "Maximum rating score is " + Constants.MAX_REVIEW_RATING_SCORE);
++      if (review.getRating() == null || review.getRating() < 1 || review.getRating() > 5
++          || review.getRating() % 1 != 0) {
++        response.sendError(400, "Rating must be a whole number from 1 to 5");
+         return null;
+       }
+ 
+       review.setProductId(id);
++      review.setId(reviewId);
++      review.setCustomerId(prodReview.getCustomer().getId());
+ 
+       productCommonFacade.saveOrUpdateReview(review, merchantStore, language);
+ 
+@@ -208,7 +222,7 @@ public class ProductReviewApi {
+   })
+   public void delete(
+       @PathVariable final Long id,
+-      @PathVariable final Long reviewId,
++      @PathVariable("reviewid") final Long reviewId,
+       @ApiIgnore MerchantStore merchantStore,
+       @ApiIgnore Language language,
+       HttpServletResponse response) {

@@ -1,0 +1,232 @@
+diff --git a/notes/plan.md b/notes/plan.md
+new file mode 100644
+index 0000000..58f1c47
+--- /dev/null
++++ b/notes/plan.md
+@@ -0,0 +1,6 @@
++# Plan
++
++1. Update category deletion to resolve the category in the merchant store, collect the root and all descendants, remove only those category associations from every affected product, and persist the products before deleting the category subtree.
++2. Ensure deletion of an unknown id consistently raises the existing resource-not-found response and does not partially mutate data.
++3. Add regression tests for retained products/category associations, descendant deletion, empty deleted-category product listings, and 404 behavior; include cart/order safety coverage if the existing fixtures support it without broad test setup changes.
++4. Run the focused Maven tests, then build/test the affected modules and report any environment limitations.
+diff --git a/notes/research.md b/notes/research.md
+new file mode 100644
+index 0000000..3b5e4da
+--- /dev/null
++++ b/notes/research.md
+@@ -0,0 +1,28 @@
++# Research
++
++## Request path and current behavior
++
++- `sm-shop/src/main/java/com/salesmanager/shop/store/api/v1/category/CategoryApi.java` maps `DELETE /api/v1/private/category/{id}` to `CategoryFacade.deleteCategory(id, merchantStore)` and maps `GET /api/v1/category/{id}` to the facade. The facade throws `ResourceNotFoundException` for missing categories on reads, while delete currently resolves the category through a different helper that does not validate the store id.
++- `sm-shop/src/main/java/com/salesmanager/shop/store/facade/category/CategoryFacadeImpl.java` delegates deletion to `CategoryService.delete`. Category product listing already checks for a missing category and throws 404, but stale/deleted category handling depends on deletion completing cleanly.
++- Category hierarchy listing uses category rows and lineage, so deleting the root and descendants removes them from `GET /api/v1/category` when the category subtree is actually deleted.
++
++## Root cause
++
++- `sm-core/src/main/java/com/salesmanager/core/business/services/catalog/category/CategoryServiceImpl.java` builds the category subtree from the root lineage, loads products associated with any subtree category, and then:
++  - removes category links only when a product has more than one category;
++  - deletes the product when it has one/no remaining category.
++- This directly violates product retention and explains missing products, broken cart/order references, and product detail failures.
++- The product-to-category mapping is `Product.categories` in `sm-core-model/src/main/java/com/salesmanager/core/model/catalog/product/Product.java`, backed by `PRODUCT_CATEGORY`. It has refresh/detach-style cascade settings, not delete cascade, so links must be removed before deleting categories. Product rows, inventory, prices, variants, and order/cart rows must not be deleted.
++- `Category.categories` has `CascadeType.REMOVE`, so deleting the root category is intended to delete descendants. The service must remove product links for every category in the subtree and then delete the category tree.
++
++## Related behavior and affected areas
++
++- Product category searches in `ProductServiceImpl`/`ProductRepositoryImpl` join `p.categories`; removing links makes deleted-category product listings empty while retaining products for other categories.
++- Product v2 population reads product categories, so the removed links naturally disappear from `GET /api/v2/product/{sku}`.
++- Shopping cart and order services reference products and use product data for calculations; deleting only category links preserves those references and their stock/price data.
++- Existing category integration coverage in `sm-shop/src/test/java/com/salesmanager/test/shop/integration/category/CategoryManagementAPIIntegrationTest.java` is minimal and does not cover product retention, subtree deletion, missing-category 404, or cart/order continuity.
++
++## Planned files
++
++- Change the category deletion service (and, if needed, its facade lookup) so deletion is store-scoped, missing ids remain 404, all subtree product links are detached, no product is deleted, and the subtree categories are deleted.
++- Add focused regression coverage at the service/integration level for product retention and category 404/listing behavior, reusing existing test infrastructure where practical.
+diff --git a/sm-core/src/main/java/com/salesmanager/core/business/services/catalog/category/CategoryServiceImpl.java b/sm-core/src/main/java/com/salesmanager/core/business/services/catalog/category/CategoryServiceImpl.java
+index 36a1aeb..fd7ff09 100755
+--- a/sm-core/src/main/java/com/salesmanager/core/business/services/catalog/category/CategoryServiceImpl.java
++++ b/sm-core/src/main/java/com/salesmanager/core/business/services/catalog/category/CategoryServiceImpl.java
+@@ -1,7 +1,6 @@
+ package com.salesmanager.core.business.services.catalog.category;
+ 
+ import java.util.ArrayList;
+-import java.util.Collections;
+ import java.util.HashSet;
+ import java.util.List;
+ import java.util.Optional;
+@@ -230,7 +229,12 @@ public class CategoryServiceImpl extends SalesManagerEntityServiceImpl<Long, Cat
+ 	// @Override
+ 	public void delete(Category category) throws ServiceException {
+ 
+-		// get category with lineage (subcategories)
++		if (category == null || category.getId() == null || category.getMerchantStore() == null) {
++			return;
++		}
++
++		// Get the category with its complete subtree. Product rows are deliberately
++		// not part of category deletion; only their category links are removed.
+ 		StringBuilder lineage = new StringBuilder();
+ 		lineage.append(category.getLineage()).append(category.getId()).append(Constants.SLASH);
+ 		List<Category> categories = this.getListByLineage(category.getMerchantStore(), lineage.toString());
+@@ -239,46 +243,28 @@ public class CategoryServiceImpl extends SalesManagerEntityServiceImpl<Long, Cat
+ 
+ 		if (dbCategory != null && dbCategory.getId().longValue() == category.getId().longValue()) {
+ 
+-			categories.add(dbCategory);
+-
+-			Collections.reverse(categories);
++			if (categories.stream().noneMatch(c -> c.getId().equals(dbCategory.getId()))) {
++				categories.add(dbCategory);
++			}
+ 
+-			List<Long> categoryIds = new ArrayList<Long>();
++			List<Long> categoryIds = new ArrayList<Long>(categories.size());
+ 
+ 			for (Category c : categories) {
+ 				categoryIds.add(c.getId());
+ 			}
+ 
+ 			List<Product> products = productService.getProducts(categoryIds);
+-			// org.hibernate.Session session =
+-			// em.unwrap(org.hibernate.Session.class);// need to refresh the
+-			// session to update
+-			// all product
+-			// categories
+ 
+ 			for (Product product : products) {
+-				// session.evict(product);// refresh product so we get all
+-				// product categories
+ 				Product dbProduct = productService.getById(product.getId());
+ 				Set<Category> productCategories = dbProduct.getCategories();
+-				if (productCategories.size() > 1) {
+-					for (Category c : categories) {
+-						productCategories.remove(c);
+-						productService.update(dbProduct);
+-					}
+-
+-					if (product.getCategories() == null || product.getCategories().size() == 0) {
+-						productService.delete(dbProduct);
+-					}
+-
+-				} else {
+-					productService.delete(dbProduct);
++				if (productCategories != null) {
++					productCategories.removeIf(productCategory -> categoryIds.contains(productCategory.getId()));
++					productService.update(dbProduct);
+ 				}
+-
+ 			}
+ 
+-			Category categ = getById(category.getId(), category.getMerchantStore().getId());
+-			categoryRepository.delete(categ);
++			categoryRepository.delete(dbCategory);
+ 
+ 		}
+ 
+diff --git a/sm-core/src/test/java/com/salesmanager/test/catalog/CategoryDeletionTest.java b/sm-core/src/test/java/com/salesmanager/test/catalog/CategoryDeletionTest.java
+new file mode 100644
+index 0000000..af2381e
+--- /dev/null
++++ b/sm-core/src/test/java/com/salesmanager/test/catalog/CategoryDeletionTest.java
+@@ -0,0 +1,86 @@
++package com.salesmanager.test.catalog;
++
++import static org.junit.Assert.assertFalse;
++import static org.mockito.ArgumentMatchers.anyLong;
++import static org.mockito.Mockito.never;
++import static org.mockito.Mockito.verify;
++import static org.mockito.Mockito.when;
++
++import java.util.ArrayList;
++import java.util.Arrays;
++import java.util.Collections;
++import java.util.HashSet;
++
++import org.junit.Before;
++import org.junit.Test;
++import org.junit.runner.RunWith;
++import org.mockito.Mock;
++import org.mockito.junit.MockitoJUnitRunner;
++import org.springframework.test.util.ReflectionTestUtils;
++
++import com.salesmanager.core.business.repositories.catalog.category.CategoryDescriptionRepository;
++import com.salesmanager.core.business.repositories.catalog.category.CategoryRepository;
++import com.salesmanager.core.business.services.catalog.category.CategoryServiceImpl;
++import com.salesmanager.core.business.services.catalog.product.ProductService;
++import com.salesmanager.core.model.catalog.category.Category;
++import com.salesmanager.core.model.catalog.product.Product;
++import com.salesmanager.core.model.merchant.MerchantStore;
++
++@RunWith(MockitoJUnitRunner.class)
++public class CategoryDeletionTest {
++
++    @Mock
++    private CategoryRepository categoryRepository;
++
++    @Mock
++    private CategoryDescriptionRepository categoryDescriptionRepository;
++
++    @Mock
++    private ProductService productService;
++
++    private CategoryServiceImpl categoryService;
++
++    @Before
++    public void setUp() {
++        categoryService = new CategoryServiceImpl(categoryRepository);
++        ReflectionTestUtils.setField(categoryService, "categoryDescriptionRepository", categoryDescriptionRepository);
++        ReflectionTestUtils.setField(categoryService, "productService", productService);
++    }
++
++    @Test
++    public void deleteCategoryKeepsProductAndRemovesSubtreeLinks() throws Exception {
++        MerchantStore store = new MerchantStore();
++        store.setId(7);
++
++        Category root = category(10L, "/", store);
++        Category child = category(11L, "/10/", store);
++        Product product = new Product();
++        product.setId(20L);
++        product.setCategories(new HashSet<>(Arrays.asList(root, child)));
++
++        when(categoryRepository.findByLineage(7, "/10/"))
++                .thenReturn(new ArrayList<>(Collections.singletonList(child)));
++        when(categoryRepository.findByIdAndStore(10L, 7)).thenReturn(root);
++        when(categoryDescriptionRepository.listByCategoryId(anyLong()))
++                .thenReturn(Collections.emptyList());
++        when(productService.getProducts(Arrays.asList(11L, 10L)))
++                .thenReturn(Collections.singletonList(product));
++        when(productService.getById(20L)).thenReturn(product);
++
++        categoryService.delete(root);
++
++        assertFalse(product.getCategories().contains(root));
++        assertFalse(product.getCategories().contains(child));
++        verify(productService).update(product);
++        verify(productService, never()).delete(product);
++        verify(categoryRepository).delete(root);
++    }
++
++    private Category category(Long id, String lineage, MerchantStore store) {
++        Category category = new Category();
++        category.setId(id);
++        category.setLineage(lineage);
++        category.setMerchantStore(store);
++        return category;
++    }
++}
+diff --git a/sm-shop/src/main/java/com/salesmanager/shop/store/facade/category/CategoryFacadeImpl.java b/sm-shop/src/main/java/com/salesmanager/shop/store/facade/category/CategoryFacadeImpl.java
+index 3d9067d..0046a3f 100755
+--- a/sm-shop/src/main/java/com/salesmanager/shop/store/facade/category/CategoryFacadeImpl.java
++++ b/sm-shop/src/main/java/com/salesmanager/shop/store/facade/category/CategoryFacadeImpl.java
+@@ -363,7 +363,7 @@ public class CategoryFacadeImpl implements CategoryFacade {
+ 	}
+ 
+ 	private Category getOne(Long categoryId, int storeId) {
+-		return Optional.ofNullable(categoryService.getById(categoryId)).orElseThrow(
++		return Optional.ofNullable(categoryService.getById(categoryId, storeId)).orElseThrow(
+ 				() -> new ResourceNotFoundException(String.format("No Category found for ID : %s", categoryId)));
+ 	}
+ 

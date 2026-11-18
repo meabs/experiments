@@ -1,0 +1,217 @@
+diff --git a/notes/plan.md b/notes/plan.md
+new file mode 100644
+index 0000000..7200e08
+--- /dev/null
++++ b/notes/plan.md
+@@ -0,0 +1,7 @@
++# Plan
++
++1. Make order detail conversion tolerate a missing customer row: retain the order's snapshot fields and leave only the readable customer unset.
++2. Change the admin customer-order endpoint to build an order criterion from the requested customer id and query orders without requiring a live customer. Populate customer data only when the account still exists.
++3. Correct shared page-count calculation to use ceiling division, preserve zero for no pages, and ensure order repository results always carry matching totals and an empty list for no matches. Keep the existing newest-first ordering and filters.
++4. Add or update focused tests for deleted-customer detail/list behavior, empty customer-id results, admin filtering/pagination/out-of-range pages, and email re-registration isolation where the project’s existing test structure supports them.
++5. Build the affected Maven modules and run the relevant test suites; inspect failures and adjust the implementation if needed.
+diff --git a/notes/research.md b/notes/research.md
+new file mode 100644
+index 0000000..684ca10
+--- /dev/null
++++ b/notes/research.md
+@@ -0,0 +1,26 @@
++# Research
++
++## Request paths and data model
++
++- `OrderApi` maps the three admin endpoints in `sm-shop/src/main/java/com/salesmanager/shop/store/api/v1/order/OrderApi.java`.
++- Orders do not hold a JPA relationship to `Customer`. `sm-core-model/src/main/java/com/salesmanager/core/model/order/Order.java` stores `CUSTOMER_ID` as a nullable scalar and also stores `customerEmailAddress`, embedded billing, and embedded delivery data. The model comment explicitly says an order can survive customer deletion.
++- Customer deletion (`CustomerApi` -> `CustomerFacadeImpl.deleteById` -> `CustomerServiceImpl.delete`) removes customer attributes and the customer row; it does not delete or rewrite orders. Registration uniqueness is on `(MERCHANT_ID, CUSTOMER_NICK)`, not email, so a deleted customer's email can be registered again.
++
++## Causes found
++
++1. `OrderFacadeImpl.getReadableOrder` loads the order, then calls `customerFacade.getCustomerById(customerId, ...)`. That facade method throws `ResourceNotFoundException` when the customer row is gone. The exception escapes before the stored order snapshot is populated, producing HTTP 404. The order populator itself already gets billing, delivery, and placed email from the order, so the missing customer should be represented as `customer == null` while preserving those fields.
++2. `OrderApi.list(/private/orders/customers/{id})` calls `customerService.getById` and immediately sends 404 when the customer is absent. It therefore never queries the order table, despite orders retaining the scalar customer id. The existing facade/service path can query by `OrderCriteria.customerId`, independently of customer existence.
++3. Admin order listing sets `OrderCriteria.startPage` and `pageSize`, then uses `OrderRepositoryImpl.listOrders`. Pagination is applied by `RepositoryHelper.paginateQuery`. Its non-legacy calculation uses a non-ceiling `count / pageSize + 1`, and `EntityList.getTotalPages()` converts zero to one. This gives incorrect page totals, especially exact page boundaries and empty results. The repository also returns before initializing list metadata when count is zero. These are the shared causes of incorrect `recordsTotal`/`totalPages` and empty-list response shape.
++4. The order listing query already filters by store and supports status, email, name, id (and phone), with `order by o.id desc`; the requested newest-first behavior is therefore the existing sort and must be preserved while fixing page bounds and metadata.
++
++## Files affected
++
++- API behavior: `sm-shop/.../OrderApi.java`.
++- Order-to-readable conversion and deleted-customer tolerance: `sm-shop/.../OrderFacadeImpl.java`.
++- Query pagination and count metadata: `sm-core/.../OrderRepositoryImpl.java` and `sm-core/.../RepositoryHelper.java`.
++- Response metadata/container behavior: `sm-core-model/.../EntityList.java` and `sm-shop-model/.../ReadableList.java` (the latter is the API base type).
++- Customer deletion/registration were inspected for side effects; no email-based order reassignment or order deletion is present, so no change is needed there.
++
++## Verification implications
++
++Tests should cover an order whose customer row is deleted (detail, customer-id list, status/history/payment reads), empty customer-id lists, admin page zero/nonzero/out-of-range pages with filters and totals, and re-registration with the former email producing a new customer id with no old orders.
+diff --git a/sm-core-model/src/main/java/com/salesmanager/core/model/common/EntityList.java b/sm-core-model/src/main/java/com/salesmanager/core/model/common/EntityList.java
+index 119df97..6d10ddd 100755
+--- a/sm-core-model/src/main/java/com/salesmanager/core/model/common/EntityList.java
++++ b/sm-core-model/src/main/java/com/salesmanager/core/model/common/EntityList.java
+@@ -20,7 +20,7 @@ public class EntityList implements Serializable {
+ 		this.totalCount = totalCount;
+ 	}*/
+ 	public int getTotalPages() {
+-		return totalPages == 0 ? totalPages+1:totalPages;
++		return totalPages;
+ 	}
+ 	public void setTotalPages(int totalPage) {
+ 		this.totalPages = totalPage;
+diff --git a/sm-core/src/main/java/com/salesmanager/core/business/repositories/order/OrderRepositoryImpl.java b/sm-core/src/main/java/com/salesmanager/core/business/repositories/order/OrderRepositoryImpl.java
+index d96548c..e1827d4 100755
+--- a/sm-core/src/main/java/com/salesmanager/core/business/repositories/order/OrderRepositoryImpl.java
++++ b/sm-core/src/main/java/com/salesmanager/core/business/repositories/order/OrderRepositoryImpl.java
+@@ -3,6 +3,7 @@ package com.salesmanager.core.business.repositories.order;
+ import javax.persistence.EntityManager;
+ import javax.persistence.PersistenceContext;
+ import javax.persistence.Query;
++import java.util.ArrayList;
+ 
+ import org.apache.commons.lang3.StringUtils;
+ 
+@@ -162,7 +163,7 @@ public class OrderRepositoryImpl implements OrderRepositoryCustom {
+ 		countBuilderSelect.append(storeQuery);
+ 		
+ 		if(!StringUtils.isEmpty(criteria.getCustomerName())) {
+-			String nameQuery =  " and o.billing.firstName like:name or o.billing.lastName like:name";
++			String nameQuery =  " and (o.billing.firstName like:name or o.billing.lastName like:name)";
+ 			objectBuilderWhere.append(nameQuery);
+ 			countBuilderSelect.append(nameQuery);
+ 		}
+@@ -182,7 +183,7 @@ public class OrderRepositoryImpl implements OrderRepositoryCustom {
+ 		
+ 		//phone
+ 		if(!StringUtils.isEmpty(criteria.getCustomerPhone())) {
+-			String nameQuery =  " and o.billing.telephone like:phone or o.delivery.telephone like:phone";
++			String nameQuery =  " and (o.billing.telephone like:phone or o.delivery.telephone like:phone)";
+ 			objectBuilderWhere.append(nameQuery);
+ 			countBuilderSelect.append(nameQuery);
+ 		}
+@@ -240,9 +241,12 @@ public class OrderRepositoryImpl implements OrderRepositoryCustom {
+ 
+ 
+ 		Number count = (Number) countQ.getSingleResult();
++		orderList.setTotalCount(count.intValue());
+ 
+-		if(count.intValue()==0)
++		if(count.intValue()==0) {
++			orderList.setOrders(new ArrayList<>());
+ 			return orderList;
++		}
+ 
+ 	    @SuppressWarnings("rawtypes")
+ 		GenericEntityList entityList = new GenericEntityList();
+diff --git a/sm-core/src/main/java/com/salesmanager/core/business/utils/RepositoryHelper.java b/sm-core/src/main/java/com/salesmanager/core/business/utils/RepositoryHelper.java
+index b71b1fa..c7ef0f6 100644
+--- a/sm-core/src/main/java/com/salesmanager/core/business/utils/RepositoryHelper.java
++++ b/sm-core/src/main/java/com/salesmanager/core/business/utils/RepositoryHelper.java
+@@ -30,7 +30,7 @@ public class RepositoryHelper {
+ 			int firstResult = ((criteria.getStartPage()==0?0:criteria.getStartPage())) * criteria.getPageSize();
+ 			q.setFirstResult(firstResult);
+ 			q.setMaxResults(criteria.getPageSize());
+-			int lastPageNumber = (count.intValue() / criteria.getPageSize()) + 1;
++			int lastPageNumber = (count.intValue() + criteria.getPageSize() - 1) / criteria.getPageSize();
+ 			entityList.setTotalPages(lastPageNumber);
+ 			entityList.setTotalCount(count.intValue());
+ 		}
+diff --git a/sm-shop/src/main/java/com/salesmanager/shop/store/api/v1/order/OrderApi.java b/sm-shop/src/main/java/com/salesmanager/shop/store/api/v1/order/OrderApi.java
+index b0ca074..febdb46 100755
+--- a/sm-shop/src/main/java/com/salesmanager/shop/store/api/v1/order/OrderApi.java
++++ b/sm-shop/src/main/java/com/salesmanager/shop/store/api/v1/order/OrderApi.java
+@@ -120,11 +120,12 @@ public class OrderApi {
+ 			@ApiIgnore Language language, HttpServletResponse response) throws Exception {
+ 
+ 		Customer customer = customerService.getById(id);
+-
+-		if (customer == null) {
+-			LOGGER.error("Customer is null for id " + id);
+-			response.sendError(404, "Customer is null for id " + id);
+-			return null;
++		Customer queryCustomer = customer;
++		if (queryCustomer == null) {
++			// Orders retain the customer id and their own address/email snapshot after
++			// the customer account is deleted.
++			queryCustomer = new Customer();
++			queryCustomer.setId(id);
+ 		}
+ 
+ 		if (start == null) {
+@@ -134,18 +135,23 @@ public class OrderApi {
+ 			count = new Integer(100);
+ 		}
+ 
+-		ReadableCustomer readableCustomer = new ReadableCustomer();
+-		ReadableCustomerPopulator customerPopulator = new ReadableCustomerPopulator();
+-		customerPopulator.populate(customer, readableCustomer, merchantStore, language);
++		ReadableCustomer readableCustomer = null;
++		if (customer != null) {
++			readableCustomer = new ReadableCustomer();
++			ReadableCustomerPopulator customerPopulator = new ReadableCustomerPopulator();
++			customerPopulator.populate(customer, readableCustomer, merchantStore, language);
++		}
+ 
+-		ReadableOrderList returnList = orderFacade.getReadableOrderList(merchantStore, customer, start, count,
++		ReadableOrderList returnList = orderFacade.getReadableOrderList(merchantStore, queryCustomer, start, count,
+ 				language);
+ 
+ 		List<ReadableOrder> orders = returnList.getOrders();
+ 
+ 		if (!CollectionUtils.isEmpty(orders)) {
+-			for (ReadableOrder order : orders) {
+-				order.setCustomer(readableCustomer);
++			if (readableCustomer != null) {
++				for (ReadableOrder order : orders) {
++					order.setCustomer(readableCustomer);
++				}
+ 			}
+ 		}
+ 
+diff --git a/sm-shop/src/main/java/com/salesmanager/shop/store/controller/order/facade/OrderFacadeImpl.java b/sm-shop/src/main/java/com/salesmanager/shop/store/controller/order/facade/OrderFacadeImpl.java
+index 0da643b..3503707 100755
+--- a/sm-shop/src/main/java/com/salesmanager/shop/store/controller/order/facade/OrderFacadeImpl.java
++++ b/sm-shop/src/main/java/com/salesmanager/shop/store/controller/order/facade/OrderFacadeImpl.java
+@@ -946,6 +946,10 @@ public class OrderFacadeImpl implements OrderFacade {
+ 
+ 			if (CollectionUtils.isEmpty(orders)) {
+ 				returnList.setRecordsTotal(0);
++				returnList.setOrders(new ArrayList<com.salesmanager.shop.model.order.v0.ReadableOrder>());
++				returnList.setTotalPages(0);
++				returnList.setNumber(0);
++				returnList.setRecordsFiltered(0);
+ 				return returnList;
+ 			}
+ 
+@@ -1075,8 +1079,11 @@ public class OrderFacadeImpl implements OrderFacade {
+ 
+ 		if (CollectionUtils.isEmpty(orders)) {
+ 			returnList.setRecordsTotal(0);
+-			// returnList.setMessage("No results for store code " + store);
+-			return null;
++			returnList.setOrders(new ArrayList<com.salesmanager.shop.model.order.v0.ReadableOrder>());
++			returnList.setTotalPages(0);
++			returnList.setNumber(0);
++			returnList.setRecordsFiltered(0);
++			return returnList;
+ 		}
+ 
+ 		List<com.salesmanager.shop.model.order.v0.ReadableOrder> readableOrders = new ArrayList<com.salesmanager.shop.model.order.v0.ReadableOrder>();
+@@ -1116,11 +1123,15 @@ public class OrderFacadeImpl implements OrderFacade {
+ 
+ 		Long customerId = modelOrder.getCustomerId();
+ 		if (customerId != null) {
+-			ReadableCustomer readableCustomer = customerFacade.getCustomerById(customerId, store, language);
+-			if (readableCustomer == null) {
+-				LOGGER.warn("Customer id " + customerId + " not found in order " + orderId);
+-			} else {
+-				readableOrder.setCustomer(readableCustomer);
++			try {
++				ReadableCustomer readableCustomer = customerFacade.getCustomerById(customerId, store, language);
++				if (readableCustomer != null) {
++					readableOrder.setCustomer(readableCustomer);
++				}
++			} catch (ResourceNotFoundException e) {
++				// The order keeps its own customer id and checkout snapshot. A deleted
++				// account must not make the historical order inaccessible.
++				LOGGER.info("Customer id {} no longer exists for order {}", customerId, orderId);
+ 			}
+ 		}
+ 

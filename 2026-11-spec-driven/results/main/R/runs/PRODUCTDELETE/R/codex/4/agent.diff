@@ -1,0 +1,165 @@
+diff --git a/notes/plan.md b/notes/plan.md
+new file mode 100644
+index 0000000..b8d94bd
+--- /dev/null
++++ b/notes/plan.md
+@@ -0,0 +1,8 @@
++# Plan
++
++1. Change cart hydration in `ShoppingCartServiceImpl` to identify missing-SKU items, remove their child attributes and remove the items from the persisted cart, without marking the cart obsolete or deleting it. Preserve the existing repricing and availability refresh for surviving products.
++2. Ensure the modern cart mapper only serializes hydrated items with a live product and always calculates totals/quantity from the surviving set, including an empty cart.
++3. Preserve the existing missing-product validation in all cart-add paths and verify it produces `ResourceNotFoundException`/HTTP 404 for deleted SKUs.
++4. Keep order reads snapshot-based: retain SKU/name/quantity/price/subtotal from `OrderProduct`, and allow the optional live-product enrichment to be absent. Update checkout inventory decrement to resolve by SKU and skip inventory adjustment when the product is already gone.
++5. Add or update focused unit/integration tests for cart cleanup, empty-cart totals, deleted-product add rejection, order snapshot rendering, checkout, and v2 SKU lookup if the repository’s test fixtures support them.
++6. Run formatting/compilation and the relevant Maven test suites, then inspect the diff and report any verification gaps.
+diff --git a/notes/research.md b/notes/research.md
+new file mode 100644
+index 0000000..c22694b
+--- /dev/null
++++ b/notes/research.md
+@@ -0,0 +1,35 @@
++# Research
++
++## Request paths and current causes
++
++- `sm-shop/src/main/java/com/salesmanager/shop/store/api/v1/product/ProductApi.java` maps `DELETE /api/v1/private/product/{id}` to `ProductCommonFacadeImpl.deleteProduct`, which calls `ProductService.delete`. Deletion removes the live `Product` and related catalog data; it does not preserve a product relationship in carts or orders.
++- `sm-shop/src/main/java/com/salesmanager/shop/store/api/v2/product/ProductApiV2.java` maps `GET /api/v2/product/{sku}` to `ProductFacadeV2Impl.getProductByCode`. That facade already raises `ResourceNotFoundException` when the SKU lookup returns null, so deleted products should naturally remain 404.
++
++## Carts
++
++- `sm-core/src/main/java/com/salesmanager/core/business/services/shoppingcart/ShoppingCartServiceImpl.java` reloads each persisted cart item by SKU in `getPopulatedItem`. A missing product sets `item.obsolete=true`; `getPopulatedShoppingCart` then sets the whole cart obsolete, and `getByCode`/`getById` deletes/returns null for an obsolete cart. This is why a cart containing a deleted product cannot be opened.
++- `sm-shop/src/main/java/com/salesmanager/shop/mapper/cart/ReadableShoppingCartMapper.java` assumes every cart item has a live `Product` and passes `item.getProduct()` to `ReadableMinimalProductMapper`, so retaining an orphaned cart item would still fail conversion.
++- `ShoppingCartServiceImpl.getPopulatedItem` also recalculates price and subtotal from the live product. A deleted line must therefore be removed from the persisted cart before calculation/serialization; remaining lines can continue through the existing repricing path.
++- `sm-shop/src/main/java/com/salesmanager/shop/store/controller/shoppingCart/facade/ShoppingCartFacadeImpl.java` creates cart items through `productService.getBySku`; missing products are rejected, with the persistable-cart entry path using `ResourceNotFoundException`. This is the correct 404 behavior for adding a deleted SKU and must remain true for single and multi-item mutations.
++- Checkout converts cart items to order products in `OrderProductPopulator`, then `OrderServiceImpl` decrements inventory. The latter currently calls `productService.getById(orderProduct.getId())`; `OrderProduct.id` is not `Product.id`, so this is an existing ID mismatch and must use the SKU/live product lookup, while deleted cart lines must never reach checkout.
++
++## Orders
++
++- `sm-core-model/src/main/java/com/salesmanager/core/model/order/orderproduct/OrderProduct.java` is already a snapshot: it persists SKU, product name, ordered quantity, one-time charge, attributes, prices, and downloads. It has no `Product` association.
++- `sm-shop/src/main/java/com/salesmanager/shop/mapper/order/ReadableOrderProductMapper.java` and the deprecated `ReadableOrderProductPopulator.java` correctly populate the snapshot fields, but optionally look up the current product by SKU to attach a live product projection. That optional lookup must stay optional; deleted products should still serialize the snapshot fields.
++- `sm-shop/src/main/java/com/salesmanager/shop/store/facade/order/OrderFacadeImpl.java` converts order products through the mapper for confirmation/read responses, so mapper null-tolerance covers merchant and customer order reads and lists. Order totals are read from persisted `OrderTotal` rows and are not recalculated from the catalog product.
++- `OrderServiceImpl` persists order products independently, but its inventory update assumes a live product exists. Checkout requirements are satisfied by filtering deleted cart lines before order creation; the inventory lookup should nevertheless use SKU and tolerate a missing product rather than making order persistence depend on `OrderProduct.id`.
++
++## Other affected behavior
++
++- Product deletion itself should not be broadened to delete carts or orders. Existing product cleanup (images, reviews, relationships, catalog row) remains intact.
++- Empty carts must remain persisted and readable with an empty product collection, quantity 0, and calculated subtotal/total 0 so they can still be mutated and checked out.
++- The modern cart mapper and legacy cart populator both need to tolerate an empty line-item set; the modern API paths use `ReadableShoppingCartMapper`.
++
++## Intended change boundary
++
++1. During cart hydration, remove missing-SKU items (and their cart attributes) from the cart instead of marking the whole cart obsolete; persist the cleaned set and keep the cart.
++2. Make cart serialization skip any defensive orphan item and calculate from surviving items.
++3. Keep add/multi-add missing-product validation mapped to 404.
++4. Make order snapshot conversion independent of a live product and fix checkout inventory lookup to use SKU/missing-product tolerance.
++5. Add focused regression tests where the existing test structure permits, then run Maven verification.
+diff --git a/sm-core/src/main/java/com/salesmanager/core/business/services/order/OrderServiceImpl.java b/sm-core/src/main/java/com/salesmanager/core/business/services/order/OrderServiceImpl.java
+index b6bac52..e08423d 100755
+--- a/sm-core/src/main/java/com/salesmanager/core/business/services/order/OrderServiceImpl.java
++++ b/sm-core/src/main/java/com/salesmanager/core/business/services/order/OrderServiceImpl.java
+@@ -194,9 +194,11 @@ public class OrderServiceImpl  extends SalesManagerEntityServiceImpl<Long, Order
+         Set<OrderProduct> products = order.getOrderProducts();
+         for(OrderProduct orderProduct : products) {
+             orderProduct.getProductQuantity();
+-            Product p = productService.getById(orderProduct.getId());
+-            if(p == null)
+-                throw new ServiceException(ServiceException.EXCEPTION_INVENTORY_MISMATCH);
++			Product p = productService.getBySku(orderProduct.getSku(), store);
++			if(p == null) {
++				LOGGER.info("Skipping inventory update for deleted product SKU {}", orderProduct.getSku());
++				continue;
++			}
+             for(ProductAvailability availability : p.getAvailabilities()) {
+                 int qty = availability.getProductQuantity();
+                 if(qty < orderProduct.getProductQuantity()) {
+diff --git a/sm-core/src/main/java/com/salesmanager/core/business/services/shoppingcart/ShoppingCartServiceImpl.java b/sm-core/src/main/java/com/salesmanager/core/business/services/shoppingcart/ShoppingCartServiceImpl.java
+index e0d1ce8..67deb76 100755
+--- a/sm-core/src/main/java/com/salesmanager/core/business/services/shoppingcart/ShoppingCartServiceImpl.java
++++ b/sm-core/src/main/java/com/salesmanager/core/business/services/shoppingcart/ShoppingCartServiceImpl.java
+@@ -29,6 +29,7 @@ import javax.inject.Inject;
+ import java.math.BigDecimal;
+ import java.util.ArrayList;
+ import java.util.HashSet;
++import java.util.Iterator;
+ import java.util.List;
+ import java.util.Set;
+ import java.util.stream.Collectors;
+@@ -232,35 +233,38 @@ public class ShoppingCartServiceImpl extends SalesManagerEntityServiceImpl<Long,
+ 
+ 		try {
+ 
+-			boolean cartIsObsolete = false;
+ 			if (shoppingCart != null) {
+ 
+ 				Set<ShoppingCartItem> items = shoppingCart.getLineItems();
+-				if (items == null || items.size() == 0) {
+-					shoppingCart.setObsolete(true);
++				if (items == null) {
++					shoppingCart.setLineItems(new HashSet<ShoppingCartItem>());
+ 					return shoppingCart;
+ 
+ 				}
+ 
+ 				// Set<ShoppingCartItem> shoppingCartItems = new
+ 				// HashSet<ShoppingCartItem>();
+-				for (ShoppingCartItem item : items) {
++				Set<ShoppingCartItem> removedItems = new HashSet<>();
++				for (Iterator<ShoppingCartItem> iterator = items.iterator(); iterator.hasNext();) {
++					ShoppingCartItem item = iterator.next();
+ 					LOGGER.debug("Populate item " + item.getId());
+ 					getPopulatedItem(item, store);
+ 					LOGGER.debug("Obsolete item ? " + item.isObsolete());
+ 					if (item.isObsolete()) {
+-						cartIsObsolete = true;
++						if (item.getAttributes() != null) {
++							item.getAttributes().forEach(attribute -> shoppingCartAttributeItemRepository.deleteById(attribute.getId()));
++						}
++						removedItems.add(item);
++						iterator.remove();
+ 					}
+ 				}
+ 
+-				Set<ShoppingCartItem> refreshedItems = new HashSet<>(items);
+-
+-				shoppingCart.setLineItems(refreshedItems);
+-				update(shoppingCart);
+-
+-				if (cartIsObsolete) {
+-					shoppingCart.setObsolete(true);
++				for (ShoppingCartItem removedItem : removedItems) {
++					shoppingCartItemRepository.deleteById(removedItem.getId());
+ 				}
++				shoppingCart.setObsolete(false);
++				shoppingCart.setLineItems(items);
++				update(shoppingCart);
+ 				return shoppingCart;
+ 			}
+ 
+diff --git a/sm-shop/src/main/java/com/salesmanager/shop/mapper/cart/ReadableShoppingCartMapper.java b/sm-shop/src/main/java/com/salesmanager/shop/mapper/cart/ReadableShoppingCartMapper.java
+index ba56548..25a41e3 100644
+--- a/sm-shop/src/main/java/com/salesmanager/shop/mapper/cart/ReadableShoppingCartMapper.java
++++ b/sm-shop/src/main/java/com/salesmanager/shop/mapper/cart/ReadableShoppingCartMapper.java
+@@ -130,6 +130,10 @@ public class ReadableShoppingCartMapper implements Mapper<ShoppingCart, Readable
+ 			if (items != null) {
+ 
+ 				for (com.salesmanager.core.model.shoppingcart.ShoppingCartItem item : items) {
++					if (item.getProduct() == null) {
++						LOG.warn("Skipping orphaned product {} from cart {}", item.getSku(), source.getShoppingCartCode());
++						continue;
++					}
+ 					ReadableShoppingCartItem shoppingCartItem = new ReadableShoppingCartItem();
+ 					readableMinimalProductMapper.merge(item.getProduct(), shoppingCartItem, store, language);
+ 					
+@@ -251,7 +255,11 @@ public class ReadableShoppingCartMapper implements Mapper<ShoppingCart, Readable
+ 
+ 			OrderSummary summary = new OrderSummary();
+ 			List<com.salesmanager.core.model.shoppingcart.ShoppingCartItem> productsList = new ArrayList<com.salesmanager.core.model.shoppingcart.ShoppingCartItem>();
+-			productsList.addAll(source.getLineItems());
++			if (source.getLineItems() != null) {
++				productsList.addAll(source.getLineItems().stream()
++						.filter(item -> item.getProduct() != null)
++						.collect(Collectors.toList()));
++			}
+ 			summary.setProducts(productsList);
+ 
+ 			// OrdetTotalSummary contains all calculations

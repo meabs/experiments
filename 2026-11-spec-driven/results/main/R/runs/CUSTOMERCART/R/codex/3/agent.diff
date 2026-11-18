@@ -1,0 +1,207 @@
+diff --git a/notes/plan.md b/notes/plan.md
+new file mode 100644
+index 0000000..2262803
+--- /dev/null
++++ b/notes/plan.md
+@@ -0,0 +1,8 @@
++# Plan
++
++1. Add authenticated-customer ownership handling to the cart API/facade paths: associate carts created or modified through the public endpoints with the principal's customer, reject another customer's cart, and make customer-cart lookup validate an explicit code or select the most recently changed open cart when no code is supplied.
++2. Make authenticated cart totals use the owned cart and customer-aware total calculation, returning 404 for missing/foreign carts and allowing the normal calculation result (including delivery-address tax) through.
++3. Harden authenticated checkout ownership and exception mapping: payment amount validation becomes HTTP 400 with its existing calculated-amount message, foreign/missing carts become 404, and successful checkout keeps the existing cart completion behavior.
++4. Fix customer order pagination/counting by applying the customer filter in the repository query, retaining descending order, and calculating total pages from the requested `count`; update or add focused tests where the existing test structure permits.
++5. Build the affected Maven modules and run targeted tests plus the broader available test command; inspect the final diff and report any verification gaps.
++
+diff --git a/notes/research.md b/notes/research.md
+new file mode 100644
+index 0000000..4bfff9f
+--- /dev/null
++++ b/notes/research.md
+@@ -0,0 +1,17 @@
++# Research
++
++## Request paths and causes
++
++- `sm-shop/src/main/java/com/salesmanager/shop/store/api/v1/shoppingCart/ShoppingCartApi.java`
++  exposes `POST /api/v1/cart` and `PUT /api/v1/cart/{code}` without consulting the request principal. Both call the legacy anonymous facade methods, so the cart created by an authenticated customer has a null `customerId`, and an authenticated customer can modify a cart without ownership enforcement.
++- The authenticated `GET /api/v1/auth/customer/cart` endpoint delegates to `shoppingCartFacadev1.get`. `sm-shop/src/main/java/com/salesmanager/shop/store/facade/shoppingCart/ShoppingCartFacadeImpl.java` always loads the customer's first open cart when no code is supplied, and when a code is supplied it calls `mergeCart` rather than validating that the cart belongs to the customer. `ShoppingCartServiceImpl.getShoppingCart` also takes the first result from `findByCustomer` without a deterministic recency ordering.
++- `sm-core/src/main/java/com/salesmanager/core/business/repositories/shoppingcart/ShoppingCartRepository.java` has only an unordered `findByCustomer` query. The cart model has `customerId` and `orderId`; `orderId == null` is the open/current-cart condition used by the service.
++- `sm-shop/src/main/java/com/salesmanager/shop/store/api/v1/order/OrderTotalApi.java` correctly attempts to check the authenticated customer and cart `customerId`, but wraps the entire operation in a catch that sends HTTP 503 for every exception. It calculates through `orderService.caculateOrderTotal(orderSummary, customer, merchantStore, language)`, which is the same customer-aware calculation used by checkout and therefore the right route for delivery-address tax.
++- `sm-shop/src/main/java/com/salesmanager/shop/store/api/v1/order/OrderApi.java` authenticated checkout loads a cart by code without checking its `customerId`, then wraps all failures—including `ConversionException` from payment amount mismatch—in HTTP 503. `OrderFacadeImpl.processOrder` calculates the order total with the authenticated customer, compares the submitted payment amount, and only sets `cart.orderId` after `orderService.processOrder`, so a rejected amount should not create an order or consume the cart.
++- `sm-shop/src/main/java/com/salesmanager/shop/store/controller/order/facade/OrderFacadeImpl.java` builds authenticated order criteria with `customerId`, but `sm-core/src/main/java/com/salesmanager/core/business/repositories/order/OrderRepositoryImpl.java` routes it through `listOrders`, which is the admin/store listing query and does not apply `customerId`. The separate `listByStore` query applies `customerId`, orders by `o.id desc`, and returns the count, but does not set total pages. `EntityList.getTotalPages()` defaults zero to one, so page metadata is wrong for customer lists.
++- `sm-core-model/src/main/java/com/salesmanager/core/model/order/OrderCriteria.java` carries customer id and page start/count; `ReadableOrderList` exposes `recordsTotal` and `totalPages`.
++
++## Affected behavior
++
++The changes must preserve anonymous cart behavior, prevent cross-customer cart reads/modifications/totals/checkout, make the no-parameter customer cart deterministic and open-cart-only, preserve customer-aware tax calculation, return a client error containing the calculated amount for payment mismatches, mark carts checked out only after successful order processing, and populate customer order count/page metadata while retaining newest-first ordering.
++
+diff --git a/sm-core/src/main/java/com/salesmanager/core/business/repositories/order/OrderRepositoryImpl.java b/sm-core/src/main/java/com/salesmanager/core/business/repositories/order/OrderRepositoryImpl.java
+index d96548c..05eb9b5 100755
+--- a/sm-core/src/main/java/com/salesmanager/core/business/repositories/order/OrderRepositoryImpl.java
++++ b/sm-core/src/main/java/com/salesmanager/core/business/repositories/order/OrderRepositoryImpl.java
+@@ -193,6 +193,11 @@ public class OrderRepositoryImpl implements OrderRepositoryCustom {
+ 			objectBuilderWhere.append(nameQuery);
+ 			countBuilderSelect.append(nameQuery);
+ 		}
++		if(criteria.getCustomerId() != null) {
++			String customerQuery = " and o.customerId =:customerId";
++			objectBuilderWhere.append(customerQuery);
++			countBuilderSelect.append(customerQuery);
++		}
+ 	
+ 		objectBuilderWhere.append(orderByCriteria);
+ 
+@@ -233,6 +238,10 @@ public class OrderRepositoryImpl implements OrderRepositoryCustom {
+ 			countQ.setParameter("status", OrderStatus.valueOf(criteria.getStatus().toUpperCase()));
+ 			objectQ.setParameter("status", OrderStatus.valueOf(criteria.getStatus().toUpperCase()));
+ 		}
++		if(criteria.getCustomerId() != null) {
++			countQ.setParameter("customerId", criteria.getCustomerId());
++			objectQ.setParameter("customerId", criteria.getCustomerId());
++		}
+ 		
+ 
+ 		countQ.setParameter("mCode", store.getCode());
+diff --git a/sm-core/src/main/java/com/salesmanager/core/business/repositories/shoppingcart/ShoppingCartRepository.java b/sm-core/src/main/java/com/salesmanager/core/business/repositories/shoppingcart/ShoppingCartRepository.java
+index a7dae67..0d3ba9e 100755
+--- a/sm-core/src/main/java/com/salesmanager/core/business/repositories/shoppingcart/ShoppingCartRepository.java
++++ b/sm-core/src/main/java/com/salesmanager/core/business/repositories/shoppingcart/ShoppingCartRepository.java
+@@ -20,7 +20,7 @@ public interface ShoppingCartRepository extends JpaRepository<ShoppingCart, Long
+ 	@Query("select c from ShoppingCart c left join fetch c.lineItems cl left join fetch cl.attributes cla join fetch c.merchantStore cm where cm.id = ?1 and c.shoppingCartCode = ?2")
+ 	ShoppingCart findByCode(Integer merchantId, String code);
+ 	
+-	@Query("select c from ShoppingCart c left join fetch c.lineItems cl left join fetch cl.attributes cla join fetch c.merchantStore cm where c.customerId = ?1")
++	@Query("select c from ShoppingCart c left join fetch c.lineItems cl left join fetch cl.attributes cla join fetch c.merchantStore cm where c.customerId = ?1 order by c.auditSection.dateModified desc, c.id desc")
+ 	List<ShoppingCart> findByCustomer(Long customerId);
+ 	
+ }
+diff --git a/sm-shop/src/main/java/com/salesmanager/shop/store/api/v1/order/OrderApi.java b/sm-shop/src/main/java/com/salesmanager/shop/store/api/v1/order/OrderApi.java
+index b0ca074..09c6ca8 100755
+--- a/sm-shop/src/main/java/com/salesmanager/shop/store/api/v1/order/OrderApi.java
++++ b/sm-shop/src/main/java/com/salesmanager/shop/store/api/v1/order/OrderApi.java
+@@ -12,6 +12,7 @@ import javax.servlet.http.HttpServletResponse;
+ import javax.validation.Valid;
+ 
+ import com.salesmanager.core.business.services.order.OrderService;
++import com.salesmanager.core.business.exception.ServiceException;
+ import com.salesmanager.core.model.order.orderstatus.OrderStatus;
+ import org.apache.commons.collections4.CollectionUtils;
+ import org.apache.commons.lang3.StringUtils;
+@@ -368,6 +369,9 @@ public class OrderApi {
+ 			if (cart == null) {
+ 				throw new ResourceNotFoundException("Cart code " + code + " does not exist");
+ 			}
++			if (cart.getCustomerId() == null || !customer.getId().equals(cart.getCustomerId())) {
++				throw new ResourceNotFoundException("Cart code " + code + " does not exist");
++			}
+ 
+ 			order.setShoppingCartId(cart.getId());
+ 			order.setCustomerId(customer.getId());//That is an existing customer purchasing
+@@ -381,6 +385,16 @@ public class OrderApi {
+ 
+ 
+ 
++		} catch (ResourceNotFoundException e) {
++			throw e;
++		} catch (ServiceException e) {
++			try {
++				Throwable cause = e;
++				while (cause.getCause() != null) cause = cause.getCause();
++				response.sendError(400, cause.getMessage());
++			} catch (Exception ignored) {
++			}
++			return null;
+ 		} catch (Exception e) {
+ 			LOGGER.error("Error while processing checkout", e);
+ 			try {
+diff --git a/sm-shop/src/main/java/com/salesmanager/shop/store/api/v1/order/OrderTotalApi.java b/sm-shop/src/main/java/com/salesmanager/shop/store/api/v1/order/OrderTotalApi.java
+index 27f25e9..f3c5819 100755
+--- a/sm-shop/src/main/java/com/salesmanager/shop/store/api/v1/order/OrderTotalApi.java
++++ b/sm-shop/src/main/java/com/salesmanager/shop/store/api/v1/order/OrderTotalApi.java
+@@ -95,7 +95,8 @@ public class OrderTotalApi {
+       Customer customer = customerService.getByNick(userName);
+ 
+       if (customer == null) {
+-        response.sendError(503, "Error while getting user details to calculate shipping quote");
++			response.sendError(503, "Error while getting user details to calculate shipping quote");
++			return null;
+       }
+ 
+       ShoppingCart shoppingCart = shoppingCartFacade.getShoppingCartModel(id, merchantStore);
+diff --git a/sm-shop/src/main/java/com/salesmanager/shop/store/api/v1/shoppingCart/ShoppingCartApi.java b/sm-shop/src/main/java/com/salesmanager/shop/store/api/v1/shoppingCart/ShoppingCartApi.java
+index 7c300f2..7b9fcd7 100755
+--- a/sm-shop/src/main/java/com/salesmanager/shop/store/api/v1/shoppingCart/ShoppingCartApi.java
++++ b/sm-shop/src/main/java/com/salesmanager/shop/store/api/v1/shoppingCart/ShoppingCartApi.java
+@@ -80,7 +80,15 @@ public class ShoppingCartApi {
+ 	public @ResponseBody ReadableShoppingCart addToCart(
+ 			@Valid @RequestBody PersistableShoppingCartItem shoppingCartItem,
+ 			@ApiIgnore MerchantStore merchantStore,
+-			@ApiIgnore Language language) {
++			@ApiIgnore Language language, HttpServletRequest request) {
++		Customer customer = authenticatedCustomer(request, merchantStore);
++		if (customer != null) {
++			try {
++				return shoppingCartFacade.addToCart(customer, shoppingCartItem, merchantStore, language);
++			} catch (Exception e) {
++				throw new ServiceRuntimeException(e);
++			}
++		}
+ 		return shoppingCartFacade.addToCart(shoppingCartItem, merchantStore, language);
+ 	}
+ 
+@@ -93,9 +101,19 @@ public class ShoppingCartApi {
+ 			@Valid @RequestBody PersistableShoppingCartItem shoppingCartItem, 
+ 			@ApiIgnore MerchantStore merchantStore,
+ 			@ApiIgnore Language language, 
+-			HttpServletResponse response) {
++			HttpServletResponse response, HttpServletRequest request) {
+ 
+ 		try {
++			Customer customer = authenticatedCustomer(request, merchantStore);
++			com.salesmanager.core.model.shoppingcart.ShoppingCart model = shoppingCartFacade.getShoppingCartModel(code, merchantStore);
++			if (model == null || (customer != null && model.getCustomerId() != null
++					&& !customer.getId().equals(model.getCustomerId()))) {
++				return new ResponseEntity<>(HttpStatus.NOT_FOUND);
++			}
++			if (customer != null && model.getCustomerId() == null) {
++				model.setCustomerId(customer.getId());
++				shoppingCartFacade.saveOrUpdateShoppingCart(model);
++			}
+ 			ReadableShoppingCart cart = shoppingCartFacade.modifyCart(code, shoppingCartItem, merchantStore, language);
+ 
+ 			if (cart == null) {
+@@ -113,6 +131,16 @@ public class ShoppingCartApi {
+ 
+ 		} 
+ 	}
++
++	private Customer authenticatedCustomer(HttpServletRequest request, MerchantStore store) {
++		Principal principal = request.getUserPrincipal();
++		if (principal == null) return null;
++		try {
++			return customerFacade.getCustomerByUserName(principal.getName(), store);
++		} catch (Exception e) {
++			throw new ServiceRuntimeException("Exception while getting customer [" + principal.getName() + "]", e);
++		}
++	}
+ 	
+ 
+ 	@PostMapping(value = "/cart/{code}/promo/{promo}")
+diff --git a/sm-shop/src/main/java/com/salesmanager/shop/store/facade/shoppingCart/ShoppingCartFacadeImpl.java b/sm-shop/src/main/java/com/salesmanager/shop/store/facade/shoppingCart/ShoppingCartFacadeImpl.java
+index 534c59c..846d6e0 100644
+--- a/sm-shop/src/main/java/com/salesmanager/shop/store/facade/shoppingCart/ShoppingCartFacadeImpl.java
++++ b/sm-shop/src/main/java/com/salesmanager/shop/store/facade/shoppingCart/ShoppingCartFacadeImpl.java
+@@ -50,8 +50,11 @@ public class ShoppingCartFacadeImpl implements ShoppingCartFacade {
+ 			
+ 			ShoppingCart cartModel = shoppingCartService.getShoppingCart(customer, store);
+ 			
+-			if(cart.isPresent()) {
+-				cartModel = customerFacade.mergeCart(customer, cart.get(), store, language);
++			if (cart.isPresent()) {
++				cartModel = shoppingCartService.getByCode(cart.get(), store);
++				if (cartModel != null && !customerId.equals(cartModel.getCustomerId())) {
++					return null;
++				}
+ 			}
+ 			
+ 			if(cartModel == null) {

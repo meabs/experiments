@@ -1,0 +1,318 @@
+diff --git a/.specify/bugs/ticket/assessment.md b/.specify/bugs/ticket/assessment.md
+new file mode 100644
+index 0000000..611cd18
+--- /dev/null
++++ b/.specify/bugs/ticket/assessment.md
+@@ -0,0 +1,67 @@
++# Bug Assessment: Preserve orders after customer deletion and fix admin pagination
++
++- **Slug**: ticket
++- **Created**: 2026-11-18T21:55:00+00:00
++- **Source**: pasted text
++- **Verdict**: valid
++- **Severity**: high
++
++## Report (verbatim or summarized)
++
++Support cannot open orders or list orders by customer after deleting a customer account. The admin order list also returns an empty result and zero total for any page after the first. Orders must remain available without a live customer, customer-id history must remain queryable, pagination must honor zero-based pages and filters, and a later registration using the old email must not inherit old orders.
++
++## Symptom
++
++Deleting a customer causes `GET /api/v1/private/orders/{id}` and `GET /api/v1/private/orders/customers/{id}` to return 404 even though the order data remains. `GET /api/v1/private/orders` does not correctly return later pages or totals. Expected behavior is to retain and expose historical orders, with a null customer object when the account no longer exists, and to scope a newly registered account to its new id.
++
++## Reproduction
++
++1. Create a customer and place one or more orders; record the customer and order ids.
++2. Delete the customer through `DELETE /api/v1/private/customer/{id}`.
++3. Request the order by id and request `/private/orders/customers/{id}`; both currently fail when the customer lookup is absent.
++4. Register a new customer using the deleted account's email and verify it has a different id and no historical orders.
++5. Create enough orders for multiple pages and request `/private/orders?count={n}&page=1` with and without filters; later pages should contain matching orders and preserve the full matching total.
++
++## Suspected Code Paths
++
++- `sm-shop/src/main/java/com/salesmanager/shop/store/api/v1/order/OrderApi.java:112-151` — customer-order listing loads the customer first and sends 404 when it is deleted.
++- `sm-shop/src/main/java/com/salesmanager/shop/store/controller/order/facade/OrderFacadeImpl.java:936-970,1107-1150` — admin/list and detail response mapping, including nullable customer lookup.
++- `sm-core/src/main/java/com/salesmanager/core/business/repositories/order/OrderRepositoryImpl.java:112-260` — admin query filters, ordering, count and pagination.
++- `sm-core/src/main/java/com/salesmanager/core/business/utils/RepositoryHelper.java:24-43` — zero-based page offset and total-page calculation.
++- `sm-core-model/src/main/java/com/salesmanager/core/model/order/Order.java:71,315-320` — orders retain `customerId` independently of the customer entity.
++- `sm-core/src/main/java/com/salesmanager/core/business/repositories/order/OrderRepository.java:8-16` — order detail query fetches order data without requiring a customer relation.
++
++## Root Cause Hypothesis
++
++Confidence: high. The order model stores the customer id and historical contact/address fields, so deleting the customer need not delete the order. The customer-order API incorrectly treats customer existence as a prerequisite instead of querying by the retained scalar id. The modern admin list path has two likely defects: its empty-result mapping drops totals and its repository pagination helper computes total pages using integer division plus one, yielding incorrect exact-boundary totals; the repository query also needs consistent grouped filter predicates so `and`/`or` combinations do not escape the store/filter scope.
++
++## Proposed Remediation
++
++**Preferred**: Remove the live-customer existence requirement from the private customer-order endpoint. Build an `OrderCriteria` with the requested customer id and delegate to the order service/facade so deleted ids still return their orders, while response population leaves `customer` null if the lookup is absent. Preserve the existing scalar customer id and order snapshot fields; do not rebind orders by email.
++
++Correct the modern order repository query and pagination path: apply all filters within grouped predicates, bind status/email/name/id consistently, use the requested zero-based page and page size, order newest first, and calculate `totalPages` as ceiling(total/pageSize). Ensure empty and out-of-range pages return an initialized empty list with the matching `recordsTotal` and `totalPages`. Add focused service/repository/API tests for deleted customers, customer-id isolation after re-registration, filtered page two, exact page boundaries, and empty customer ids.
++
++**Files likely to change**:
++
++- `sm-shop/src/main/java/com/salesmanager/shop/store/api/v1/order/OrderApi.java`
++- `sm-core/src/main/java/com/salesmanager/core/business/repositories/order/OrderRepositoryImpl.java`
++- `sm-core/src/main/java/com/salesmanager/core/business/utils/RepositoryHelper.java`
++- Relevant order API/repository tests under `sm-shop/src/test` and `sm-core/src/test`
++
++**Tests to add or update**:
++
++- Customer-order endpoint returns historical orders and `recordsTotal` for a deleted customer id, and returns an empty list with zero for an unknown id.
++- Deleted-account order detail keeps billing/delivery/email and has no customer; status/history/payment paths remain usable.
++- Re-registration with the same email has a distinct customer id and sees no old orders.
++- Admin order listing returns zero-based later pages, newest-first order, matching totals, correct ceiling `totalPages`, and empty out-of-range pages for status/email/name/id filters.
++
++## Risks & Considerations
++
++- Historical order data must remain independent of customer email lookup; matching by email would leak old orders to a replacement account.
++- Query predicate grouping must not broaden results across merchants or unrelated filters.
++- Fetch joins over multiple collections may produce duplicate rows; count and result behavior should be covered by integration-level persistence tests.
++- Existing clients may depend on the old empty-list shape, so preserve the response fields while correcting totals and null customer behavior.
++
++## Open Questions
++
++- [NEEDS CLARIFICATION: None for the requested behavior; database-backed integration coverage is preferred if the test fixture can create the required order graph.]
+diff --git a/.specify/bugs/ticket/fix.md b/.specify/bugs/ticket/fix.md
+new file mode 100644
+index 0000000..eb57299
+--- /dev/null
++++ b/.specify/bugs/ticket/fix.md
+@@ -0,0 +1,38 @@
++# Bug Fix: Preserve orders after customer deletion and fix admin pagination
++
++- **Slug**: ticket
++- **Fixed**: 2026-11-18T21:58:00+00:00
++- **Assessment**: ./assessment.md
++- **Status**: applied
++
++## Summary
++
++The private customer-order endpoint now queries retained order customer ids without requiring the customer account to exist, while existing customers are still populated on returned orders. Admin order pagination now preserves totals for empty/out-of-range pages, calculates page counts with ceiling division, and groups name/phone OR predicates so filters remain scoped correctly.
++
++## Changes
++
++| File | Change | Notes |
++|------|--------|-------|
++| `sm-shop/src/main/java/com/salesmanager/shop/store/api/v1/order/OrderApi.java` | modified | Customer order listing uses `OrderCriteria.customerId`; deleted customers no longer cause 404 and returned customer is nullable. |
++| `sm-core/src/main/java/com/salesmanager/core/business/repositories/order/OrderRepositoryImpl.java` | modified | Corrected filter grouping and initialized count/page metadata and empty order lists. |
++| `sm-core/src/main/java/com/salesmanager/core/business/utils/RepositoryHelper.java` | modified | Corrected total-pages calculation to ceiling division. |
++| `sm-shop/src/main/java/com/salesmanager/shop/store/controller/order/facade/OrderFacadeImpl.java` | modified | Empty pages retain matching `recordsTotal` and `totalPages`. |
++| `sm-core/src/test/java/com/salesmanager/test/business/utils/RepositoryHelperTest.java` | added test | Pins down zero-based page offsets and ceiling page totals. |
++
++## Tests Added or Updated
++
++- `com.salesmanager.test.business.utils.RepositoryHelperTest#usesZeroBasedPagesAndCeilingTotalPages` — verifies page 1 starts at offset 10 for page size 10 and 21 records reports 3 pages.
++
++## Local Verification
++
++- Commands run: `mvn -pl sm-core,sm-shop -am -DskipTests compile` → passed; all six reactor modules compiled successfully.
++- Commands run: `mvn -pl sm-core -am -Dtest=RepositoryHelperTest -Dsurefire.failIfNoSpecifiedTests=false test` → passed; 1 test, 0 failures.
++- Manual checks: reviewed the private customer-order route, detail mapping, repository filters, and empty-page response path.
++
++## Deviations from Assessment
++
++The assessment identified the existing nullable detail mapping as already compatible with deleted customers, so no change was required to the detail endpoint or order persistence model. The requested customer-id behavior was implemented through the existing facade/service path rather than adding a new service method.
++
++## Follow-ups
++
++- Add a database-backed order API integration fixture covering deletion, re-registration, historical detail, payment/history, and filtered admin pages when the project’s integration environment is available.
+diff --git a/.specify/bugs/ticket/test.md b/.specify/bugs/ticket/test.md
+new file mode 100644
+index 0000000..1ee5bd6
+--- /dev/null
++++ b/.specify/bugs/ticket/test.md
+@@ -0,0 +1,35 @@
++# Bug Verification: Preserve orders after customer deletion and fix admin pagination
++
++- **Slug**: ticket
++- **Tested**: 2026-11-18T21:58:00+00:00
++- **Assessment**: ./assessment.md
++- **Fix**: ./fix.md
++- **Result**: partial
++
++## Summary
++
++The changed modules compile and the focused pagination regression test passes. Full HTTP/database reproduction of deleted-customer order access, account re-registration isolation, and filtered admin pages was not available in this checkout, so end-to-end verification remains incomplete.
++
++## Checks Performed
++
++| Check | Command / Action | Result | Notes |
++|-------|------------------|--------|-------|
++| Reproduction (post-fix) | HTTP/API scenario from assessment | not-run | No running application/database or documented fixture was available. |
++| New / updated tests | `mvn -pl sm-core -am -Dtest=RepositoryHelperTest -Dsurefire.failIfNoSpecifiedTests=false test` | pass | 1 test passed, 0 failures. |
++| Regression suite | `mvn -pl sm-core,sm-shop -am -DskipTests compile` | pass | All six reactor modules compiled successfully. |
++| Lint / type-check | `git diff --check` | pass | No whitespace errors. |
++
++## Output Excerpts
++
++- `RepositoryHelperTest`: Tests run: 1, Failures: 0, Errors: 0.
++- Maven compile: BUILD SUCCESS.
++
++## Residual Risks
++
++- The customer deletion and order-detail behavior was not exercised against a real persistence store.
++- Fetch-join duplication and all status/email/name/id combinations need database-backed integration coverage.
++- Payment transactions and status/history reads were not exercised end to end.
++
++## Recommendation
++
++Hold for staging or database-backed integration verification; the available compile and focused pagination checks pass, but the original API reproduction was not run.
+diff --git a/sm-core/src/main/java/com/salesmanager/core/business/repositories/order/OrderRepositoryImpl.java b/sm-core/src/main/java/com/salesmanager/core/business/repositories/order/OrderRepositoryImpl.java
+index d96548c..267e5b5 100755
+--- a/sm-core/src/main/java/com/salesmanager/core/business/repositories/order/OrderRepositoryImpl.java
++++ b/sm-core/src/main/java/com/salesmanager/core/business/repositories/order/OrderRepositoryImpl.java
+@@ -4,6 +4,8 @@ import javax.persistence.EntityManager;
+ import javax.persistence.PersistenceContext;
+ import javax.persistence.Query;
+ 
++import java.util.Collections;
++
+ import org.apache.commons.lang3.StringUtils;
+ 
+ import com.salesmanager.core.business.utils.RepositoryHelper;
+@@ -162,7 +164,7 @@ public class OrderRepositoryImpl implements OrderRepositoryCustom {
+ 		countBuilderSelect.append(storeQuery);
+ 		
+ 		if(!StringUtils.isEmpty(criteria.getCustomerName())) {
+-			String nameQuery =  " and o.billing.firstName like:name or o.billing.lastName like:name";
++			String nameQuery =  " and (o.billing.firstName like:name or o.billing.lastName like:name)";
+ 			objectBuilderWhere.append(nameQuery);
+ 			countBuilderSelect.append(nameQuery);
+ 		}
+@@ -182,7 +184,7 @@ public class OrderRepositoryImpl implements OrderRepositoryCustom {
+ 		
+ 		//phone
+ 		if(!StringUtils.isEmpty(criteria.getCustomerPhone())) {
+-			String nameQuery =  " and o.billing.telephone like:phone or o.delivery.telephone like:phone";
++			String nameQuery =  " and (o.billing.telephone like:phone or o.delivery.telephone like:phone)";
+ 			objectBuilderWhere.append(nameQuery);
+ 			countBuilderSelect.append(nameQuery);
+ 		}
+@@ -241,8 +243,15 @@ public class OrderRepositoryImpl implements OrderRepositoryCustom {
+ 
+ 		Number count = (Number) countQ.getSingleResult();
+ 
+-		if(count.intValue()==0)
++		int totalCount = count.intValue();
++		int pageSize = criteria.getPageSize();
++		orderList.setTotalCount(totalCount);
++		orderList.setTotalPages(pageSize > 0 ? (int) Math.ceil((double) totalCount / pageSize) : 0);
++
++		if(totalCount == 0) {
++			orderList.setOrders(Collections.emptyList());
+ 			return orderList;
++		}
+ 
+ 	    @SuppressWarnings("rawtypes")
+ 		GenericEntityList entityList = new GenericEntityList();
+diff --git a/sm-core/src/main/java/com/salesmanager/core/business/utils/RepositoryHelper.java b/sm-core/src/main/java/com/salesmanager/core/business/utils/RepositoryHelper.java
+index b71b1fa..7748c0e 100644
+--- a/sm-core/src/main/java/com/salesmanager/core/business/utils/RepositoryHelper.java
++++ b/sm-core/src/main/java/com/salesmanager/core/business/utils/RepositoryHelper.java
+@@ -30,7 +30,7 @@ public class RepositoryHelper {
+ 			int firstResult = ((criteria.getStartPage()==0?0:criteria.getStartPage())) * criteria.getPageSize();
+ 			q.setFirstResult(firstResult);
+ 			q.setMaxResults(criteria.getPageSize());
+-			int lastPageNumber = (count.intValue() / criteria.getPageSize()) + 1;
++			int lastPageNumber = (int) Math.ceil((double) count.intValue() / criteria.getPageSize());
+ 			entityList.setTotalPages(lastPageNumber);
+ 			entityList.setTotalCount(count.intValue());
+ 		}
+diff --git a/sm-core/src/test/java/com/salesmanager/test/business/utils/RepositoryHelperTest.java b/sm-core/src/test/java/com/salesmanager/test/business/utils/RepositoryHelperTest.java
+new file mode 100644
+index 0000000..947934a
+--- /dev/null
++++ b/sm-core/src/test/java/com/salesmanager/test/business/utils/RepositoryHelperTest.java
+@@ -0,0 +1,33 @@
++package com.salesmanager.test.business.utils;
++
++import static org.junit.Assert.assertEquals;
++import static org.mockito.Mockito.mock;
++import static org.mockito.Mockito.verify;
++
++import javax.persistence.Query;
++
++import org.junit.Test;
++
++import com.salesmanager.core.business.utils.RepositoryHelper;
++import com.salesmanager.core.model.common.GenericEntityList;
++import com.salesmanager.core.model.order.OrderCriteria;
++
++public class RepositoryHelperTest {
++
++    @Test
++    public void usesZeroBasedPagesAndCeilingTotalPages() {
++        Query query = mock(Query.class);
++        OrderCriteria criteria = new OrderCriteria();
++        criteria.setLegacyPagination(false);
++        criteria.setStartPage(1);
++        criteria.setPageSize(10);
++        GenericEntityList<?> result = new GenericEntityList<>();
++
++        RepositoryHelper.paginateQuery(query, 21, result, criteria);
++
++        verify(query).setFirstResult(10);
++        verify(query).setMaxResults(10);
++        assertEquals(3, result.getTotalPages());
++        assertEquals(21, result.getTotalCount());
++    }
++}
+diff --git a/sm-shop/src/main/java/com/salesmanager/shop/store/api/v1/order/OrderApi.java b/sm-shop/src/main/java/com/salesmanager/shop/store/api/v1/order/OrderApi.java
+index b0ca074..1c626fa 100755
+--- a/sm-shop/src/main/java/com/salesmanager/shop/store/api/v1/order/OrderApi.java
++++ b/sm-shop/src/main/java/com/salesmanager/shop/store/api/v1/order/OrderApi.java
+@@ -121,12 +121,6 @@ public class OrderApi {
+ 
+ 		Customer customer = customerService.getById(id);
+ 
+-		if (customer == null) {
+-			LOGGER.error("Customer is null for id " + id);
+-			response.sendError(404, "Customer is null for id " + id);
+-			return null;
+-		}
+-
+ 		if (start == null) {
+ 			start = new Integer(0);
+ 		}
+@@ -134,16 +128,19 @@ public class OrderApi {
+ 			count = new Integer(100);
+ 		}
+ 
+-		ReadableCustomer readableCustomer = new ReadableCustomer();
+-		ReadableCustomerPopulator customerPopulator = new ReadableCustomerPopulator();
+-		customerPopulator.populate(customer, readableCustomer, merchantStore, language);
++		OrderCriteria criteria = new OrderCriteria();
++		criteria.setStartPage(start);
++		criteria.setPageSize(count);
++		criteria.setCustomerId(id);
+ 
+-		ReadableOrderList returnList = orderFacade.getReadableOrderList(merchantStore, customer, start, count,
+-				language);
++		ReadableOrderList returnList = orderFacade.getReadableOrderList(criteria, merchantStore);
+ 
+ 		List<ReadableOrder> orders = returnList.getOrders();
+ 
+-		if (!CollectionUtils.isEmpty(orders)) {
++		if (customer != null && !CollectionUtils.isEmpty(orders)) {
++			ReadableCustomer readableCustomer = new ReadableCustomer();
++			ReadableCustomerPopulator customerPopulator = new ReadableCustomerPopulator();
++			customerPopulator.populate(customer, readableCustomer, merchantStore, language);
+ 			for (ReadableOrder order : orders) {
+ 				order.setCustomer(readableCustomer);
+ 			}
+diff --git a/sm-shop/src/main/java/com/salesmanager/shop/store/controller/order/facade/OrderFacadeImpl.java b/sm-shop/src/main/java/com/salesmanager/shop/store/controller/order/facade/OrderFacadeImpl.java
+index 0da643b..16881ec 100755
+--- a/sm-shop/src/main/java/com/salesmanager/shop/store/controller/order/facade/OrderFacadeImpl.java
++++ b/sm-shop/src/main/java/com/salesmanager/shop/store/controller/order/facade/OrderFacadeImpl.java
+@@ -945,7 +945,11 @@ public class OrderFacadeImpl implements OrderFacade {
+ 			com.salesmanager.shop.model.order.v0.ReadableOrderList returnList = new com.salesmanager.shop.model.order.v0.ReadableOrderList();
+ 
+ 			if (CollectionUtils.isEmpty(orders)) {
+-				returnList.setRecordsTotal(0);
++				returnList.setRecordsTotal(orderList.getTotalCount());
++				returnList.setTotalPages(orderList.getTotalPages());
++				returnList.setNumber(0);
++				returnList.setRecordsFiltered(0);
++				returnList.setOrders(new ArrayList<com.salesmanager.shop.model.order.v0.ReadableOrder>());
+ 				return returnList;
+ 			}
+ 

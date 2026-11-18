@@ -1,0 +1,96 @@
+diff --git a/notes/plan.md b/notes/plan.md
+new file mode 100644
+index 0000000..12f7631
+--- /dev/null
++++ b/notes/plan.md
+@@ -0,0 +1,7 @@
++# Plan
++
++1. Change category deletion in `CategoryServiceImpl` so it gathers the root and descendants, loads each affected product, removes only associations whose category ids are in that subtree, and persists the product. Do not call `productService.delete`.
++2. Delete the requested root category after associations are removed, allowing the existing category remove cascade to delete descendants and descriptions.
++3. Preserve the existing facade not-found checks and verify that the resulting behavior is 404 for missing/deleted categories and that product, cart, and order data are not deleted.
++4. Add or update focused tests if the existing test structure supports them, then run targeted tests and a Maven build for the affected modules.
++
+diff --git a/notes/research.md b/notes/research.md
+new file mode 100644
+index 0000000..3e3edd3
+--- /dev/null
++++ b/notes/research.md
+@@ -0,0 +1,29 @@
++# Research
++
++## Request path and current behavior
++
++- `sm-shop/src/main/java/com/salesmanager/shop/store/api/v1/category/CategoryApi.java` maps `DELETE /api/v1/private/category/{id}` to `CategoryFacade.deleteCategory` and maps `GET /api/v1/category/{id}` to `CategoryFacade.getById`.
++- `CategoryFacadeImpl.deleteCategory(Long, MerchantStore)` loads the category and raises `ResourceNotFoundException` when it cannot find the id, so a missing delete is already intended to be a 404. The GET path also raises `ResourceNotFoundException` for a missing category, but the existing deletion can leave inconsistent persistence state that causes the observed server error.
++- Category listing and category product filtering use category rows and the `Product.categories` association, so deleted category rows and join rows must both disappear.
++
++## Root cause
++
++- `sm-core/src/main/java/com/salesmanager/core/business/services/catalog/category/CategoryServiceImpl.java`, `delete(Category)`, builds the deleted category plus descendants from the category lineage and loads products associated with those category ids.
++- For each product it currently removes matching categories, but if the product has only one category it calls `productService.delete(dbProduct)`. That deletes the whole product, including inventory and other product data. The multi-category branch also tests `product.getCategories()` from the earlier query rather than the modified `dbProduct` collection, making the decision stale and unsafe.
++- `Product.categories` in `sm-core-model/src/main/java/com/salesmanager/core/model/catalog/product/Product.java` owns the `PRODUCT_CATEGORY` many-to-many join table. Product deletion is therefore unrelated to deleting a category and must not be used here.
++- `Category.categories` in `sm-core-model/src/main/java/com/salesmanager/core/model/catalog/category/Category.java` has `CascadeType.REMOVE`, so deleting the root category deletes descendants and their descriptions. Before that deletion, every product association to every category in the subtree must be removed so the join table cannot retain references to deleted categories.
++
++## Affected behavior
++
++- Product lookup (`ProductRepositoryImpl` and the v1/v2 product facades) fetches product categories from the join table; preserving the product and removing only matching associations keeps SKU, stock, price, and other categories available while omitting deleted categories.
++- Shopping cart items (`sm-core-model/.../shoppingcart/ShoppingCartItem.java`) hold a product reference and cart processing resolves products by SKU/product data. Deleting the product is what breaks carts; retaining it avoids that breakage.
++- `OrderProduct` (`sm-core-model/src/main/java/com/salesmanager/core/model/order/orderproduct/OrderProduct.java`) stores order-time SKU/name/price data and order loading is independent of category membership. Product deletion can still break order-related lookups elsewhere, so category deletion must never delete products.
++- Product listing by `category` and category hierarchy reads category ids/associations. Removing the join rows and deleting the category subtree makes the deleted category return no products, disappear from hierarchy results, and return 404 by id.
++
++## Relevant files
++
++- Primary implementation: `sm-core/src/main/java/com/salesmanager/core/business/services/catalog/category/CategoryServiceImpl.java`.
++- HTTP/facade behavior: `sm-shop/src/main/java/com/salesmanager/shop/store/api/v1/category/CategoryApi.java` and `sm-shop/src/main/java/com/salesmanager/shop/store/facade/category/CategoryFacadeImpl.java`.
++- Persistence mappings: `sm-core-model/src/main/java/com/salesmanager/core/model/catalog/category/Category.java` and `sm-core-model/src/main/java/com/salesmanager/core/model/catalog/product/Product.java`.
++- Existing integration coverage: `sm-shop/src/test/java/com/salesmanager/test/shop/integration/category/CategoryManagementAPIIntegrationTest.java`; core category/product tests are under `sm-core/src/test/java/com/salesmanager/test/catalog/`.
++
+diff --git a/sm-core/src/main/java/com/salesmanager/core/business/services/catalog/category/CategoryServiceImpl.java b/sm-core/src/main/java/com/salesmanager/core/business/services/catalog/category/CategoryServiceImpl.java
+index 36a1aeb..243b803 100755
+--- a/sm-core/src/main/java/com/salesmanager/core/business/services/catalog/category/CategoryServiceImpl.java
++++ b/sm-core/src/main/java/com/salesmanager/core/business/services/catalog/category/CategoryServiceImpl.java
+@@ -13,6 +13,7 @@ import org.springframework.data.domain.Page;
+ import org.springframework.data.domain.PageRequest;
+ import org.springframework.data.domain.Pageable;
+ import org.springframework.stereotype.Service;
++import org.springframework.transaction.annotation.Transactional;
+ import org.springframework.util.Assert;
+ 
+ import com.salesmanager.core.business.constants.Constants;
+@@ -228,6 +229,7 @@ public class CategoryServiceImpl extends SalesManagerEntityServiceImpl<Long, Cat
+ 	}
+ 
+ 	// @Override
++	@Transactional
+ 	public void delete(Category category) throws ServiceException {
+ 
+ 		// get category with lineage (subcategories)
+@@ -257,24 +259,11 @@ public class CategoryServiceImpl extends SalesManagerEntityServiceImpl<Long, Cat
+ 			// categories
+ 
+ 			for (Product product : products) {
+-				// session.evict(product);// refresh product so we get all
+-				// product categories
++				// Refresh the product so the association being updated is managed.
+ 				Product dbProduct = productService.getById(product.getId());
+ 				Set<Category> productCategories = dbProduct.getCategories();
+-				if (productCategories.size() > 1) {
+-					for (Category c : categories) {
+-						productCategories.remove(c);
+-						productService.update(dbProduct);
+-					}
+-
+-					if (product.getCategories() == null || product.getCategories().size() == 0) {
+-						productService.delete(dbProduct);
+-					}
+-
+-				} else {
+-					productService.delete(dbProduct);
+-				}
+-
++				productCategories.removeIf(productCategory -> categoryIds.contains(productCategory.getId()));
++				productService.update(dbProduct);
+ 			}
+ 
+ 			Category categ = getById(category.getId(), category.getMerchantStore().getId());

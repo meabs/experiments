@@ -1,0 +1,353 @@
+diff --git a/.specify/bugs/ticket/assessment.md b/.specify/bugs/ticket/assessment.md
+new file mode 100644
+index 0000000..bd415da
+--- /dev/null
++++ b/.specify/bugs/ticket/assessment.md
+@@ -0,0 +1,63 @@
++# Bug Assessment: Category deletion removes products and breaks references
++
++- **Slug**: ticket
++- **Created**: 2026-11-18T00:00:00+00:00
++- **Source**: pasted text
++- **Verdict**: valid
++- **Severity**: critical
++
++## Report (verbatim or summarized)
++
++A merchant deleted an old “Summer sale” category. Products that belonged only to it disappeared, carts containing them stopped working, and orders containing them could not be opened. The deleted category returns a server error instead of 404. DELETE `/api/v1/private/category/{id}` must remove only the category and descendants, retain products and their data/other categories, preserve carts and orders, and return 404 for missing categories and subsequent category/product listings.
++
++## Symptom
++
++`CategoryServiceImpl.delete` deletes products when they have no remaining category, and deletes a category without reliably detaching products from all deleted categories. This violates product retention and can leave cart/order product references invalid. Missing-category deletion currently resolves through `getOne` and is expected to produce 404, while deleted-category reads must remain 404 rather than fail through stale associations.
++
++## Reproduction
++
++1. Create a category with a child category and products, including a product assigned only to the parent/child and a product assigned to a surviving category as well.
++2. Delete the parent through `DELETE /api/v1/private/category/{id}`.
++3. Verify the products, stock/prices, carts, and orders remain usable; verify deleted categories and their product listings return 404/empty as specified. Delete an unknown id and verify 404.
++
++## Suspected Code Paths
++
++- `sm-core/src/main/java/com/salesmanager/core/business/services/catalog/category/CategoryServiceImpl.java:231-286` — category deletion collects descendants, then calls `productService.delete` for products with only deleted-category memberships; this is the direct data-loss cause.
++- `sm-shop/src/main/java/com/salesmanager/shop/store/facade/category/CategoryFacadeImpl.java:360-368` — DELETE resolves the category before invoking the service and supplies the not-found boundary.
++- `sm-shop/src/main/java/com/salesmanager/shop/store/facade/category/CategoryFacadeImpl.java:114-145` and `sm-core/src/main/java/com/salesmanager/core/business/repositories/catalog/product/ProductRepositoryImpl.java` — category-based reads depend on category/product associations and must see detached products/categories after deletion.
++- `sm-core-model/src/main/java/com/salesmanager/core/model/catalog/product/Product.java:110-136` — product/category is a many-to-many association without product deletion semantics; it should be updated, not the product entity removed.
++- `sm-core-model/src/main/java/com/salesmanager/core/model/catalog/category/Category.java:63-67` — descendants are cascaded from the category hierarchy, so deleting the category tree is separate from product retention.
++
++## Root Cause Hypothesis
++
++Confidence: high. The deletion loop explicitly calls `productService.delete(dbProduct)` when the product has one or fewer categories, treating category membership as product ownership. It also removes associations one category at a time and relies on a possibly stale product instance. The correct invariant is to remove every deleted-tree category from each affected product and persist the product, never delete the product; the existing facade lookup already provides the 404 for a nonexistent id.
++
++## Proposed Remediation
++
++**Preferred**: In `CategoryServiceImpl.delete`, collect the target category and all descendants, load affected products, remove all deleted-tree categories from each product’s category set, and update each product. Never call `productService.delete` as a consequence of category deletion. Keep the category-tree deletion so descendants and their descriptions disappear. Preserve the existing facade lookup so a missing category throws `ResourceNotFoundException` and is rendered as HTTP 404.
++
++Add focused core tests covering a product assigned only to the deleted tree, a product also assigned to a surviving category, and a parent with descendants. Assert products and their fields remain while memberships are removed, and add API coverage for deleted/missing category 404 and empty category product listings.
++
++**Alternatives** (optional):
++- Delete join-table rows with a repository-level bulk operation before deleting categories, then avoid loading products; this may be more efficient but is less safe for entity-cache consistency and does not itself prove product retention.
++
++**Files likely to change**:
++- `sm-core/src/main/java/com/salesmanager/core/business/services/catalog/category/CategoryServiceImpl.java`
++- `sm-core/src/test/java/com/salesmanager/test/catalog/CategoryTest.java`
++- `sm-shop/src/test/java/com/salesmanager/test/shop/integration/category/CategoryManagementAPIIntegrationTest.java`
++
++**Tests to add or update**:
++- Service-level regression test proving category-only products survive with stock/price data and surviving-category products retain that category.
++- Descendant deletion regression test proving all descendant memberships are removed without deleting products.
++- API tests proving deleted and nonexistent categories return 404 and category product listing is empty.
++
++## Risks & Considerations
++
++- Product updates must occur in a transaction and use the managed category collection so join-table rows are removed before category deletion.
++- Existing carts/orders must not be modified; preserving product rows and their identifiers is essential.
++- Large categories may require batching in the future; the minimal fix retains current loading behavior.
++- Category deletion remains destructive for category records and descendants, as required.
++
++## Open Questions
++
++- [NEEDS CLARIFICATION: The integration test fixture/database startup command is not documented in the ticket; validate the endpoint behavior with the repository’s available Maven test profile.]
+diff --git a/.specify/bugs/ticket/fix.md b/.specify/bugs/ticket/fix.md
+new file mode 100644
+index 0000000..30e4649
+--- /dev/null
++++ b/.specify/bugs/ticket/fix.md
+@@ -0,0 +1,35 @@
++# Bug Fix: Category deletion removes products and breaks references
++
++- **Slug**: ticket
++- **Fixed**: 2026-11-18T00:00:00+00:00
++- **Assessment**: ./assessment.md
++- **Status**: applied
++
++## Summary
++
++Category deletion now removes only product-category join rows for the complete stored subtree and never deletes products. Descendant discovery uses the category lineage prefix, so child memberships are removed before the category hierarchy is deleted.
++
++## Changes
++
++| File | Change | Notes |
++|------|--------|-------|
++| `sm-core/src/main/java/com/salesmanager/core/business/services/catalog/category/CategoryServiceImpl.java` | modified | Retains products, collects the full subtree, and removes only category memberships. |
++| `sm-core/src/main/java/com/salesmanager/core/business/repositories/catalog/category/CategoryRepository.java` | modified | Adds a transactional bulk cleanup of `PRODUCT_CATEGORY` rows. |
++| `sm-core/src/test/java/com/salesmanager/test/catalog/CategoryTest.java` | modified | Adds parent/child, product-retention, and surviving-category regression coverage. |
++
++## Tests Added or Updated
++
++- `CategoryTest.deleteCategoryKeepsProductsAndRemovesDeletedTreeMemberships` — verifies products survive while deleted-tree memberships are removed and surviving memberships remain.
++
++## Local Verification
++
++- Commands run: `mvn -pl sm-core -am -Dtest=CategoryTest -Dsurefire.failIfNoSpecifiedTests=false test` → passed; 2 tests, 0 failures, 0 errors.
++- Manual checks: `git diff --check` passed.
++
++## Deviations from Assessment
++
++The preferred remediation was expanded to include a repository-level transactional join-table cleanup after the initial collection-only update failed the FK regression test. Descendant collection was also corrected to use the stored lineage prefix because the previous root-id concatenation omitted descendants.
++
++## Follow-ups
++
++- Run the shop integration/API suite against the application service to verify HTTP 404 and cart/order flows end to end.
+diff --git a/.specify/bugs/ticket/test.md b/.specify/bugs/ticket/test.md
+new file mode 100644
+index 0000000..87426db
+--- /dev/null
++++ b/.specify/bugs/ticket/test.md
+@@ -0,0 +1,34 @@
++# Bug Verification: Category deletion removes products and breaks references
++
++- **Slug**: ticket
++- **Tested**: 2026-11-18T00:00:00+00:00
++- **Assessment**: ./assessment.md
++- **Fix**: ./fix.md
++- **Result**: partial
++
++## Summary
++
++The core regression passes: deleting a category tree retains products and removes only memberships in the deleted tree, including descendant memberships. The HTTP API and live cart/order reproduction were not exercised in this environment.
++
++## Checks Performed
++
++| Check | Command / Action | Result | Notes |
++|-------|------------------|--------|-------|
++| Reproduction (post-fix) | Core service regression in `CategoryTest` | pass | Products remain and category memberships are correct. |
++| New / updated tests | `mvn -pl sm-core -am -Dtest=CategoryTest -Dsurefire.failIfNoSpecifiedTests=false test` | pass | 2 tests passed. |
++| Regression suite | Same focused reactor test | pass | `sm-core` and prerequisite modules built successfully. |
++| Lint / type-check | `git diff --check` | pass | No whitespace errors. |
++| HTTP/API and cart/order end-to-end | Live service/manual reproduction | not-run | No running shop service or documented fixture was available. |
++
++## Output Excerpts
++
++`Tests run: 2, Failures: 0, Errors: 0` and `BUILD SUCCESS`.
++
++## Residual Risks
++
++- API status behavior and cart/order compatibility still need an application-level integration run.
++- The bulk join cleanup should be monitored for large category trees and database-specific native SQL behavior.
++
++## Recommendation
++
++Hold for staging/API verification; the core data-retention regression is fixed and passing, but the original end-to-end HTTP reproduction was not run.
+diff --git a/sm-core/src/main/java/com/salesmanager/core/business/repositories/catalog/category/CategoryRepository.java b/sm-core/src/main/java/com/salesmanager/core/business/repositories/catalog/category/CategoryRepository.java
+index 3f6165b..238d4be 100755
+--- a/sm-core/src/main/java/com/salesmanager/core/business/repositories/catalog/category/CategoryRepository.java
++++ b/sm-core/src/main/java/com/salesmanager/core/business/repositories/catalog/category/CategoryRepository.java
+@@ -4,7 +4,9 @@ import java.util.List;
+ import java.util.Optional;
+ 
+ import org.springframework.data.jpa.repository.JpaRepository;
++import org.springframework.data.jpa.repository.Modifying;
+ import org.springframework.data.jpa.repository.Query;
++import org.springframework.transaction.annotation.Transactional;
+ 
+ import com.salesmanager.core.model.catalog.category.Category;
+ 
+@@ -47,6 +49,11 @@ public interface CategoryRepository extends JpaRepository<Category, Long>, Categ
+ 	@Query("select c from Category c left join fetch c.parent cp left join fetch c.descriptions cd join fetch cd.language cdl join fetch c.merchantStore cm left join fetch c.categories where c.id = ?1")
+ 	Optional<Category> findById(Long categoryId);
+ 
++	@Modifying(clearAutomatically = true, flushAutomatically = true)
++	@Transactional
++	@Query(value = "delete from {h-schema}PRODUCT_CATEGORY where CATEGORY_ID in (:categoryIds)", nativeQuery = true)
++	void removeProductsFromCategories(List<Long> categoryIds);
++
+ 	@Query("select c from Category c left join fetch c.descriptions cd join fetch cd.language cdl join fetch c.merchantStore cm where cm.code=?1 and c.code=?2")
+ 	Category findByCode(String merchantStoreCode, String code);
+ 	
+diff --git a/sm-core/src/main/java/com/salesmanager/core/business/services/catalog/category/CategoryServiceImpl.java b/sm-core/src/main/java/com/salesmanager/core/business/services/catalog/category/CategoryServiceImpl.java
+index 36a1aeb..49dc649 100755
+--- a/sm-core/src/main/java/com/salesmanager/core/business/services/catalog/category/CategoryServiceImpl.java
++++ b/sm-core/src/main/java/com/salesmanager/core/business/services/catalog/category/CategoryServiceImpl.java
+@@ -20,11 +20,9 @@ import com.salesmanager.core.business.exception.ServiceException;
+ import com.salesmanager.core.business.repositories.catalog.category.CategoryDescriptionRepository;
+ import com.salesmanager.core.business.repositories.catalog.category.CategoryRepository;
+ import com.salesmanager.core.business.repositories.catalog.category.PageableCategoryRepository;
+-import com.salesmanager.core.business.services.catalog.product.ProductService;
+ import com.salesmanager.core.business.services.common.generic.SalesManagerEntityServiceImpl;
+ import com.salesmanager.core.model.catalog.category.Category;
+ import com.salesmanager.core.model.catalog.category.CategoryDescription;
+-import com.salesmanager.core.model.catalog.product.Product;
+ import com.salesmanager.core.model.merchant.MerchantStore;
+ import com.salesmanager.core.model.reference.language.Language;
+ 
+@@ -34,9 +32,6 @@ public class CategoryServiceImpl extends SalesManagerEntityServiceImpl<Long, Cat
+ 
+   private CategoryRepository categoryRepository;
+ 
+-  @Inject
+-  private ProductService productService;
+-  
+   @Inject
+   private PageableCategoryRepository pageableCategoryRepository;
+   
+@@ -231,14 +226,15 @@ public class CategoryServiceImpl extends SalesManagerEntityServiceImpl<Long, Cat
+ 	public void delete(Category category) throws ServiceException {
+ 
+ 		// get category with lineage (subcategories)
+-		StringBuilder lineage = new StringBuilder();
+-		lineage.append(category.getLineage()).append(category.getId()).append(Constants.SLASH);
+-		List<Category> categories = this.getListByLineage(category.getMerchantStore(), lineage.toString());
++		// The stored lineage already contains this category id. Use it as the
++		// prefix so the complete subtree (including descendants) is collected.
++		List<Category> categories = this.getListByLineage(category.getMerchantStore(), category.getLineage());
+ 
+ 		Category dbCategory = getById(category.getId(), category.getMerchantStore().getId());
+ 
+ 		if (dbCategory != null && dbCategory.getId().longValue() == category.getId().longValue()) {
+ 
++			categories.removeIf(c -> c.getId().equals(dbCategory.getId()));
+ 			categories.add(dbCategory);
+ 
+ 			Collections.reverse(categories);
+@@ -249,33 +245,10 @@ public class CategoryServiceImpl extends SalesManagerEntityServiceImpl<Long, Cat
+ 				categoryIds.add(c.getId());
+ 			}
+ 
+-			List<Product> products = productService.getProducts(categoryIds);
+-			// org.hibernate.Session session =
+-			// em.unwrap(org.hibernate.Session.class);// need to refresh the
+-			// session to update
+-			// all product
+-			// categories
+-
+-			for (Product product : products) {
+-				// session.evict(product);// refresh product so we get all
+-				// product categories
+-				Product dbProduct = productService.getById(product.getId());
+-				Set<Category> productCategories = dbProduct.getCategories();
+-				if (productCategories.size() > 1) {
+-					for (Category c : categories) {
+-						productCategories.remove(c);
+-						productService.update(dbProduct);
+-					}
+-
+-					if (product.getCategories() == null || product.getCategories().size() == 0) {
+-						productService.delete(dbProduct);
+-					}
+-
+-				} else {
+-					productService.delete(dbProduct);
+-				}
+-
+-			}
++			// Category deletion must never delete the product itself: products may
++			// still be referenced by carts and orders, even when this was their
++			// only category. Remove only the many-to-many join rows.
++			categoryRepository.removeProductsFromCategories(categoryIds);
+ 
+ 			Category categ = getById(category.getId(), category.getMerchantStore().getId());
+ 			categoryRepository.delete(categ);
+diff --git a/sm-core/src/test/java/com/salesmanager/test/catalog/CategoryTest.java b/sm-core/src/test/java/com/salesmanager/test/catalog/CategoryTest.java
+index 95f92c7..875e446 100755
+--- a/sm-core/src/test/java/com/salesmanager/test/catalog/CategoryTest.java
++++ b/sm-core/src/test/java/com/salesmanager/test/catalog/CategoryTest.java
+@@ -4,6 +4,8 @@ import static org.junit.Assert.assertNotNull;
+ 
+ import java.util.HashSet;
+ import java.util.Set;
++import java.math.BigDecimal;
++import java.sql.Date;
+ 
+ import org.junit.Assert;
+ import org.junit.Test;
+@@ -11,6 +13,9 @@ import org.junit.Test;
+ import com.salesmanager.core.business.exception.ServiceException;
+ import com.salesmanager.core.model.catalog.category.Category;
+ import com.salesmanager.core.model.catalog.category.CategoryDescription;
++import com.salesmanager.core.model.catalog.product.Product;
++import com.salesmanager.core.model.catalog.product.availability.ProductAvailability;
++import com.salesmanager.core.model.catalog.product.type.ProductType;
+ import com.salesmanager.core.model.merchant.MerchantStore;
+ import com.salesmanager.core.model.reference.language.Language;
+ 
+@@ -62,6 +67,68 @@ public class CategoryTest extends com.salesmanager.test.common.AbstractSalesMana
+ 
+ 	}
+ 
++	@Test
++	public void deleteCategoryKeepsProductsAndRemovesDeletedTreeMemberships() throws Exception {
++		Language en = languageService.getByCode("en");
++		MerchantStore store = merchantService.getByCode(MerchantStore.DEFAULT_STORE);
++
++		Category deleted = category("delete-root", "Delete root", store, en);
++		Category child = category("delete-child", "Delete child", store, en);
++		child.setParent(deleted);
++		categoryService.create(child);
++		categoryService.addChild(deleted, child);
++		Category surviving = category("surviving", "Surviving", store, en);
++
++		Product onlyInDeletedTree = product("DELETE-ONLY", store, en, deleted);
++		Product inBothTrees = product("DELETE-BOTH", store, en, child, surviving);
++
++		categoryService.delete(deleted);
++
++		Product retainedOnly = productService.getById(onlyInDeletedTree.getId());
++		Product retainedBoth = productService.getById(inBothTrees.getId());
++		Assert.assertNotNull(retainedOnly);
++		Assert.assertNotNull(retainedBoth);
++		Assert.assertEquals(0, categoryService.getByProductId(onlyInDeletedTree.getId(), store).size());
++		Assert.assertEquals(1, categoryService.getByProductId(inBothTrees.getId(), store).size());
++
++	}
++
++	private Category category(String code, String name, MerchantStore store, Language language) throws Exception {
++		Category category = new Category();
++		category.setMerchantStore(store);
++		category.setCode(code);
++		CategoryDescription description = new CategoryDescription();
++		description.setName(name);
++		description.setCategory(category);
++		description.setLanguage(language);
++		category.getDescriptions().add(description);
++		categoryService.create(category);
++		return category;
++	}
++
++	private Product product(String sku, MerchantStore store, Language language, Category... categories) throws Exception {
++		Product product = new Product();
++		product.setSku(sku);
++		product.setMerchantStore(store);
++		product.setType(productTypeService.getProductType(ProductType.GENERAL_TYPE));
++		for (Category category : categories) {
++			product.getCategories().add(category);
++		}
++		ProductAvailability availability = new ProductAvailability();
++		availability.setProduct(product);
++		availability.setProductDateAvailable(new Date(System.currentTimeMillis()));
++		availability.setProductQuantity(100);
++		availability.setRegion("*");
++		product.getAvailabilities().add(availability);
++		com.salesmanager.core.model.catalog.product.price.ProductPrice price =
++				new com.salesmanager.core.model.catalog.product.price.ProductPrice();
++		price.setProductAvailability(availability);
++		price.setProductPriceAmount(new BigDecimal("10.00"));
++		availability.getPrices().add(price);
++		productService.saveProduct(product);
++		return product;
++	}
++
+ 
+ 
+-}
+\ No newline at end of file
++}

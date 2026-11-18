@@ -1,0 +1,125 @@
+diff --git a/sm-core/src/main/java/com/salesmanager/core/business/repositories/catalog/category/CategoryRepository.java b/sm-core/src/main/java/com/salesmanager/core/business/repositories/catalog/category/CategoryRepository.java
+index 3f6165b..e4695ec 100755
+--- a/sm-core/src/main/java/com/salesmanager/core/business/repositories/catalog/category/CategoryRepository.java
++++ b/sm-core/src/main/java/com/salesmanager/core/business/repositories/catalog/category/CategoryRepository.java
+@@ -53,10 +53,10 @@ public interface CategoryRepository extends JpaRepository<Category, Long>, Categ
+ 	@Query("select c from Category c join fetch c.descriptions cd join fetch cd.language cdl join fetch c.merchantStore cm where c.id=?1")
+ 	Category findOne(Long categoryId);
+ 	
+-	@Query("select distinct c from Category c left join fetch c.descriptions cd join fetch cd.language cdl join fetch c.merchantStore cm where cm.id=?1 and c.lineage like %?2% order by c.lineage, c.sortOrder asc")
++	@Query("select distinct c from Category c left join fetch c.descriptions cd join fetch cd.language cdl join fetch c.merchantStore cm where cm.id=?1 and c.lineage like ?2% order by c.lineage, c.sortOrder asc")
+ 	List<Category> findByLineage(Integer merchantId, String linenage);
+ 	
+-	@Query("select distinct c from Category c left join fetch c.descriptions cd join fetch cd.language cdl join fetch c.merchantStore cm where cm.code= ?1 and c.lineage like %?2% order by c.lineage, c.sortOrder asc")
++	@Query("select distinct c from Category c left join fetch c.descriptions cd join fetch cd.language cdl join fetch c.merchantStore cm where cm.code= ?1 and c.lineage like ?2% order by c.lineage, c.sortOrder asc")
+ 	List<Category> findByLineage(String storeCode, String linenage);
+ 	
+ 	@Query("select distinct c from Category c left join fetch c.descriptions cd join fetch cd.language cdl join fetch c.merchantStore cm where cm.id=?1 and c.depth >= ?2 order by c.lineage, c.sortOrder asc")
+diff --git a/sm-core/src/main/java/com/salesmanager/core/business/services/catalog/category/CategoryServiceImpl.java b/sm-core/src/main/java/com/salesmanager/core/business/services/catalog/category/CategoryServiceImpl.java
+index 36a1aeb..7e087d9 100755
+--- a/sm-core/src/main/java/com/salesmanager/core/business/services/catalog/category/CategoryServiceImpl.java
++++ b/sm-core/src/main/java/com/salesmanager/core/business/services/catalog/category/CategoryServiceImpl.java
+@@ -1,7 +1,6 @@
+ package com.salesmanager.core.business.services.catalog.category;
+ 
+ import java.util.ArrayList;
+-import java.util.Collections;
+ import java.util.HashSet;
+ import java.util.List;
+ import java.util.Optional;
+@@ -229,57 +228,38 @@ public class CategoryServiceImpl extends SalesManagerEntityServiceImpl<Long, Cat
+ 
+ 	// @Override
+ 	public void delete(Category category) throws ServiceException {
+-
+-		// get category with lineage (subcategories)
+-		StringBuilder lineage = new StringBuilder();
+-		lineage.append(category.getLineage()).append(category.getId()).append(Constants.SLASH);
+-		List<Category> categories = this.getListByLineage(category.getMerchantStore(), lineage.toString());
+-
+ 		Category dbCategory = getById(category.getId(), category.getMerchantStore().getId());
++		if (dbCategory == null) {
++			return;
++		}
+ 
+-		if (dbCategory != null && dbCategory.getId().longValue() == category.getId().longValue()) {
+-
++		// Category.lineage already contains this category's id. Using it as the
++		// prefix finds the complete subtree, including descendants.
++		List<Category> categories = new ArrayList<>(
++				this.getListByLineage(category.getMerchantStore(), dbCategory.getLineage()));
++		if (categories.stream().noneMatch(c -> c.getId().equals(dbCategory.getId()))) {
+ 			categories.add(dbCategory);
++		}
+ 
+-			Collections.reverse(categories);
+-
+-			List<Long> categoryIds = new ArrayList<Long>();
+-
+-			for (Category c : categories) {
+-				categoryIds.add(c.getId());
+-			}
+-
+-			List<Product> products = productService.getProducts(categoryIds);
+-			// org.hibernate.Session session =
+-			// em.unwrap(org.hibernate.Session.class);// need to refresh the
+-			// session to update
+-			// all product
+-			// categories
+-
+-			for (Product product : products) {
+-				// session.evict(product);// refresh product so we get all
+-				// product categories
+-				Product dbProduct = productService.getById(product.getId());
+-				Set<Category> productCategories = dbProduct.getCategories();
+-				if (productCategories.size() > 1) {
+-					for (Category c : categories) {
+-						productCategories.remove(c);
+-						productService.update(dbProduct);
+-					}
+-
+-					if (product.getCategories() == null || product.getCategories().size() == 0) {
+-						productService.delete(dbProduct);
+-					}
+-
+-				} else {
+-					productService.delete(dbProduct);
+-				}
++		Set<Long> categoryIds = new HashSet<>();
++		for (Category c : categories) {
++			categoryIds.add(c.getId());
++		}
+ 
++		// Removing a category must never remove its products. Only detach the
++		// links from products, preserving links to categories outside the subtree.
++		List<Product> products = productService.getProducts(new ArrayList<>(categoryIds));
++		for (Product product : products) {
++			Product dbProduct = productService.getById(product.getId());
++			if (dbProduct.getCategories().removeIf(c -> categoryIds.contains(c.getId()))) {
++				productService.update(dbProduct);
+ 			}
++		}
+ 
+-			Category categ = getById(category.getId(), category.getMerchantStore().getId());
+-			categoryRepository.delete(categ);
+-
++		// Delete descendants first so the parent/child foreign key is satisfied.
++		categories.sort((left, right) -> Integer.compare(right.getDepth(), left.getDepth()));
++		for (Category c : categories) {
++			categoryRepository.delete(c);
+ 		}
+ 
+ 	}
+diff --git a/sm-shop/src/main/java/com/salesmanager/shop/store/facade/category/CategoryFacadeImpl.java b/sm-shop/src/main/java/com/salesmanager/shop/store/facade/category/CategoryFacadeImpl.java
+index 3d9067d..0046a3f 100755
+--- a/sm-shop/src/main/java/com/salesmanager/shop/store/facade/category/CategoryFacadeImpl.java
++++ b/sm-shop/src/main/java/com/salesmanager/shop/store/facade/category/CategoryFacadeImpl.java
+@@ -363,7 +363,7 @@ public class CategoryFacadeImpl implements CategoryFacade {
+ 	}
+ 
+ 	private Category getOne(Long categoryId, int storeId) {
+-		return Optional.ofNullable(categoryService.getById(categoryId)).orElseThrow(
++		return Optional.ofNullable(categoryService.getById(categoryId, storeId)).orElseThrow(
+ 				() -> new ResourceNotFoundException(String.format("No Category found for ID : %s", categoryId)));
+ 	}
+ 

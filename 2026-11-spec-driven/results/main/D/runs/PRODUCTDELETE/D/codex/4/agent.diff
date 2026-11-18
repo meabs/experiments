@@ -1,0 +1,147 @@
+diff --git a/sm-core/src/main/java/com/salesmanager/core/business/services/shoppingcart/ShoppingCartServiceImpl.java b/sm-core/src/main/java/com/salesmanager/core/business/services/shoppingcart/ShoppingCartServiceImpl.java
+index e0d1ce8..d6cd4ec 100755
+--- a/sm-core/src/main/java/com/salesmanager/core/business/services/shoppingcart/ShoppingCartServiceImpl.java
++++ b/sm-core/src/main/java/com/salesmanager/core/business/services/shoppingcart/ShoppingCartServiceImpl.java
+@@ -232,35 +232,38 @@ public class ShoppingCartServiceImpl extends SalesManagerEntityServiceImpl<Long,
+ 
+ 		try {
+ 
+-			boolean cartIsObsolete = false;
+ 			if (shoppingCart != null) {
+ 
+ 				Set<ShoppingCartItem> items = shoppingCart.getLineItems();
+ 				if (items == null || items.size() == 0) {
+-					shoppingCart.setObsolete(true);
++					shoppingCart.setObsolete(false);
+ 					return shoppingCart;
+ 
+ 				}
+ 
+ 				// Set<ShoppingCartItem> shoppingCartItems = new
+ 				// HashSet<ShoppingCartItem>();
++				Set<ShoppingCartItem> obsoleteItems = new HashSet<>();
+ 				for (ShoppingCartItem item : items) {
+ 					LOGGER.debug("Populate item " + item.getId());
+ 					getPopulatedItem(item, store);
+ 					LOGGER.debug("Obsolete item ? " + item.isObsolete());
+ 					if (item.isObsolete()) {
+-						cartIsObsolete = true;
++						obsoleteItems.add(item);
+ 					}
+ 				}
+ 
++				// Product deletion must not make the entire cart unusable. Remove only
++				// orphaned line items and calculate totals from the products remaining.
++				for (ShoppingCartItem obsoleteItem : obsoleteItems) {
++					deleteShoppingCartItem(obsoleteItem.getId());
++				}
++				items.removeAll(obsoleteItems);
+ 				Set<ShoppingCartItem> refreshedItems = new HashSet<>(items);
+ 
+ 				shoppingCart.setLineItems(refreshedItems);
++				shoppingCart.setObsolete(false);
+ 				update(shoppingCart);
+-
+-				if (cartIsObsolete) {
+-					shoppingCart.setObsolete(true);
+-				}
+ 				return shoppingCart;
+ 			}
+ 
+diff --git a/sm-core/src/test/java/com/salesmanager/test/shoppingcart/DeletedProductShoppingCartTest.java b/sm-core/src/test/java/com/salesmanager/test/shoppingcart/DeletedProductShoppingCartTest.java
+new file mode 100644
+index 0000000..fed183d
+--- /dev/null
++++ b/sm-core/src/test/java/com/salesmanager/test/shoppingcart/DeletedProductShoppingCartTest.java
+@@ -0,0 +1,77 @@
++package com.salesmanager.test.shoppingcart;
++
++import static org.junit.Assert.assertFalse;
++import static org.junit.Assert.assertTrue;
++import static org.mockito.Mockito.mock;
++import static org.mockito.Mockito.verify;
++import static org.mockito.Mockito.when;
++
++import java.util.HashSet;
++
++import org.junit.Test;
++
++import com.salesmanager.core.business.repositories.shoppingcart.ShoppingCartAttributeRepository;
++import com.salesmanager.core.business.repositories.shoppingcart.ShoppingCartItemRepository;
++import com.salesmanager.core.business.repositories.shoppingcart.ShoppingCartRepository;
++import com.salesmanager.core.business.services.catalog.product.ProductService;
++import com.salesmanager.core.business.services.shoppingcart.ShoppingCartServiceImpl;
++import com.salesmanager.core.model.merchant.MerchantStore;
++import com.salesmanager.core.model.shoppingcart.ShoppingCart;
++import com.salesmanager.core.model.shoppingcart.ShoppingCartItem;
++
++public class DeletedProductShoppingCartTest {
++
++	@Test
++	public void removesDeletedProductButKeepsCart() throws Exception {
++		ShoppingCartRepository cartRepository = mock(ShoppingCartRepository.class);
++		ShoppingCartItemRepository itemRepository = mock(ShoppingCartItemRepository.class);
++		ShoppingCartAttributeRepository attributeRepository = mock(ShoppingCartAttributeRepository.class);
++		ProductService productService = mock(ProductService.class);
++		ShoppingCartServiceImpl service = new ShoppingCartServiceImpl(cartRepository);
++		setField(service, "shoppingCartItemRepository", itemRepository);
++		setField(service, "shoppingCartAttributeItemRepository", attributeRepository);
++		setField(service, "productService", productService);
++
++		MerchantStore store = new MerchantStore();
++		store.setId(7);
++		ShoppingCart cart = new ShoppingCart();
++		cart.setId(11L);
++		cart.setLineItems(new HashSet<>());
++		ShoppingCartItem item = new ShoppingCartItem();
++		item.setId(12L);
++		item.setSku("deleted-sku");
++		item.setShoppingCart(cart);
++		cart.getLineItems().add(item);
++		when(cartRepository.findByCode(7, "cart-code")).thenReturn(cart);
++		when(itemRepository.findOne(12L)).thenReturn(item);
++		when(productService.getBySku("deleted-sku", store, store.getDefaultLanguage())).thenReturn(null);
++
++		ShoppingCart result = service.getByCode("cart-code", store);
++
++		assertTrue(result.getLineItems().isEmpty());
++		assertFalse(result.isObsolete());
++		verify(itemRepository).deleteById(12L);
++	}
++
++	@Test
++	public void keepsAnAlreadyEmptyCart() throws Exception {
++		ShoppingCartRepository cartRepository = mock(ShoppingCartRepository.class);
++		ShoppingCartServiceImpl service = new ShoppingCartServiceImpl(cartRepository);
++		MerchantStore store = new MerchantStore();
++		store.setId(7);
++		ShoppingCart cart = new ShoppingCart();
++		cart.setLineItems(new HashSet<>());
++		when(cartRepository.findByCode(7, "cart-code")).thenReturn(cart);
++
++		ShoppingCart result = service.getByCode("cart-code", store);
++
++		assertTrue(result.getLineItems().isEmpty());
++		assertFalse(result.isObsolete());
++	}
++
++	private static void setField(Object target, String name, Object value) throws ReflectiveOperationException {
++		var field = target.getClass().getDeclaredField(name);
++		field.setAccessible(true);
++		field.set(target, value);
++	}
++}
+diff --git a/sm-shop/src/main/java/com/salesmanager/shop/store/controller/shoppingCart/facade/ShoppingCartFacadeImpl.java b/sm-shop/src/main/java/com/salesmanager/shop/store/controller/shoppingCart/facade/ShoppingCartFacadeImpl.java
+index 7fdc139..3b7c512 100755
+--- a/sm-shop/src/main/java/com/salesmanager/shop/store/controller/shoppingCart/facade/ShoppingCartFacadeImpl.java
++++ b/sm-shop/src/main/java/com/salesmanager/shop/store/controller/shoppingCart/facade/ShoppingCartFacadeImpl.java
+@@ -351,7 +351,8 @@ public class ShoppingCartFacadeImpl implements ShoppingCartFacade {
+ 		List<Product> products = productSkus.stream().map(p -> this.fetchProduct(p, store, store.getDefaultLanguage()))
+ 				.collect(Collectors.toList());
+ 
+-		if (products == null || products.size() != shoppingCartItems.size()) {
++		if (products == null || products.size() != shoppingCartItems.size()
++				|| products.stream().anyMatch(p -> p == null)) {
+ 			LOG.warn("----------------------- Items with in id-list " + productSkus + " does not exist");
+ 			throw new ResourceNotFoundException("Item with skus " + productSkus + " does not exist");
+ 		}

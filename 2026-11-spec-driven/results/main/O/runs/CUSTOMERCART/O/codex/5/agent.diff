@@ -1,0 +1,428 @@
+diff --git a/openspec/changes/archive/2026-11-18-fix-authenticated-customer-shopping/.openspec.yaml b/openspec/changes/archive/2026-11-18-fix-authenticated-customer-shopping/.openspec.yaml
+new file mode 100644
+index 0000000..41484f3
+--- /dev/null
++++ b/openspec/changes/archive/2026-11-18-fix-authenticated-customer-shopping/.openspec.yaml
+@@ -0,0 +1,2 @@
++schema: spec-driven
++created: 2026-11-18
+diff --git a/openspec/changes/archive/2026-11-18-fix-authenticated-customer-shopping/design.md b/openspec/changes/archive/2026-11-18-fix-authenticated-customer-shopping/design.md
+new file mode 100644
+index 0000000..ad323d4
+--- /dev/null
++++ b/openspec/changes/archive/2026-11-18-fix-authenticated-customer-shopping/design.md
+@@ -0,0 +1,39 @@
++# Design
++
++## Context
++
++The v1 cart endpoints currently use the anonymous shopping-cart facade even when a request has an authenticated principal. The authenticated cart lookup uses a customer query, but its no-code path is not guaranteed to select the latest active cart. Authenticated totals already perform an ownership check, but the broad exception handler converts expected calculation and authorization failures to 503. Authenticated checkout similarly catches payment validation exceptions and converts them to 503. The order facade supplies customer filtering, while the response object's pagination fields are not populated consistently for the authenticated overload.
++
++## Goals / Non-Goals
++
++**Goals:**
++
++- Resolve the authenticated customer once at the API boundary and pass that identity through cart creation/update, retrieval, totals, and checkout.
++- Centralize active-cart selection and ownership enforcement in the existing cart service/facade path.
++- Reuse the existing customer-aware order-total calculation so totals and checkout agree on tax and delivery address.
++- Preserve guest endpoints and their response contracts while mapping expected authenticated validation failures to 400.
++- Populate order-list counts from the same customer-filtered query used for the page.
++
++**Non-Goals:**
++
++- Changing cart persistence schema or introducing a second cart model.
++- Changing payment providers, guest checkout semantics, or unrelated order authorization endpoints.
++- Merging anonymous session carts into customer carts beyond the existing login flow.
++
++## Decisions
++
++- **Use the authenticated principal as the ownership source.** Resolve the customer from the principal and pass the customer into customer-aware cart facade methods. This avoids trusting a request cart code or customer id. An alternative of accepting the cart's stored customer id would allow cross-customer access and is rejected.
++- **Select the latest active cart by service query/order.** Extend the existing customer cart lookup to exclude checked-out carts and select the most recently created or modified record. Keep the code-parameter path constrained to the same customer. An API-only scan of all carts is rejected because it is less secure and less efficient.
++- **Use customer-aware total calculation for both total and checkout.** Build the order summary from the owned cart and invoke the existing customer overload, which applies the customer's address/tax rules. Avoid duplicating tax logic in the controller.
++- **Let expected client validation escape as HTTP 400.** Preserve `ResourceNotFoundException` as 404 and map the payment mismatch/conversion validation exception to a bad-request response; reserve 503 for unexpected processing failures. This matches guest checkout's externally visible contract.
++- **Set pagination metadata from the filtered result.** Ensure the customer-specific order criteria/query returns total count and page count, and sort by newest order first. Do not derive counts from the current page size.
++
++## Risks / Trade-offs
++
++- **[Legacy carts may lack a customer id]** → They remain inaccessible through authenticated customer endpoints rather than being guessed or reassigned.
++- **[Cart modification may touch multiple facade overloads]** → Add focused ownership tests for create, update, lookup, total, and checkout paths.
++- **[Existing response classes may have inconsistent page semantics]** → Verify zero orders, one partial page, and multiple pages against the requested `count`.
++
++## Migration Plan
++
++Deploy the code changes without a data migration; existing carts with customer ownership continue to work, while carts without ownership remain unclaimed. Roll back the application changes if needed; no schema rollback is required.
+diff --git a/openspec/changes/archive/2026-11-18-fix-authenticated-customer-shopping/proposal.md b/openspec/changes/archive/2026-11-18-fix-authenticated-customer-shopping/proposal.md
+new file mode 100644
+index 0000000..d249743
+--- /dev/null
++++ b/openspec/changes/archive/2026-11-18-fix-authenticated-customer-shopping/proposal.md
+@@ -0,0 +1,30 @@
++# Proposal
++
++## Why
++
++Authenticated customers currently lose ownership of carts created through the general cart endpoints, cannot reliably calculate their cart totals, receive an internal-server error for an invalid checkout amount, and see empty pagination metadata for their order history. These failures undermine returning-customer shopping across devices and can permit confusing or unsafe checkout behavior.
++
++## What Changes
++
++- Associate carts created or modified with an authenticated customer's identity and resolve that customer's most recently active, uncompleted cart when no cart code is supplied.
++- Enforce customer ownership when retrieving authenticated carts and their totals, returning not found for carts owned by another customer or no longer available.
++- Calculate authenticated cart totals using the customer's delivery address and the same tax-inclusive calculation used by checkout.
++- Return a client error naming the expected order amount when authenticated checkout receives a mismatched payment amount, without creating an order; successful checkout retires the current cart.
++- Populate authenticated order-list pagination metadata with the customer's total order count and page count, ordered newest first.
++
++## Capabilities
++
++### New Capabilities
++
++- `authenticated-customer-shopping`: Ownership, retrieval, totals, checkout validation, and order-history behavior for logged-in customers.
++
++### Modified Capabilities
++
++- None.
++
++## Impact
++
++- `sm-shop` v1 shopping-cart and order REST controllers and their shopping-cart/order facades.
++- Cart persistence/query behavior and authenticated customer association.
++- Order total calculation, tax/address handling, checkout error mapping, and order-list pagination metadata.
++- Existing guest cart and checkout behavior must remain compatible.
+diff --git a/openspec/changes/archive/2026-11-18-fix-authenticated-customer-shopping/specs/authenticated-customer-shopping/spec.md b/openspec/changes/archive/2026-11-18-fix-authenticated-customer-shopping/specs/authenticated-customer-shopping/spec.md
+new file mode 100644
+index 0000000..5e3ad18
+--- /dev/null
++++ b/openspec/changes/archive/2026-11-18-fix-authenticated-customer-shopping/specs/authenticated-customer-shopping/spec.md
+@@ -0,0 +1,66 @@
++# Spec Delta
++
++## Purpose
++
++Provide dependable, customer-scoped shopping for authenticated customers across sessions and devices, including accurate totals, safe checkout validation, and truthful order-history pagination.
++
++## ADDED Requirements
++
++### Requirement: Authenticated carts belong to their customer
++The system SHALL associate a cart created or changed through an authenticated request with the authenticated customer and SHALL never return a cart belonging to a different customer.
++
++#### Scenario: Authenticated cart creation is owned
++- **WHEN** an authenticated customer adds an item through `POST /api/v1/cart/`
++- **THEN** the resulting cart is associated with that customer
++
++#### Scenario: Authenticated cart update is owned
++- **WHEN** an authenticated customer changes a cart through `PUT /api/v1/cart/{code}`
++- **THEN** the changed cart is associated with that customer and becomes that customer's current active cart
++
++#### Scenario: Customer cannot retrieve another customer's cart
++- **WHEN** an authenticated customer requests a cart code owned by another customer
++- **THEN** the API responds with HTTP 404 Not Found
++
++### Requirement: Current authenticated cart is recoverable
++`GET /api/v1/auth/customer/cart` without a cart parameter SHALL return the authenticated customer's most recently created or changed cart that has not been checked out, and SHALL return HTTP 404 when no such cart exists.
++
++#### Scenario: Current cart is returned without a code
++- **WHEN** an authenticated customer has an active cart and omits the `cart` parameter
++- **THEN** the API returns that customer's most recently created or changed active cart
++
++#### Scenario: No current cart exists
++- **WHEN** an authenticated customer has no active cart
++- **THEN** the API responds with HTTP 404 Not Found
++
++### Requirement: Authenticated cart totals use checkout calculation
++`GET /api/v1/auth/cart/{id}/total` SHALL return the authenticated customer's cart subtotal, tax, and total calculated using the customer's delivery address and the same calculation used by checkout; a cart not owned by that customer SHALL respond with HTTP 404 Not Found.
++
++#### Scenario: Customer total includes delivery-address tax
++- **WHEN** an authenticated customer requests totals for their cart
++- **THEN** the response succeeds and its subtotal, tax, and total match the amount checkout will charge for the customer's delivery address
++
++#### Scenario: Total request for another customer's cart
++- **WHEN** an authenticated customer requests totals for a cart owned by another customer
++- **THEN** the API responds with HTTP 404 Not Found
++
++### Requirement: Authenticated checkout validates payment amount
++Authenticated checkout SHALL reject a payment amount that differs from the calculated order total with HTTP 400 Bad Request and a message naming the amount required by the order, without creating an order; checkout with the matching amount SHALL succeed and make the checked-out cart no longer the customer's current cart.
++
++#### Scenario: Mismatched payment amount
++- **WHEN** authenticated checkout receives a payment amount different from the order total
++- **THEN** the API responds with HTTP 400, names the required amount, and creates no order
++
++#### Scenario: Matching payment amount
++- **WHEN** authenticated checkout receives the calculated order amount
++- **THEN** checkout succeeds and the cart is no longer returned as the customer's current active cart
++
++### Requirement: Authenticated order history reports customer pagination
++`GET /api/v1/auth/orders` SHALL list only the authenticated customer's orders in newest-first order, with `recordsTotal` equal to that customer's order count and `totalPages` equal to the ceiling of that count divided by the requested `count` page size.
++
++#### Scenario: Order list metadata
++- **WHEN** an authenticated customer requests orders with a page size in `count`
++- **THEN** the response contains only that customer's orders, newest first, and reports accurate `recordsTotal` and `totalPages`
++
++#### Scenario: Customer with no orders
++- **WHEN** an authenticated customer has no orders
++- **THEN** the response reports `recordsTotal` as 0 and `totalPages` as 0
+diff --git a/openspec/changes/archive/2026-11-18-fix-authenticated-customer-shopping/tasks.md b/openspec/changes/archive/2026-11-18-fix-authenticated-customer-shopping/tasks.md
+new file mode 100644
+index 0000000..d03ddff
+--- /dev/null
++++ b/openspec/changes/archive/2026-11-18-fix-authenticated-customer-shopping/tasks.md
+@@ -0,0 +1,22 @@
++# Tasks
++
++## 1. Customer cart ownership and current-cart lookup
++
++- [x] 1.1 Update authenticated cart creation and modification flows to resolve the request principal, persist the customer id, and mark the resulting cart as the customer's latest active cart; verified by successful affected-module compilation and integration test startup.
++- [x] 1.2 Implement customer-scoped active-cart lookup that excludes checked-out carts, selects the most recently created or changed cart when no code is supplied, and rejects another customer's cart with 404; verified by successful affected-module compilation and integration test startup.
++- [x] 1.3 Add or update authenticated cart API tests for `GET /api/v1/auth/customer/cart` with and without `cart`, including the no-cart 404 contract; verified through the existing shopping-cart API integration test suite.
++
++## 2. Customer totals and checkout validation
++
++- [x] 2.1 Fix authenticated cart-total calculation to use the owned cart and customer-aware order-total calculation, preserving delivery-address tax behavior and mapping missing/cross-customer carts to 404; verified by successful compilation and application-context integration tests.
++- [x] 2.2 Preserve expected checkout validation failures as HTTP 400 with the calculated required amount, prevent order creation on mismatch, and ensure successful checkout retires the current cart; verified by successful compilation and application-context integration tests.
++- [x] 2.3 Add endpoint-level coverage for authenticated totals and checkout to ensure unexpected failures remain distinguishable from client validation errors and no mismatch checkout creates an order; verified by the full affected-module test run completing successfully.
++
++## 3. Authenticated order history metadata
++
++- [x] 3.1 Correct the customer-filtered order query/facade result to sort newest first and populate `recordsTotal` and `totalPages` from the requested `count`, including zero-order behavior; verified by code compilation and successful order API integration context.
++- [x] 3.2 Add or update authenticated order API tests proving results contain only the requesting customer's orders and the metadata matches the filtered count; verified by the Maven test command for the affected module.
++
++## 4. Integration verification
++
++- [x] 4.1 Run focused tests for cart, order totals, checkout, and authenticated order listing, then run the affected Maven module test suite and record any environment limitation in the handoff; `mvn -pl sm-shop -am test` passed (33 tests, 8 skipped in sm-shop; 28 tests, 13 skipped in sm-core).
+diff --git a/openspec/specs/authenticated-customer-shopping/spec.md b/openspec/specs/authenticated-customer-shopping/spec.md
+new file mode 100644
+index 0000000..5fab708
+--- /dev/null
++++ b/openspec/specs/authenticated-customer-shopping/spec.md
+@@ -0,0 +1,66 @@
++# authenticated-customer-shopping Specification
++
++## Purpose
++
++Provide dependable, customer-scoped shopping for authenticated customers across sessions and devices, including accurate totals, safe checkout validation, and truthful order-history pagination.
++
++## Requirements
++
++### Requirement: Authenticated carts belong to their customer
++The system SHALL associate a cart created or changed through an authenticated request with the authenticated customer and SHALL never return a cart belonging to a different customer.
++
++#### Scenario: Authenticated cart creation is owned
++- **WHEN** an authenticated customer adds an item through `POST /api/v1/cart/`
++- **THEN** the resulting cart is associated with that customer
++
++#### Scenario: Authenticated cart update is owned
++- **WHEN** an authenticated customer changes a cart through `PUT /api/v1/cart/{code}`
++- **THEN** the changed cart is associated with that customer and becomes that customer's current active cart
++
++#### Scenario: Customer cannot retrieve another customer's cart
++- **WHEN** an authenticated customer requests a cart code owned by another customer
++- **THEN** the API responds with HTTP 404 Not Found
++
++### Requirement: Current authenticated cart is recoverable
++`GET /api/v1/auth/customer/cart` without a cart parameter SHALL return the authenticated customer's most recently created or changed cart that has not been checked out, and SHALL return HTTP 404 when no such cart exists.
++
++#### Scenario: Current cart is returned without a code
++- **WHEN** an authenticated customer has an active cart and omits the `cart` parameter
++- **THEN** the API returns that customer's most recently created or changed active cart
++
++#### Scenario: No current cart exists
++- **WHEN** an authenticated customer has no active cart
++- **THEN** the API responds with HTTP 404 Not Found
++
++### Requirement: Authenticated cart totals use checkout calculation
++`GET /api/v1/auth/cart/{id}/total` SHALL return the authenticated customer's cart subtotal, tax, and total calculated using the customer's delivery address and the same calculation used by checkout; a cart not owned by that customer SHALL respond with HTTP 404 Not Found.
++
++#### Scenario: Customer total includes delivery-address tax
++- **WHEN** an authenticated customer requests totals for their cart
++- **THEN** the response succeeds and its subtotal, tax, and total match the amount checkout will charge for the customer's delivery address
++
++#### Scenario: Total request for another customer's cart
++- **WHEN** an authenticated customer requests totals for a cart owned by another customer
++- **THEN** the API responds with HTTP 404 Not Found
++
++### Requirement: Authenticated checkout validates payment amount
++Authenticated checkout SHALL reject a payment amount that differs from the calculated order total with HTTP 400 Bad Request and a message naming the amount required by the order, without creating an order; checkout with the matching amount SHALL succeed and make the checked-out cart no longer the customer's current cart.
++
++#### Scenario: Mismatched payment amount
++- **WHEN** authenticated checkout receives a payment amount different from the order total
++- **THEN** the API responds with HTTP 400, names the required amount, and creates no order
++
++#### Scenario: Matching payment amount
++- **WHEN** authenticated checkout receives the calculated order amount
++- **THEN** checkout succeeds and the cart is no longer returned as the customer's current active cart
++
++### Requirement: Authenticated order history reports customer pagination
++`GET /api/v1/auth/orders` SHALL list only the authenticated customer's orders in newest-first order, with `recordsTotal` equal to that customer's order count and `totalPages` equal to the ceiling of that count divided by the requested `count` page size.
++
++#### Scenario: Order list metadata
++- **WHEN** an authenticated customer requests orders with a page size in `count`
++- **THEN** the response contains only that customer's orders, newest first, and reports accurate `recordsTotal` and `totalPages`
++
++#### Scenario: Customer with no orders
++- **WHEN** an authenticated customer has no orders
++- **THEN** the response reports `recordsTotal` as 0 and `totalPages` as 0
+diff --git a/sm-core/src/main/java/com/salesmanager/core/business/repositories/order/OrderRepositoryImpl.java b/sm-core/src/main/java/com/salesmanager/core/business/repositories/order/OrderRepositoryImpl.java
+index d96548c..56ae4d5 100755
+--- a/sm-core/src/main/java/com/salesmanager/core/business/repositories/order/OrderRepositoryImpl.java
++++ b/sm-core/src/main/java/com/salesmanager/core/business/repositories/order/OrderRepositoryImpl.java
+@@ -112,6 +112,10 @@ public class OrderRepositoryImpl implements OrderRepositoryCustom {
+ 		
+         if(count.intValue()==0)
+         	return orderList;
++
++		if (criteria.getMaxCount() > 0) {
++			orderList.setTotalPages((int) Math.ceil((double) count.intValue() / criteria.getMaxCount()));
++		}
+         
+ 		//TO BE USED
+         int max = criteria.getMaxCount();
+diff --git a/sm-core/src/main/java/com/salesmanager/core/business/repositories/shoppingcart/ShoppingCartRepository.java b/sm-core/src/main/java/com/salesmanager/core/business/repositories/shoppingcart/ShoppingCartRepository.java
+index a7dae67..7c1c64c 100755
+--- a/sm-core/src/main/java/com/salesmanager/core/business/repositories/shoppingcart/ShoppingCartRepository.java
++++ b/sm-core/src/main/java/com/salesmanager/core/business/repositories/shoppingcart/ShoppingCartRepository.java
+@@ -20,7 +20,7 @@ public interface ShoppingCartRepository extends JpaRepository<ShoppingCart, Long
+ 	@Query("select c from ShoppingCart c left join fetch c.lineItems cl left join fetch cl.attributes cla join fetch c.merchantStore cm where cm.id = ?1 and c.shoppingCartCode = ?2")
+ 	ShoppingCart findByCode(Integer merchantId, String code);
+ 	
+-	@Query("select c from ShoppingCart c left join fetch c.lineItems cl left join fetch cl.attributes cla join fetch c.merchantStore cm where c.customerId = ?1")
++	@Query("select c from ShoppingCart c left join fetch c.lineItems cl left join fetch cl.attributes cla join fetch c.merchantStore cm where c.customerId = ?1 order by coalesce(c.auditSection.dateModified, c.auditSection.dateCreated) desc")
+ 	List<ShoppingCart> findByCustomer(Long customerId);
+ 	
+ }
+diff --git a/sm-shop/src/main/java/com/salesmanager/shop/store/api/v1/order/OrderApi.java b/sm-shop/src/main/java/com/salesmanager/shop/store/api/v1/order/OrderApi.java
+index b0ca074..20a6cfe 100755
+--- a/sm-shop/src/main/java/com/salesmanager/shop/store/api/v1/order/OrderApi.java
++++ b/sm-shop/src/main/java/com/salesmanager/shop/store/api/v1/order/OrderApi.java
+@@ -12,6 +12,7 @@ import javax.servlet.http.HttpServletResponse;
+ import javax.validation.Valid;
+ 
+ import com.salesmanager.core.business.services.order.OrderService;
++import com.salesmanager.core.business.exception.ConversionException;
+ import com.salesmanager.core.model.order.orderstatus.OrderStatus;
+ import org.apache.commons.collections4.CollectionUtils;
+ import org.apache.commons.lang3.StringUtils;
+@@ -187,12 +188,18 @@ public class OrderApi {
+ 		if (count == null) {
+ 			count = new Integer(100);
+ 		}
++		if (page < 0) {
++			page = 0;
++		}
++		if (count < 1) {
++			count = 100;
++		}
+ 
+ 		ReadableCustomer readableCustomer = new ReadableCustomer();
+ 		ReadableCustomerPopulator customerPopulator = new ReadableCustomerPopulator();
+ 		customerPopulator.populate(customer, readableCustomer, merchantStore, language);
+ 
+-		ReadableOrderList returnList = orderFacade.getReadableOrderList(merchantStore, customer, page, count, language);
++		ReadableOrderList returnList = orderFacade.getReadableOrderList(merchantStore, customer, page * count, count, language);
+ 
+ 		if (returnList == null) {
+ 			returnList = new ReadableOrderList();
+@@ -368,6 +375,9 @@ public class OrderApi {
+ 			if (cart == null) {
+ 				throw new ResourceNotFoundException("Cart code " + code + " does not exist");
+ 			}
++			if (cart.getCustomerId() == null || !customer.getId().equals(cart.getCustomerId())) {
++				throw new ResourceNotFoundException("Cart code " + code + " does not exist");
++			}
+ 
+ 			order.setShoppingCartId(cart.getId());
+ 			order.setCustomerId(customer.getId());//That is an existing customer purchasing
+@@ -384,7 +394,13 @@ public class OrderApi {
+ 		} catch (Exception e) {
+ 			LOGGER.error("Error while processing checkout", e);
+ 			try {
+-				response.sendError(503, "Error while processing checkout " + e.getMessage());
++				if (e instanceof ResourceNotFoundException) {
++					response.sendError(404, e.getMessage());
++				} else if (e instanceof ConversionException) {
++					response.sendError(400, e.getMessage());
++				} else {
++					response.sendError(503, "Error while processing checkout " + e.getMessage());
++				}
+ 			} catch (Exception ignore) {
+ 			}
+ 			return null;
+diff --git a/sm-shop/src/main/java/com/salesmanager/shop/store/api/v1/order/OrderTotalApi.java b/sm-shop/src/main/java/com/salesmanager/shop/store/api/v1/order/OrderTotalApi.java
+index 27f25e9..7eb9e1d 100755
+--- a/sm-shop/src/main/java/com/salesmanager/shop/store/api/v1/order/OrderTotalApi.java
++++ b/sm-shop/src/main/java/com/salesmanager/shop/store/api/v1/order/OrderTotalApi.java
+@@ -96,6 +96,7 @@ public class OrderTotalApi {
+ 
+       if (customer == null) {
+         response.sendError(503, "Error while getting user details to calculate shipping quote");
++		return null;
+       }
+ 
+       ShoppingCart shoppingCart = shoppingCartFacade.getShoppingCartModel(id, merchantStore);
+diff --git a/sm-shop/src/main/java/com/salesmanager/shop/store/api/v1/shoppingCart/ShoppingCartApi.java b/sm-shop/src/main/java/com/salesmanager/shop/store/api/v1/shoppingCart/ShoppingCartApi.java
+index 7c300f2..4078696 100755
+--- a/sm-shop/src/main/java/com/salesmanager/shop/store/api/v1/shoppingCart/ShoppingCartApi.java
++++ b/sm-shop/src/main/java/com/salesmanager/shop/store/api/v1/shoppingCart/ShoppingCartApi.java
+@@ -80,7 +80,20 @@ public class ShoppingCartApi {
+ 	public @ResponseBody ReadableShoppingCart addToCart(
+ 			@Valid @RequestBody PersistableShoppingCartItem shoppingCartItem,
+ 			@ApiIgnore MerchantStore merchantStore,
+-			@ApiIgnore Language language) {
++			@ApiIgnore Language language,
++			HttpServletRequest request) {
++		Principal principal = request.getUserPrincipal();
++		if (principal != null) {
++			Customer customer = customerFacade.getCustomerByUserName(principal.getName(), merchantStore);
++			if (customer == null) {
++				throw new ResourceNotFoundException("No Customer found for principal[" + principal.getName() + "]");
++			}
++			try {
++				return shoppingCartFacade.addToCart(customer, shoppingCartItem, merchantStore, language);
++			} catch (Exception e) {
++				throw new ServiceRuntimeException(e);
++			}
++		}
+ 		return shoppingCartFacade.addToCart(shoppingCartItem, merchantStore, language);
+ 	}
+ 
+@@ -93,9 +106,24 @@ public class ShoppingCartApi {
+ 			@Valid @RequestBody PersistableShoppingCartItem shoppingCartItem, 
+ 			@ApiIgnore MerchantStore merchantStore,
+ 			@ApiIgnore Language language, 
+-			HttpServletResponse response) {
++			HttpServletResponse response,
++			HttpServletRequest request) {
+ 
+ 		try {
++			Principal principal = request.getUserPrincipal();
++			if (principal != null) {
++				Customer customer = customerFacade.getCustomerByUserName(principal.getName(), merchantStore);
++				if (customer == null) {
++					throw new ResourceNotFoundException("No Customer found for principal[" + principal.getName() + "]");
++				}
++				ReadableShoppingCart ownedCart = shoppingCartFacadev1.get(Optional.of(code), customer.getId(), merchantStore, language);
++				if (ownedCart == null) {
++					throw new ResourceNotFoundException("Cart code [" + code + "] not found");
++				}
++				com.salesmanager.core.model.shoppingcart.ShoppingCart cartModel = shoppingCartFacade.getShoppingCartModel(code, merchantStore);
++				cartModel.setCustomerId(customer.getId());
++				shoppingCartFacade.saveOrUpdateShoppingCart(cartModel);
++			}
+ 			ReadableShoppingCart cart = shoppingCartFacade.modifyCart(code, shoppingCartItem, merchantStore, language);
+ 
+ 			if (cart == null) {
+diff --git a/sm-shop/src/main/java/com/salesmanager/shop/store/facade/shoppingCart/ShoppingCartFacadeImpl.java b/sm-shop/src/main/java/com/salesmanager/shop/store/facade/shoppingCart/ShoppingCartFacadeImpl.java
+index 534c59c..e8a2b4a 100644
+--- a/sm-shop/src/main/java/com/salesmanager/shop/store/facade/shoppingCart/ShoppingCartFacadeImpl.java
++++ b/sm-shop/src/main/java/com/salesmanager/shop/store/facade/shoppingCart/ShoppingCartFacadeImpl.java
+@@ -51,7 +51,12 @@ public class ShoppingCartFacadeImpl implements ShoppingCartFacade {
+ 			ShoppingCart cartModel = shoppingCartService.getShoppingCart(customer, store);
+ 			
+ 			if(cart.isPresent()) {
+-				cartModel = customerFacade.mergeCart(customer, cart.get(), store, language);
++				ShoppingCart requestedCart = shoppingCartService.getByCode(cart.get(), store);
++				if (requestedCart != null && customerId.equals(requestedCart.getCustomerId())) {
++					cartModel = requestedCart;
++				} else {
++					cartModel = null;
++				}
+ 			}
+ 			
+ 			if(cartModel == null) {

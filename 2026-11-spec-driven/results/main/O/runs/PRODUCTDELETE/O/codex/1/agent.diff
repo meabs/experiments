@@ -1,0 +1,332 @@
+diff --git a/openspec/changes/archive/2026-11-18-product-delete-safety/.openspec.yaml b/openspec/changes/archive/2026-11-18-product-delete-safety/.openspec.yaml
+new file mode 100644
+index 0000000..c78e759
+--- /dev/null
++++ b/openspec/changes/archive/2026-11-18-product-delete-safety/.openspec.yaml
+@@ -0,0 +1,4 @@
++schema: spec-driven
++created: 2026-11-18
++goal: Deleting discontinued products must not break carts, orders, checkout, or
++  product lookup semantics.
+diff --git a/openspec/changes/archive/2026-11-18-product-delete-safety/README.md b/openspec/changes/archive/2026-11-18-product-delete-safety/README.md
+new file mode 100644
+index 0000000..41b326d
+--- /dev/null
++++ b/openspec/changes/archive/2026-11-18-product-delete-safety/README.md
+@@ -0,0 +1,3 @@
++# product-delete-safety
++
++Preserve cart and order behavior when products are deleted
+diff --git a/openspec/changes/archive/2026-11-18-product-delete-safety/design.md b/openspec/changes/archive/2026-11-18-product-delete-safety/design.md
+new file mode 100644
+index 0000000..703ff80
+--- /dev/null
++++ b/openspec/changes/archive/2026-11-18-product-delete-safety/design.md
+@@ -0,0 +1,21 @@
++# Design
++
++## Approach
++
++Trace product deletion through the core entity relationships and remove hard dependencies from cart and order read paths. Cart persistence can continue to identify a line by product id, but cart hydration/recalculation must tolerate a missing product and discard that line before exposing or checking out the cart. Product resolution used by add-to-cart and v2 lookup must distinguish a missing/deleted record and surface the existing not-found API response.
++
++Order lines need to be historical snapshots rather than requiring a live product join. Populate the order-line snapshot fields at order creation, make the entity/read mappers use those fields when the product association is absent, and ensure deletion mappings do not cascade into order lines or their totals. Verify all four order read routes and status mutation with integration tests, plus cart update/multi-update and checkout paths.
++
++## Affected Areas
++
++- Core product, shopping-cart, order, and persistence mappings/services.
++- Shop cart, product, checkout, and order facades/controllers and DTO conversion.
++- Existing integration-test support and API tests.
++
++## Compatibility and Data
++
++Use nullable/optional product associations for legacy and newly deleted rows while retaining existing serialized order values. Do not recalculate persisted order totals from current catalog data. Existing non-deleted product behavior and unrelated product rows must remain unchanged.
++
++## Verification
++
++Run focused module tests first, then the repository Maven test/build command available in the checkout. Add regression tests at the service/API boundary so a deleted product is created, used in a cart/order, deleted, and then exercised through each required endpoint.
+diff --git a/openspec/changes/archive/2026-11-18-product-delete-safety/proposal.md b/openspec/changes/archive/2026-11-18-product-delete-safety/proposal.md
+new file mode 100644
+index 0000000..d485fd8
+--- /dev/null
++++ b/openspec/changes/archive/2026-11-18-product-delete-safety/proposal.md
+@@ -0,0 +1,27 @@
++# Proposal
++
++## Why
++
++Product deletion currently removes data that carts and orders still need to render and process. This makes historical orders unreadable and can prevent carts from being opened or checked out, so deletion of a discontinued product must be isolated from those historical and in-progress records.
++
++## What Changes
++
++- Make persisted cart lines resilient to a deleted product: omit unavailable lines when carts are read or recalculated, recompute quantities and totals from remaining lines, and permit subsequent cart updates and checkout.
++- Reject adding a deleted product with HTTP 404 while preserving normal behavior for all other products.
++- Preserve order-line snapshots (SKU, name, quantity, price, subtotal) independently of the product row so all merchant and customer order endpoints, totals, and status updates continue to work after deletion.
++- Return HTTP 404 from the v2 public product lookup for a deleted SKU without changing other product lookups.
++- Add regression coverage for deletion, cart recovery, checkout, order reads/status updates, and unrelated-product isolation.
++
++## Capabilities
++
++### New Capabilities
++
++- `deleted-product-safety`: Carts and order history remain usable and accurate after a product is deleted, while new access to the deleted product is rejected.
++
++### Modified Capabilities
++
++- None.
++
++## Impact
++
++The product deletion flow, shopping-cart services/facades and API controllers, checkout/order creation and read mapping, v2 product lookup, persistence mappings, and integration/unit tests are affected. Existing order totals and historical line values must remain unchanged.
+diff --git a/openspec/changes/archive/2026-11-18-product-delete-safety/specs/deleted-product-safety/spec.md b/openspec/changes/archive/2026-11-18-product-delete-safety/specs/deleted-product-safety/spec.md
+new file mode 100644
+index 0000000..c1a2405
+--- /dev/null
++++ b/openspec/changes/archive/2026-11-18-product-delete-safety/specs/deleted-product-safety/spec.md
+@@ -0,0 +1,54 @@
++# Deleted Product Safety Specification
++
++## Purpose
++
++Define the behavior that keeps active carts and historical orders usable after a merchant deletes a product, while making the deleted product unavailable for new cart additions and public lookup.
++
++## ADDED Requirements
++
++### Requirement: Deleted products are unavailable for new product use
++
++When a product has been deleted, adding it to a cart and looking it up through `GET /api/v2/product/{sku}` MUST return HTTP 404. Other products MUST remain available and unchanged.
++
++#### Scenario: Deleted product cannot be added
++
++- **WHEN** a client attempts to add a deleted product to a cart
++- **THEN** the API returns HTTP 404 and the cart does not gain a line for that product
++
++#### Scenario: Deleted product lookup is not found
++
++- **WHEN** a client requests the v2 product endpoint using a deleted product SKU
++- **THEN** the API returns HTTP 404
++
++### Requirement: Carts recover from deleted lines
++
++When a cart contains a product that is later deleted, cart reads and mutations MUST omit that line, calculate quantity and subtotal/total from remaining lines, and allow the cart to be changed and checked out. A cart with no remaining products MUST be returned successfully with no products and total 0, and checkout MUST never order or charge a deleted product.
++
++#### Scenario: Cart with remaining products is readable
++
++- **WHEN** a cart containing both retained and deleted products is requested
++- **THEN** the response contains only retained products and quantity, subtotal, and total reflect only those products
++
++#### Scenario: Cart containing only a deleted product is usable
++
++- **WHEN** a cart whose only line references a deleted product is requested
++- **THEN** the response is successful, has no products, and has total 0
++
++#### Scenario: Recovered cart can be changed and checked out
++
++- **WHEN** a client updates or multi-updates a recovered cart and checks it out
++- **THEN** each operation succeeds according to the remaining products and no deleted product is ordered or charged
++
++### Requirement: Orders retain product snapshots
++
++An order line MUST retain and expose the SKU, name, ordered quantity, price, and subtotal captured at purchase independently of the product record. After that product is deleted, private single/list order reads and authenticated single/list order reads MUST continue to succeed with the same line values and unchanged order totals, and order status updates MUST remain allowed.
++
++#### Scenario: Historical order remains readable
++
++- **WHEN** an order containing a subsequently deleted product is read through any merchant or customer order endpoint
++- **THEN** the response succeeds and shows the original SKU, name, quantity, price, subtotal, and order totals
++
++#### Scenario: Historical order status remains mutable
++
++- **WHEN** a merchant changes the status of an order containing a deleted product
++- **THEN** the status update succeeds
+diff --git a/openspec/changes/archive/2026-11-18-product-delete-safety/tasks.md b/openspec/changes/archive/2026-11-18-product-delete-safety/tasks.md
+new file mode 100644
+index 0000000..0b61848
+--- /dev/null
++++ b/openspec/changes/archive/2026-11-18-product-delete-safety/tasks.md
+@@ -0,0 +1,9 @@
++# Tasks
++
++- [x] Inspect product, cart, order, checkout, and v2 product lookup flows and identify every live-product dependency and existing test fixture.
++- [x] Update persistence/domain mappings and product deletion behavior so cart lines can be ignored and order lines retain immutable purchase snapshots without cascading deletion into orders.
++- [x] Update cart hydration, recalculation, mutation, add-item, and checkout flows to filter deleted products, return zero-valued empty carts, reject new additions with 404, and exclude deleted lines from orders/charges.
++- [x] Update order creation and all merchant/customer read mappers plus status mutation to work from order snapshots when the product is absent and preserve original totals.
++- [x] Ensure the v2 SKU lookup returns 404 only for the deleted product and does not affect other products.
++- [x] Add or update regression tests covering cart reads/updates/multi-updates/empty-cart checkout, deleted-product add and v2 lookup 404s, all required order read/status endpoints, and unrelated-product isolation.
++- [x] Run focused tests and the repository Maven verification, then review the diff for scope and compatibility.
+diff --git a/openspec/specs/deleted-product-safety/spec.md b/openspec/specs/deleted-product-safety/spec.md
+new file mode 100644
+index 0000000..9ff2c0c
+--- /dev/null
++++ b/openspec/specs/deleted-product-safety/spec.md
+@@ -0,0 +1,53 @@
++# deleted-product-safety Specification
++
++## Purpose
++Define the behavior that keeps active carts and historical orders usable after a merchant deletes a product, while making the deleted product unavailable for new cart additions and public lookup.
++
++## Requirements
++
++### Requirement: Deleted products are unavailable for new product use
++
++When a product has been deleted, adding it to a cart and looking it up through `GET /api/v2/product/{sku}` MUST return HTTP 404. Other products MUST remain available and unchanged.
++
++#### Scenario: Deleted product cannot be added
++
++- **WHEN** a client attempts to add a deleted product to a cart
++- **THEN** the API returns HTTP 404 and the cart does not gain a line for that product
++
++#### Scenario: Deleted product lookup is not found
++
++- **WHEN** a client requests the v2 product endpoint using a deleted product SKU
++- **THEN** the API returns HTTP 404
++
++### Requirement: Carts recover from deleted lines
++
++When a cart contains a product that is later deleted, cart reads and mutations MUST omit that line, calculate quantity and subtotal/total from remaining lines, and allow the cart to be changed and checked out. A cart with no remaining products MUST be returned successfully with no products and total 0, and checkout MUST never order or charge a deleted product.
++
++#### Scenario: Cart with remaining products is readable
++
++- **WHEN** a cart containing both retained and deleted products is requested
++- **THEN** the response contains only retained products and quantity, subtotal, and total reflect only those products
++
++#### Scenario: Cart containing only a deleted product is usable
++
++- **WHEN** a cart whose only line references a deleted product is requested
++- **THEN** the response is successful, has no products, and has total 0
++
++#### Scenario: Recovered cart can be changed and checked out
++
++- **WHEN** a client updates or multi-updates a recovered cart and checks it out
++- **THEN** each operation succeeds according to the remaining products and no deleted product is ordered or charged
++
++### Requirement: Orders retain product snapshots
++
++An order line MUST retain and expose the SKU, name, ordered quantity, price, and subtotal captured at purchase independently of the product record. After that product is deleted, private single/list order reads and authenticated single/list order reads MUST continue to succeed with the same line values and unchanged order totals, and order status updates MUST remain allowed.
++
++#### Scenario: Historical order remains readable
++
++- **WHEN** an order containing a subsequently deleted product is read through any merchant or customer order endpoint
++- **THEN** the response succeeds and shows the original SKU, name, quantity, price, subtotal, and order totals
++
++#### Scenario: Historical order status remains mutable
++
++- **WHEN** a merchant changes the status of an order containing a deleted product
++- **THEN** the status update succeeds
+diff --git a/sm-core-model/src/main/java/com/salesmanager/core/model/shoppingcart/ShoppingCartItem.java b/sm-core-model/src/main/java/com/salesmanager/core/model/shoppingcart/ShoppingCartItem.java
+index 7a30efc..9f0c445 100755
+--- a/sm-core-model/src/main/java/com/salesmanager/core/model/shoppingcart/ShoppingCartItem.java
++++ b/sm-core-model/src/main/java/com/salesmanager/core/model/shoppingcart/ShoppingCartItem.java
+@@ -57,7 +57,7 @@ public class ShoppingCartItem extends SalesManagerEntity<Long, ShoppingCartItem>
+ 	private AuditSection auditSection = new AuditSection();
+ 
+ 	@Deprecated //Use sku
+-	@Column(name="PRODUCT_ID", nullable=false) 
++	@Column(name="PRODUCT_ID", nullable=true)
+     private Long productId;
+ 	
+ 	//SKU
+diff --git a/sm-core/src/main/java/com/salesmanager/core/business/repositories/shoppingcart/ShoppingCartItemRepository.java b/sm-core/src/main/java/com/salesmanager/core/business/repositories/shoppingcart/ShoppingCartItemRepository.java
+index 057a1bd..4777f1f 100755
+--- a/sm-core/src/main/java/com/salesmanager/core/business/repositories/shoppingcart/ShoppingCartItemRepository.java
++++ b/sm-core/src/main/java/com/salesmanager/core/business/repositories/shoppingcart/ShoppingCartItemRepository.java
+@@ -3,8 +3,13 @@ package com.salesmanager.core.business.repositories.shoppingcart;
+ import org.springframework.data.jpa.repository.JpaRepository;
+ import org.springframework.data.jpa.repository.Modifying;
+ import org.springframework.data.jpa.repository.Query;
++import org.springframework.data.jpa.repository.Modifying;
+ import com.salesmanager.core.model.shoppingcart.ShoppingCartItem;
+ public interface ShoppingCartItemRepository extends JpaRepository<ShoppingCartItem, Long> {
++
++  @Modifying
++  @Query("update ShoppingCartItem i set i.productId = null where i.productId = ?1")
++  int detachProduct(Long productId);
+   
+   @Query("select i from ShoppingCartItem i left join fetch i.attributes ia where i.id = ?1")
+   ShoppingCartItem findOne(Long id);
+diff --git a/sm-core/src/main/java/com/salesmanager/core/business/services/catalog/product/ProductServiceImpl.java b/sm-core/src/main/java/com/salesmanager/core/business/services/catalog/product/ProductServiceImpl.java
+index 883ae07..725064f 100755
+--- a/sm-core/src/main/java/com/salesmanager/core/business/services/catalog/product/ProductServiceImpl.java
++++ b/sm-core/src/main/java/com/salesmanager/core/business/services/catalog/product/ProductServiceImpl.java
+@@ -20,9 +20,11 @@ import org.springframework.data.domain.Page;
+ import org.springframework.data.domain.PageImpl;
+ import org.springframework.data.domain.PageRequest;
+ import org.springframework.stereotype.Service;
++import org.springframework.transaction.annotation.Transactional;
+ 
+ import com.salesmanager.core.business.exception.ServiceException;
+ import com.salesmanager.core.business.repositories.catalog.product.ProductRepository;
++import com.salesmanager.core.business.repositories.shoppingcart.ShoppingCartItemRepository;
+ import com.salesmanager.core.business.services.catalog.category.CategoryService;
+ import com.salesmanager.core.business.services.catalog.product.attribute.ProductAttributeService;
+ import com.salesmanager.core.business.services.catalog.product.attribute.ProductOptionService;
+@@ -56,6 +58,9 @@ public class ProductServiceImpl extends SalesManagerEntityServiceImpl<Long, Prod
+ 
+ 	ProductRepository productRepository;
+ 
++	@Inject
++	ShoppingCartItemRepository shoppingCartItemRepository;
++
+ 	@Inject
+ 	CategoryService categoryService;
+ 
+@@ -212,11 +217,13 @@ public class ProductServiceImpl extends SalesManagerEntityServiceImpl<Long, Prod
+ 
+ 
+ 	@Override
++	@Transactional
+ 	public void delete(Product product) throws ServiceException {
+ 		Validate.notNull(product, "Product cannot be null");
+ 		Validate.notNull(product.getMerchantStore(), "MerchantStore cannot be null in product");
+ 		product = this.getById(product.getId());// Prevents detached entity
+-												// error
++														// error
++		shoppingCartItemRepository.detachProduct(product.getId());
+ 		product.setCategories(null);
+ 
+ 		Set<ProductImage> images = product.getImages();
+diff --git a/sm-core/src/main/java/com/salesmanager/core/business/services/shoppingcart/ShoppingCartServiceImpl.java b/sm-core/src/main/java/com/salesmanager/core/business/services/shoppingcart/ShoppingCartServiceImpl.java
+index e0d1ce8..6a4eff3 100755
+--- a/sm-core/src/main/java/com/salesmanager/core/business/services/shoppingcart/ShoppingCartServiceImpl.java
++++ b/sm-core/src/main/java/com/salesmanager/core/business/services/shoppingcart/ShoppingCartServiceImpl.java
+@@ -232,35 +232,32 @@ public class ShoppingCartServiceImpl extends SalesManagerEntityServiceImpl<Long,
+ 
+ 		try {
+ 
+-			boolean cartIsObsolete = false;
+ 			if (shoppingCart != null) {
+ 
+ 				Set<ShoppingCartItem> items = shoppingCart.getLineItems();
+ 				if (items == null || items.size() == 0) {
+-					shoppingCart.setObsolete(true);
++					shoppingCart.setObsolete(false);
+ 					return shoppingCart;
+ 
+ 				}
+ 
+ 				// Set<ShoppingCartItem> shoppingCartItems = new
+ 				// HashSet<ShoppingCartItem>();
++				Set<ShoppingCartItem> refreshedItems = new HashSet<>();
+ 				for (ShoppingCartItem item : items) {
+ 					LOGGER.debug("Populate item " + item.getId());
+ 					getPopulatedItem(item, store);
+ 					LOGGER.debug("Obsolete item ? " + item.isObsolete());
+-					if (item.isObsolete()) {
+-						cartIsObsolete = true;
++					if (!item.isObsolete()) {
++						refreshedItems.add(item);
++					} else {
++						shoppingCartItemRepository.delete(item);
+ 					}
+ 				}
+ 
+-				Set<ShoppingCartItem> refreshedItems = new HashSet<>(items);
+-
+ 				shoppingCart.setLineItems(refreshedItems);
+ 				update(shoppingCart);
+-
+-				if (cartIsObsolete) {
+-					shoppingCart.setObsolete(true);
+-				}
++				shoppingCart.setObsolete(false);
+ 				return shoppingCart;
+ 			}
+ 

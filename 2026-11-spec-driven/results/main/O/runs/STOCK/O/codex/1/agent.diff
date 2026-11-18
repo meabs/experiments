@@ -1,0 +1,719 @@
+diff --git a/openspec/changes/archive/2026-11-18-fix-stock-consistency/.openspec.yaml b/openspec/changes/archive/2026-11-18-fix-stock-consistency/.openspec.yaml
+new file mode 100644
+index 0000000..41484f3
+--- /dev/null
++++ b/openspec/changes/archive/2026-11-18-fix-stock-consistency/.openspec.yaml
+@@ -0,0 +1,2 @@
++schema: spec-driven
++created: 2026-11-18
+diff --git a/openspec/changes/archive/2026-11-18-fix-stock-consistency/design.md b/openspec/changes/archive/2026-11-18-fix-stock-consistency/design.md
+new file mode 100644
+index 0000000..9540fd9
+--- /dev/null
++++ b/openspec/changes/archive/2026-11-18-fix-stock-consistency/design.md
+@@ -0,0 +1,39 @@
++# Design
++
++## Context
++
++The current implementation spreads product quantity checks across `ShoppingCartFacadeImpl`, checkout/order orchestration, and product mapping. Product quantity is stored on the product entity and exposed through the v2 product response, while cart and order lines identify products independently. The change must make those identifiers the basis of every inventory mutation and preserve all-or-nothing behavior at the service transaction boundary.
++
++## Goals / Non-Goals
++
++**Goals:**
++
++- Centralize stock validation and mutation so every endpoint uses the same matching product and quantity semantics.
++- Make cart mutations and checkout atomic, including multi-item operations.
++- Make cancellation idempotent and prevent invalid transitions from canceled orders.
++- Keep merchant-controlled availability distinct from stock-derived availability.
++- Add endpoint/service regression tests covering success and conflict cases.
++
++**Non-Goals:**
++
++- Redesign product variants or introduce reservations, backorders, or new persistence tables.
++- Change pricing, payment, shipping, or unrelated order status semantics.
++
++## Decisions
++
++- **Use the product entity quantity as the inventory source.** This is the quantity already surfaced by the v2 product endpoint, so cart, checkout, cancellation, and presentation cannot drift between separate inventory records. An independent inventory ledger would require migration and reconciliation outside this ticket.
++- **Validate all lines before writing any line.** Cart multi-update and checkout first resolve every product and compare requested quantities, then apply mutations in one transaction. This avoids partial updates when a later line fails; per-line best-effort updates are explicitly unsuitable.
++- **Match mutations by the cart/order line's product identity.** Each decrement and restoration resolves the line's product rather than relying on list position or a shared mutable object, preventing another product from being modified.
++- **Treat cancellation as a state transition with an idempotency guard.** Only a non-canceled to CANCELED transition restores inventory; a repeated CANCELED request does not. A canceled order is terminal for this API.
++- **Compute response purchase flags from merchant availability and quantity.** Merchant unavailability remains authoritative; otherwise zero quantity makes both flags false and positive quantity permits purchase. This keeps the API truthful without altering merchant settings.
++- **Translate stock conflicts at the REST boundary to HTTP 409.** Domain/service code can use the existing exception conventions, while both anonymous and authenticated controllers expose the same conflict contract.
++
++## Risks / Trade-offs
++
++- [Concurrent carts can race between validation and decrement] → Perform validation and mutation in a transaction with appropriate product row locking or atomic conditional updates, and surface a conflict when the conditional update affects fewer rows than requested.
++- [Existing tests may encode permissive cart behavior] → Update those expectations and add focused tests for unchanged state after conflicts.
++- [Legacy orders may have already been canceled without an inventory marker] → Base idempotency on the persisted prior status and document that only transitions handled by this logic restore stock.
++
++## Migration Plan
++
++Deploy the service and API changes together. No schema migration is required if order status and product quantity persistence already exist. Roll back by reverting the application release; inventory values changed by a successful checkout or cancellation are business data and require normal operational reconciliation if a rollback follows a partial deployment.
+diff --git a/openspec/changes/archive/2026-11-18-fix-stock-consistency/proposal.md b/openspec/changes/archive/2026-11-18-fix-stock-consistency/proposal.md
+new file mode 100644
+index 0000000..b246bda
+--- /dev/null
++++ b/openspec/changes/archive/2026-11-18-fix-stock-consistency/proposal.md
+@@ -0,0 +1,28 @@
++# Proposal
++
++## Why
++
++Product inventory is not being treated as the authoritative quantity throughout cart, checkout, order cancellation, and product presentation. This causes incorrect stock decrements, overselling, unrecoverable stock on cancellation, and availability flags that disagree with the quantity shown to shoppers.
++
++## What Changes
++
++- Make the product quantity returned by the product API the single stock value used by cart, checkout, and order status transitions.
++- Validate every cart creation and quantity update against current stock, with atomic multi-item updates and HTTP 409 Conflict on insufficient stock.
++- Atomically validate and decrement each product ordered during both authenticated and anonymous checkout; refuse the complete checkout when any line cannot be fulfilled.
++- Restore ordered quantities exactly once when an order is canceled, and reject any later status transition away from CANCELED.
++- Derive shopper-facing `available` and `canBePurchased` from stock while preserving a merchant's explicit unavailable setting.
++- Add regression coverage for per-product decrements, atomic failures, cart limits, cancellation idempotency, status transitions, and product flags.
++
++## Capabilities
++
++### New Capabilities
++
++- `stock-management`: Enforces product stock across cart operations, checkout, cancellation, and product availability.
++
++### Modified Capabilities
++
++<!-- No existing capability specs are present in this checkout. -->
++
++## Impact
++
++Affected Java code includes the shopping-cart facade and v1 cart APIs, checkout/order facades and APIs, order status handling, product quantity/availability mapping, and the corresponding model/repository/service tests. The public REST behavior adds HTTP 409 responses for stock conflicts and status conflicts; no new external dependency is required.
+diff --git a/openspec/changes/archive/2026-11-18-fix-stock-consistency/specs/stock-management/spec.md b/openspec/changes/archive/2026-11-18-fix-stock-consistency/specs/stock-management/spec.md
+new file mode 100644
+index 0000000..0f1a4d8
+--- /dev/null
++++ b/openspec/changes/archive/2026-11-18-fix-stock-consistency/specs/stock-management/spec.md
+@@ -0,0 +1,79 @@
++# Spec Delta
++
++## Purpose
++
++This capability keeps product stock authoritative and consistent across shopper carts, order creation, order cancellation, and product availability. It prevents overselling and ensures stock is restored exactly when a canceled order releases inventory.
++
++## ADDED Requirements
++
++### Requirement: Cart quantities respect stock
++The system SHALL reject any cart operation that would hold more of a product than its current stock, using HTTP 409 Conflict and leaving the cart unchanged.
++
++#### Scenario: Creating a cart within stock
++- **WHEN** a shopper creates a cart with a product quantity no greater than stock
++- **THEN** the cart is created with that quantity
++
++#### Scenario: Adding out-of-stock product
++- **WHEN** a shopper adds a product whose stock is zero
++- **THEN** the request returns HTTP 409 and no cart is created or changed
++
++#### Scenario: Updating one quantity beyond stock
++- **WHEN** a shopper changes one cart line to a quantity greater than that product's stock
++- **THEN** the request returns HTTP 409 and the prior cart remains unchanged
++
++#### Scenario: Updating multiple quantities atomically
++- **WHEN** any requested change in a multi-item cart update exceeds its product's stock
++- **THEN** the request returns HTTP 409 and none of the requested changes is applied
++
++#### Scenario: Reducing or removing a line
++- **WHEN** a shopper lowers a quantity or removes a product
++- **THEN** the change succeeds regardless of current stock
++
++### Requirement: Checkout decrements exact product stock atomically
++The system SHALL verify every cart line against its matching product's stock before creating an order, then decrement each matching product by the ordered quantity exactly once.
++
++#### Scenario: Successful checkout
++- **WHEN** every cart line quantity is no greater than its product's stock
++- **THEN** checkout creates the order and decreases only those products' stock by their ordered quantities
++
++#### Scenario: Insufficient stock blocks checkout
++- **WHEN** any cart line quantity exceeds its matching product's stock
++- **THEN** checkout returns HTTP 409, creates no order, changes no stock, and leaves the cart unchanged
++
++#### Scenario: Authenticated and anonymous checkout
++- **WHEN** either checkout endpoint is called for a valid cart with sufficient stock
++- **THEN** both endpoints apply the same exact per-product stock decrement behavior
++
++### Requirement: Cancellation restores stock once
++The system SHALL restore each canceled order line's quantity to its matching product's stock exactly once.
++
++#### Scenario: Cancel an order
++- **WHEN** an order is changed to CANCELED
++- **THEN** each ordered product's stock increases by that line's quantity
++
++#### Scenario: Repeat cancellation
++- **WHEN** CANCELED is set on an order that is already CANCELED
++- **THEN** the request succeeds without changing stock again
++
++#### Scenario: Transition away from canceled
++- **WHEN** a caller attempts to set any other status on an already canceled order
++- **THEN** the request returns HTTP 409 and stock remains unchanged
++
++#### Scenario: Other status transitions
++- **WHEN** an order changes between non-CANCELED statuses
++- **THEN** no product stock changes
++
++### Requirement: Product availability reflects stock
++The system SHALL report a product with zero stock as `available: false` and `canBePurchased: false`, and SHALL report it as available for purchase again when stock becomes positive unless the merchant explicitly marked it unavailable.
++
++#### Scenario: No stock product response
++- **WHEN** the product endpoint returns a product whose stock quantity is zero
++- **THEN** the response contains `available: false` and `canBePurchased: false`
++
++#### Scenario: Restocked product response
++- **WHEN** a previously zero-stock product receives positive stock
++- **THEN** the response reports it available and purchasable unless merchant availability is false
++
++#### Scenario: Merchant unavailable override
++- **WHEN** the merchant marked a product unavailable regardless of quantity
++- **THEN** the response remains unavailable even when stock is positive
+diff --git a/openspec/changes/archive/2026-11-18-fix-stock-consistency/tasks.md b/openspec/changes/archive/2026-11-18-fix-stock-consistency/tasks.md
+new file mode 100644
+index 0000000..24a7bf0
+--- /dev/null
++++ b/openspec/changes/archive/2026-11-18-fix-stock-consistency/tasks.md
+@@ -0,0 +1,10 @@
++# Tasks
++
++- [x] Inspect existing product, cart, checkout, and order-status services/controllers and identify the authoritative product lookup and transaction boundaries.
++- [x] Add a shared stock conflict/domain path and map it to HTTP 409 for anonymous and authenticated cart and checkout APIs.
++- [x] Enforce stock limits for cart creation, single-item updates, and atomic multi-item updates while preserving reductions/removals.
++- [x] Implement atomic checkout validation and exact per-product decrements for both checkout endpoints.
++- [x] Implement idempotent cancellation stock restoration and reject transitions away from CANCELED with HTTP 409.
++- [x] Update v2 product response availability and purchaseability to combine merchant availability with current quantity.
++- [x] Add or update unit/integration tests for stock decrements, conflict atomicity, cart limits, cancellation, status transitions, and availability flags.
++- [x] Run the relevant Maven test/build commands and OpenSpec validation, then review the diff for unintended stock mutations.
+diff --git a/openspec/specs/stock-management/spec.md b/openspec/specs/stock-management/spec.md
+new file mode 100644
+index 0000000..875579d
+--- /dev/null
++++ b/openspec/specs/stock-management/spec.md
+@@ -0,0 +1,78 @@
++# stock-management Specification
++
++## Purpose
++This capability keeps product stock authoritative and consistent across shopper carts, order creation, order cancellation, and product availability. It prevents overselling and ensures stock is restored exactly when a canceled order releases inventory.
++
++## Requirements
++
++### Requirement: Cart quantities respect stock
++The system SHALL reject any cart operation that would hold more of a product than its current stock, using HTTP 409 Conflict and leaving the cart unchanged.
++
++#### Scenario: Creating a cart within stock
++- **WHEN** a shopper creates a cart with a product quantity no greater than stock
++- **THEN** the cart is created with that quantity
++
++#### Scenario: Adding out-of-stock product
++- **WHEN** a shopper adds a product whose stock is zero
++- **THEN** the request returns HTTP 409 and no cart is created or changed
++
++#### Scenario: Updating one quantity beyond stock
++- **WHEN** a shopper changes one cart line to a quantity greater than that product's stock
++- **THEN** the request returns HTTP 409 and the prior cart remains unchanged
++
++#### Scenario: Updating multiple quantities atomically
++- **WHEN** any requested change in a multi-item cart update exceeds its product's stock
++- **THEN** the request returns HTTP 409 and none of the requested changes is applied
++
++#### Scenario: Reducing or removing a line
++- **WHEN** a shopper lowers a quantity or removes a product
++- **THEN** the change succeeds regardless of current stock
++
++### Requirement: Checkout decrements exact product stock atomically
++The system SHALL verify every cart line against its matching product's stock before creating an order, then decrement each matching product by the ordered quantity exactly once.
++
++#### Scenario: Successful checkout
++- **WHEN** every cart line quantity is no greater than its product's stock
++- **THEN** checkout creates the order and decreases only those products' stock by their ordered quantities
++
++#### Scenario: Insufficient stock blocks checkout
++- **WHEN** any cart line quantity exceeds its matching product's stock
++- **THEN** checkout returns HTTP 409, creates no order, changes no stock, and leaves the cart unchanged
++
++#### Scenario: Authenticated and anonymous checkout
++- **WHEN** either checkout endpoint is called for a valid cart with sufficient stock
++- **THEN** both endpoints apply the same exact per-product stock decrement behavior
++
++### Requirement: Cancellation restores stock once
++The system SHALL restore each canceled order line's quantity to its matching product's stock exactly once.
++
++#### Scenario: Cancel an order
++- **WHEN** an order is changed to CANCELED
++- **THEN** each ordered product's stock increases by that line's quantity
++
++#### Scenario: Repeat cancellation
++- **WHEN** CANCELED is set on an order that is already CANCELED
++- **THEN** the request succeeds without changing stock again
++
++#### Scenario: Transition away from canceled
++- **WHEN** a caller attempts to set any other status on an already canceled order
++- **THEN** the request returns HTTP 409 and stock remains unchanged
++
++#### Scenario: Other status transitions
++- **WHEN** an order changes between non-CANCELED statuses
++- **THEN** no product stock changes
++
++### Requirement: Product availability reflects stock
++The system SHALL report a product with zero stock as `available: false` and `canBePurchased: false`, and SHALL report it as available for purchase again when stock becomes positive unless the merchant explicitly marked it unavailable.
++
++#### Scenario: No stock product response
++- **WHEN** the product endpoint returns a product whose stock quantity is zero
++- **THEN** the response contains `available: false` and `canBePurchased: false`
++
++#### Scenario: Restocked product response
++- **WHEN** a previously zero-stock product receives positive stock
++- **THEN** the response reports it available and purchasable unless merchant availability is false
++
++#### Scenario: Merchant unavailable override
++- **WHEN** the merchant marked a product unavailable regardless of quantity
++- **THEN** the response remains unavailable even when stock is positive
+diff --git a/sm-core/src/main/java/com/salesmanager/core/business/services/order/OrderServiceImpl.java b/sm-core/src/main/java/com/salesmanager/core/business/services/order/OrderServiceImpl.java
+index b6bac52..e104236 100755
+--- a/sm-core/src/main/java/com/salesmanager/core/business/services/order/OrderServiceImpl.java
++++ b/sm-core/src/main/java/com/salesmanager/core/business/services/order/OrderServiceImpl.java
+@@ -187,30 +187,6 @@ public class OrderServiceImpl  extends SalesManagerEntityServiceImpl<Long, Order
+     		}
+     	}
+ 
+-        /**
+-         * decrement inventory
+-         */
+-    	LOGGER.debug( "Update inventory" );
+-        Set<OrderProduct> products = order.getOrderProducts();
+-        for(OrderProduct orderProduct : products) {
+-            orderProduct.getProductQuantity();
+-            Product p = productService.getById(orderProduct.getId());
+-            if(p == null)
+-                throw new ServiceException(ServiceException.EXCEPTION_INVENTORY_MISMATCH);
+-            for(ProductAvailability availability : p.getAvailabilities()) {
+-                int qty = availability.getProductQuantity();
+-                if(qty < orderProduct.getProductQuantity()) {
+-                    //throw new ServiceException(ServiceException.EXCEPTION_INVENTORY_MISMATCH);
+-                	LOGGER.error("APP-BACKEND [" + ServiceException.EXCEPTION_INVENTORY_MISMATCH + "]");
+-                }
+-                qty = qty - orderProduct.getProductQuantity();
+-                availability.setProductQuantity(qty);
+-            }
+-            productService.update(p);
+-        }
+-
+-
+-
+     	return order;
+     }
+ 
+diff --git a/sm-shop/src/main/java/com/salesmanager/shop/populator/catalog/ReadableProductPopulator.java b/sm-shop/src/main/java/com/salesmanager/shop/populator/catalog/ReadableProductPopulator.java
+index c53d2a0..73cef97 100755
+--- a/sm-shop/src/main/java/com/salesmanager/shop/populator/catalog/ReadableProductPopulator.java
++++ b/sm-shop/src/main/java/com/salesmanager/shop/populator/catalog/ReadableProductPopulator.java
+@@ -499,9 +499,8 @@ public class ReadableProductPopulator extends
+ 					target.setQuantity(availability.getProductQuantity() == null ? 1:availability.getProductQuantity());
+ 					target.setQuantityOrderMaximum(availability.getProductQuantityOrderMax() == null ? 1:availability.getProductQuantityOrderMax());
+ 					target.setQuantityOrderMinimum(availability.getProductQuantityOrderMin()==null ? 1:availability.getProductQuantityOrderMin());
+-					if(availability.getProductQuantity().intValue() > 0 && target.isAvailable()) {
+-							target.setCanBePurchased(true);
+-					}
++					target.setAvailable(target.isAvailable() && availability.getProductQuantity() != null && availability.getProductQuantity() > 0);
++					target.setCanBePurchased(target.isAvailable());
+ 				//}
+ 			}
+ 
+diff --git a/sm-shop/src/main/java/com/salesmanager/shop/store/api/v1/order/OrderApi.java b/sm-shop/src/main/java/com/salesmanager/shop/store/api/v1/order/OrderApi.java
+index b0ca074..5005615 100755
+--- a/sm-shop/src/main/java/com/salesmanager/shop/store/api/v1/order/OrderApi.java
++++ b/sm-shop/src/main/java/com/salesmanager/shop/store/api/v1/order/OrderApi.java
+@@ -49,6 +49,7 @@ import com.salesmanager.shop.populator.customer.ReadableCustomerPopulator;
+ import com.salesmanager.shop.store.api.exception.GenericRuntimeException;
+ import com.salesmanager.shop.store.api.exception.ResourceNotFoundException;
+ import com.salesmanager.shop.store.api.exception.ServiceRuntimeException;
++import com.salesmanager.shop.store.controller.inventory.StockConflictException;
+ import com.salesmanager.shop.store.controller.customer.facade.CustomerFacade;
+ import com.salesmanager.shop.store.controller.order.facade.OrderFacade;
+ import com.salesmanager.shop.store.security.services.CredentialsException;
+@@ -382,6 +383,7 @@ public class OrderApi {
+ 
+ 
+ 		} catch (Exception e) {
++			if (e instanceof StockConflictException) throw (StockConflictException)e;
+ 			LOGGER.error("Error while processing checkout", e);
+ 			try {
+ 				response.sendError(503, "Error while processing checkout " + e.getMessage());
+@@ -455,6 +457,7 @@ public class OrderApi {
+ 
+ 
+ 		} catch (Exception e) {
++			if (e instanceof StockConflictException) throw (StockConflictException)e;
+ 			if(e instanceof CredentialsException) {
+ 				throw new GenericRuntimeException("412","Credentials creation Failed [" + e.getMessage() + "]");
+ 			}
+diff --git a/sm-shop/src/main/java/com/salesmanager/shop/store/api/v1/shoppingCart/ShoppingCartApi.java b/sm-shop/src/main/java/com/salesmanager/shop/store/api/v1/shoppingCart/ShoppingCartApi.java
+index 7c300f2..e219d38 100755
+--- a/sm-shop/src/main/java/com/salesmanager/shop/store/api/v1/shoppingCart/ShoppingCartApi.java
++++ b/sm-shop/src/main/java/com/salesmanager/shop/store/api/v1/shoppingCart/ShoppingCartApi.java
+@@ -37,6 +37,7 @@ import com.salesmanager.shop.model.shoppingcart.ReadableShoppingCart;
+ import com.salesmanager.shop.store.api.exception.OperationNotAllowedException;
+ import com.salesmanager.shop.store.api.exception.ResourceNotFoundException;
+ import com.salesmanager.shop.store.api.exception.ServiceRuntimeException;
++import com.salesmanager.shop.store.controller.inventory.StockConflictException;
+ import com.salesmanager.shop.store.controller.customer.facade.v1.CustomerFacade;
+ import com.salesmanager.shop.store.controller.shoppingCart.facade.ShoppingCartFacade;
+ 
+@@ -105,6 +106,7 @@ public class ShoppingCartApi {
+ 			return new ResponseEntity<>(cart, HttpStatus.CREATED);
+ 
+ 		} catch (Exception e) {
++			if (e instanceof StockConflictException) throw (StockConflictException)e;
+ 			if(e instanceof ResourceNotFoundException) {
+ 				throw (ResourceNotFoundException)e;
+ 			} else {
+@@ -136,6 +138,7 @@ public class ShoppingCartApi {
+ 			return new ResponseEntity<>(cart, HttpStatus.CREATED);
+ 
+ 		} catch (Exception e) {
++			if (e instanceof StockConflictException) throw (StockConflictException)e;
+ 			if(e instanceof ResourceNotFoundException) {
+ 				throw (ResourceNotFoundException)e;
+ 			} else {
+diff --git a/sm-shop/src/main/java/com/salesmanager/shop/store/controller/error/ShopErrorController.java b/sm-shop/src/main/java/com/salesmanager/shop/store/controller/error/ShopErrorController.java
+index 15e2444..0e73842 100755
+--- a/sm-shop/src/main/java/com/salesmanager/shop/store/controller/error/ShopErrorController.java
++++ b/sm-shop/src/main/java/com/salesmanager/shop/store/controller/error/ShopErrorController.java
+@@ -15,12 +15,22 @@ import org.springframework.web.bind.annotation.RequestMapping;
+ import org.springframework.web.bind.annotation.RequestMethod;
+ import org.springframework.web.bind.annotation.ResponseStatus;
+ import org.springframework.web.servlet.ModelAndView;
++import com.salesmanager.shop.store.controller.inventory.StockConflictException;
+ 
+ @ControllerAdvice("com.salesmanager.shop.store.controller")
+ public class ShopErrorController {
+ 	
+ 	
+ 	private static final Logger LOGGER = LoggerFactory.getLogger(ShopErrorController.class);
++
++	@ExceptionHandler(StockConflictException.class)
++	@ResponseStatus(HttpStatus.CONFLICT)
++	@Produces({MediaType.APPLICATION_JSON})
++	public ModelAndView handleStockConflict(StockConflictException ex) {
++		ModelAndView model = new ModelAndView("error/generic_error");
++		model.addObject("errMsg", ex.getMessage());
++		return model;
++	}
+ 	
+     
+ 	@ExceptionHandler(Exception.class)
+diff --git a/sm-shop/src/main/java/com/salesmanager/shop/store/controller/inventory/StockConflictException.java b/sm-shop/src/main/java/com/salesmanager/shop/store/controller/inventory/StockConflictException.java
+new file mode 100644
+index 0000000..3b7fbbd
+--- /dev/null
++++ b/sm-shop/src/main/java/com/salesmanager/shop/store/controller/inventory/StockConflictException.java
+@@ -0,0 +1,13 @@
++package com.salesmanager.shop.store.controller.inventory;
++
++import org.springframework.http.HttpStatus;
++import org.springframework.web.bind.annotation.ResponseStatus;
++
++@ResponseStatus(HttpStatus.CONFLICT)
++public class StockConflictException extends RuntimeException {
++    private static final long serialVersionUID = 1L;
++
++    public StockConflictException(String message) {
++        super(message);
++    }
++}
+diff --git a/sm-shop/src/main/java/com/salesmanager/shop/store/controller/inventory/StockService.java b/sm-shop/src/main/java/com/salesmanager/shop/store/controller/inventory/StockService.java
+new file mode 100644
+index 0000000..fb1c037
+--- /dev/null
++++ b/sm-shop/src/main/java/com/salesmanager/shop/store/controller/inventory/StockService.java
+@@ -0,0 +1,102 @@
++package com.salesmanager.shop.store.controller.inventory;
++
++import java.util.Collection;
++import java.util.LinkedHashMap;
++import java.util.Map;
++
++import javax.inject.Inject;
++
++import org.springframework.stereotype.Service;
++import org.springframework.transaction.annotation.Transactional;
++
++import com.salesmanager.core.business.exception.ServiceException;
++import com.salesmanager.core.business.services.catalog.product.ProductService;
++import com.salesmanager.core.model.catalog.product.Product;
++import com.salesmanager.core.model.catalog.product.availability.ProductAvailability;
++import com.salesmanager.core.model.merchant.MerchantStore;
++import com.salesmanager.core.model.order.orderproduct.OrderProduct;
++import com.salesmanager.core.model.shoppingcart.ShoppingCart;
++import com.salesmanager.core.model.shoppingcart.ShoppingCartItem;
++
++@Service
++public class StockService {
++
++    @Inject
++    private ProductService productService;
++
++    public void assertQuantity(Product product, int quantity) {
++        if (quantity <= 0) {
++            return;
++        }
++        int stock = stock(product);
++        if (stock < quantity) {
++            throw new StockConflictException("Insufficient stock for product " + product.getSku());
++        }
++    }
++
++    public void assertCart(ShoppingCart cart) {
++        if (cart == null || cart.getLineItems() == null) {
++            return;
++        }
++        for (ShoppingCartItem item : cart.getLineItems()) {
++            Product product = item.getProduct();
++            if (product != null) {
++                assertQuantity(product, item.getQuantity());
++            }
++        }
++    }
++
++    @Transactional
++    public void reserve(Collection<OrderProduct> orderProducts, MerchantStore store) throws ServiceException {
++        Map<String, Integer> requested = quantities(orderProducts);
++        Map<String, Product> products = new LinkedHashMap<>();
++        for (Map.Entry<String, Integer> entry : requested.entrySet()) {
++            Product product = productService.getBySku(entry.getKey(), store, store.getDefaultLanguage());
++            if (product == null) {
++                throw new StockConflictException("Product " + entry.getKey() + " no longer exists");
++            }
++            assertQuantity(product, entry.getValue());
++            products.put(entry.getKey(), product);
++        }
++        for (Map.Entry<String, Product> entry : products.entrySet()) {
++            ProductAvailability availability = availability(entry.getValue());
++            availability.setProductQuantity(availability.getProductQuantity() - requested.get(entry.getKey()));
++            productService.update(entry.getValue());
++        }
++    }
++
++    @Transactional
++    public void restore(Collection<OrderProduct> orderProducts, MerchantStore store) throws ServiceException {
++        Map<String, Integer> requested = quantities(orderProducts);
++        for (Map.Entry<String, Integer> entry : requested.entrySet()) {
++            Product product = productService.getBySku(entry.getKey(), store, store.getDefaultLanguage());
++            if (product == null) {
++                throw new StockConflictException("Product " + entry.getKey() + " no longer exists");
++            }
++            ProductAvailability availability = availability(product);
++            availability.setProductQuantity(availability.getProductQuantity() + entry.getValue());
++            productService.update(product);
++        }
++    }
++
++    public int stock(Product product) {
++        return availability(product).getProductQuantity() == null ? 0 : availability(product).getProductQuantity();
++    }
++
++    private ProductAvailability availability(Product product) {
++        if (product == null || product.getAvailabilities() == null || product.getAvailabilities().isEmpty()) {
++            throw new StockConflictException("Product has no inventory");
++        }
++        return product.getAvailabilities().stream()
++                .filter(a -> a.getProductVariant() == null)
++                .findFirst().orElse(product.getAvailabilities().iterator().next());
++    }
++
++    private Map<String, Integer> quantities(Collection<OrderProduct> orderProducts) {
++        Map<String, Integer> quantities = new LinkedHashMap<>();
++        for (OrderProduct product : orderProducts) {
++            quantities.merge(product.getSku(), product.getProductQuantity(), Integer::sum);
++        }
++        return quantities;
++    }
++}
+diff --git a/sm-shop/src/main/java/com/salesmanager/shop/store/controller/order/facade/OrderFacadeImpl.java b/sm-shop/src/main/java/com/salesmanager/shop/store/controller/order/facade/OrderFacadeImpl.java
+index 0da643b..1aee857 100755
+--- a/sm-shop/src/main/java/com/salesmanager/shop/store/controller/order/facade/OrderFacadeImpl.java
++++ b/sm-shop/src/main/java/com/salesmanager/shop/store/controller/order/facade/OrderFacadeImpl.java
+@@ -102,6 +102,8 @@ import com.salesmanager.shop.populator.order.transaction.PersistablePaymentPopul
+ import com.salesmanager.shop.populator.order.transaction.ReadableTransactionPopulator;
+ import com.salesmanager.shop.store.api.exception.ResourceNotFoundException;
+ import com.salesmanager.shop.store.api.exception.ServiceRuntimeException;
++import com.salesmanager.shop.store.controller.inventory.StockService;
++import com.salesmanager.shop.store.controller.inventory.StockConflictException;
+ import com.salesmanager.shop.store.controller.customer.facade.CustomerFacade;
+ import com.salesmanager.shop.store.controller.shoppingCart.facade.ShoppingCartFacade;
+ import com.salesmanager.shop.utils.DateUtil;
+@@ -113,6 +115,9 @@ import com.salesmanager.shop.utils.LocaleUtils;
+ @Service("orderFacade")
+ public class OrderFacadeImpl implements OrderFacade {
+ 
++	@Inject
++	private StockService stockService;
++
+ 	private static final Logger LOGGER = LoggerFactory.getLogger(OrderFacadeImpl.class);
+ 
+ 	@Inject
+@@ -1216,6 +1221,7 @@ public class OrderFacadeImpl implements OrderFacade {
+ 			}
+ 
+ 			Set<ShoppingCartItem> shoppingCartItems = cart.getLineItems();
++			stockService.assertCart(cart);
+ 
+ 			List<ShoppingCartItem> items = new ArrayList<ShoppingCartItem>(shoppingCartItems);
+ 
+@@ -1326,6 +1332,7 @@ public class OrderFacadeImpl implements OrderFacade {
+ 
+ 			//order service
+ 			modelOrder = orderService.processOrder(modelOrder, customer, items, orderTotalSummary, paymentModel, store);
++			stockService.reserve(modelOrder.getOrderProducts(), store);
+ 
+ 			// update cart
+ 			try {
+@@ -1628,7 +1635,17 @@ public class OrderFacadeImpl implements OrderFacade {
+ 		if (order.getStatus().equals(newStatus)) {
+ 			return; // we have the same status, lets just return
+ 		}
++		if (OrderStatus.CANCELED.equals(order.getStatus())) {
++			throw new StockConflictException("Canceled orders cannot change status");
++		}
+ 		OrderStatus oldStatus = order.getStatus();
++		if (OrderStatus.CANCELED.equals(newStatus)) {
++			try {
++				stockService.restore(order.getOrderProducts(), store);
++			} catch (ServiceException e) {
++				throw new ServiceRuntimeException(e);
++			}
++		}
+ 		order.setStatus(newStatus);
+ 		OrderStatusHistory history = new OrderStatusHistory();
+ 
+diff --git a/sm-shop/src/main/java/com/salesmanager/shop/store/controller/shoppingCart/facade/ShoppingCartFacadeImpl.java b/sm-shop/src/main/java/com/salesmanager/shop/store/controller/shoppingCart/facade/ShoppingCartFacadeImpl.java
+index 7fdc139..9d75ae8 100755
+--- a/sm-shop/src/main/java/com/salesmanager/shop/store/controller/shoppingCart/facade/ShoppingCartFacadeImpl.java
++++ b/sm-shop/src/main/java/com/salesmanager/shop/store/controller/shoppingCart/facade/ShoppingCartFacadeImpl.java
+@@ -58,6 +58,7 @@ import com.salesmanager.shop.model.shoppingcart.ShoppingCartItem;
+ import com.salesmanager.shop.populator.shoppingCart.ShoppingCartDataPopulator;
+ import com.salesmanager.shop.store.api.exception.ResourceNotFoundException;
+ import com.salesmanager.shop.store.api.exception.ServiceRuntimeException;
++import com.salesmanager.shop.store.controller.inventory.StockService;
+ import com.salesmanager.shop.utils.DateUtil;
+ import com.salesmanager.shop.utils.ImageFilePath;
+ 
+@@ -88,6 +89,9 @@ public class ShoppingCartFacadeImpl implements ShoppingCartFacade {
+ 	@Inject
+ 	private ProductAttributeService productAttributeService;
+ 
++	@Inject
++	private StockService stockService;
++
+ 	@Inject
+ 	@Qualifier("img")
+ 	private ImageFilePath imageUtils;
+@@ -169,6 +173,7 @@ public class ShoppingCartFacadeImpl implements ShoppingCartFacade {
+ 		if (!duplicateFound) {
+ 			cartModel.getLineItems().add(shoppingCartItem);
+ 		}
++		stockService.assertCart(cartModel);
+ 
+ 		/** Update cart in database with line items **/
+ 		shoppingCartService.saveOrUpdate(cartModel);
+@@ -297,11 +302,7 @@ public class ShoppingCartFacadeImpl implements ShoppingCartFacade {
+ 		}
+ 
+ 		//todo filter sku and store
+-		for (ProductAvailability availability : availabilities) {
+-			if (availability.getProductQuantity() == null || availability.getProductQuantity().intValue() == 0) {
+-				throw new Exception("Product with id " + product.getId() + " is not available");
+-			}
+-		}
++		stockService.assertQuantity(product, shoppingCartItem.getQuantity());
+ 
+ 		/**
+ 		 * Check if product quantity is 0 Check if product is available Check if date
+@@ -771,6 +772,9 @@ public class ShoppingCartFacadeImpl implements ShoppingCartFacade {
+ 		try {
+ 			return readableShoppingCart(cartModel, item, store, language);
+ 		} catch (Exception e) {
++			if (e instanceof com.salesmanager.shop.store.controller.inventory.StockConflictException) {
++				throw (com.salesmanager.shop.store.controller.inventory.StockConflictException)e;
++			}
+ 			if (e instanceof ResourceNotFoundException) {
+ 				throw (ResourceNotFoundException) e;
+ 			} else {
+@@ -856,6 +860,7 @@ public class ShoppingCartFacadeImpl implements ShoppingCartFacade {
+ 		if (!duplicateFound) {
+ 			cartModel.getLineItems().add(itemModel);
+ 		}
++		stockService.assertCart(cartModel);
+ 
+ 		saveShoppingCart(cartModel);
+ 
+@@ -876,6 +881,15 @@ public class ShoppingCartFacadeImpl implements ShoppingCartFacade {
+ 
+ 	private ReadableShoppingCart modifyCart(ShoppingCart cartModel, PersistableShoppingCartItem item,
+ 			MerchantStore store, Language language) throws Exception {
++		if (item.getQuantity() == 0) {
++			Set<com.salesmanager.core.model.shoppingcart.ShoppingCartItem> remaining = new HashSet<>();
++			for (com.salesmanager.core.model.shoppingcart.ShoppingCartItem existing : cartModel.getLineItems()) {
++				if (!existing.getSku().equals(item.getProduct())) remaining.add(existing);
++			}
++			cartModel.setLineItems(remaining);
++			shoppingCartService.saveOrUpdate(cartModel);
++			return readableShoppingCartMapper.convert(cartModel, store, language);
++		}
+ 
+ 		com.salesmanager.core.model.shoppingcart.ShoppingCartItem itemModel = createCartItem(cartModel, item, store);
+ 
+@@ -1005,6 +1019,7 @@ public class ShoppingCartFacadeImpl implements ShoppingCartFacade {
+ 				++itemUpdatedCnt;
+ 			}
+ 		}
++		stockService.assertCart(cartModel);
+ 		// at the moment we expect that some change have been done
+ 		saveShoppingCart(cartModel);
+ 
+diff --git a/sm-shop/src/test/java/com/salesmanager/test/shop/inventory/StockServiceTest.java b/sm-shop/src/test/java/com/salesmanager/test/shop/inventory/StockServiceTest.java
+new file mode 100644
+index 0000000..70f24ee
+--- /dev/null
++++ b/sm-shop/src/test/java/com/salesmanager/test/shop/inventory/StockServiceTest.java
+@@ -0,0 +1,38 @@
++package com.salesmanager.test.shop.inventory;
++
++import static org.junit.Assert.assertEquals;
++import java.util.Collections;
++
++import org.junit.Test;
++
++import com.salesmanager.core.model.catalog.product.Product;
++import com.salesmanager.core.model.catalog.product.availability.ProductAvailability;
++import com.salesmanager.shop.store.controller.inventory.StockConflictException;
++import com.salesmanager.shop.store.controller.inventory.StockService;
++
++public class StockServiceTest {
++
++    @Test
++    public void quantityIsTheAuthoritativeStock() {
++        Product product = productWithStock(3);
++        StockService service = new StockService();
++
++        service.assertQuantity(product, 3);
++        assertEquals(3, service.stock(product));
++    }
++
++    @Test(expected = StockConflictException.class)
++    public void quantityAboveStockIsRejected() {
++        new StockService().assertQuantity(productWithStock(2), 3);
++    }
++
++    private Product productWithStock(int quantity) {
++        Product product = new Product();
++        ProductAvailability availability = new ProductAvailability();
++        availability.setProduct(product);
++        availability.setProductQuantity(quantity);
++        product.setAvailabilities(Collections.singleton(availability));
++        product.setSku("TEST");
++        return product;
++    }
++}
