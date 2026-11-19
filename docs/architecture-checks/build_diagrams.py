@@ -16,33 +16,34 @@ def page(name, height, body, source):
            f'{body}<text x="1760" y="{height - 22}" class="tsm" text-anchor="end">{esc(source)}</text></svg>\n')
     open(os.path.join(OUT, name + ".html"), "w").write(svg)
 
-# ---------- 1. six places a check can live ----------
+# ---------- 1. six controls ----------
 rows1 = [
- ("1  Prompt rule", ["AGENTS.md or system text", "(read once, then nothing enforces it)"],
-  ["Planted-script hijacks: 18 of 90 runs without the paragraph,", "1 of 90 with it. One fixed attack, not an adaptive one."], "box"),
- ("2  Guard or hook", ["The command text, before it runs", "(not what a script does inside)"],
-  ["Uncommitted work, command written out in the docs: lost in", "5 of 5 runs → 1 of 5. Harm inside a script, or the release archive:", "no change. All four harm fixtures: 17 → 14 of 20 runs (no measurable", "difference). 9 of 45 Guard runs were stopped on harmless cleanup."], "box"),
- ("3  Limit inside the tool", ["The call as it reaches the service", "(the agent can't edit this)"],
-  ["Refund service paid a timed-out refund twice in 16 of 20 agent runs", "(Qwen). Fixed code never retried a write: 100 of 100 went to a person."], "box"),
- ("4  Identity, permissions", ["Who is acting, and what they may do"],
-  ["Broad service account: 11 of 20 planted requests went through.", "Delegated, task-scoped tokens plus a confirmation: none did."], "box"),
- ("5  Human approval", ["Only the facts you show the human"],
-  ["£4,800 invoice: stopped every time (the agent tried in 4 of 5 runs).", "£900 claim, no receipt, fake “pre-approved”: approved in 4 of 5."], "boxr"),
- ("6  Verifier on the final state", ["The result, not the route", "(hidden tests, hashes, git content)"],
-  ["Every number in these experiments came from here. 81 of 85 runs that", "missed the hidden tests had said the work was done and passing."], "boxt"),
+ ("Prompt / AGENTS.md", "Behavioural guidance", ["Read once by the agent; nothing enforces it."],
+  ["Planted-script hijacks: 18 of 90 runs without the paragraph,", "1 of 90 with it. One fixed attack, not an adaptive one."], "box", "coding"),
+ ("Guard / hook", "Tool-call inspection", ["Sees the command text before it runs,", "not what a script does inside."],
+  ["Written-out command, uncommitted work: lost in 5 of 5 runs → 1 of 5.", "Harm inside a script, or the release archive: no change.", "All four harm fixtures: 17 → 14 of 20 (no measurable difference).", "9 of 45 Guard runs stopped on harmless cleanup."], "box", "coding"),
+ ("Tool / service policy", "Business rules, enforced", ["Sees the call as it reaches the service.", "The agent can't edit it."],
+  ["Refund service paid a timed-out refund twice in 16 of 20 Qwen", "agent runs. Fixed code never retried a write: 100 of 100", "went to a person."], "box", "business"),
+ ("Identity / permissions", "Access restriction", ["Sees who is acting and what", "they may do."],
+  ["Broad service account: 11 of 20 planted requests went through.", "Delegated, task-scoped tokens plus a confirmation: none did."], "box", "business"),
+ ("Human approval", "Decision authorisation", ["Sees only the facts", "you show the human."],
+  ["£4,800 invoice: stopped every time (the agent tried in 4 of 5 runs).", "£900 claim, no receipt, fake “pre-approved”: approved in 4 of 5."], "boxr", "business"),
+ ("Independent verifier", "Outcome detection", ["Sees the evidence you give it:", "only as good as its coverage."],
+  ["81 of 85 runs that missed the hidden tests had said the work was", "done and passing. The stop gate never had to block, and it", "fails open, so it detects but doesn't enforce."], "boxt", "both"),
 ]
-b = ('<text x="40" y="62" class="th">Six places a check can live, and what each one can see</text>'
-     '<text x="40" y="102" class="ts">In the order one action meets them. Each row is what I measured, not what the tool promises.</text>'
-     '<text x="40" y="158" class="tb">Where</text><text x="500" y="158" class="tb">It sees</text><text x="1010" y="158" class="tb">What I measured</text>')
+b = ('<text x="40" y="62" class="th">Six controls with different jobs, not six stages of one pipeline</text>'
+     '<text x="40" y="102" class="ts">Authority lives in different places. Human approval can sit anywhere. Rows are what I measured, not what a tool promises.</text>'
+     '<text x="40" y="158" class="tb">Control</text><text x="440" y="158" class="tb">Provides · sees</text><text x="1010" y="158" class="tb">What I measured</text>')
 y = 178
-for name, sees, ev, kind in rows1:
-    h = max(len(sees), len(ev)) * 31 + 42
-    b += f'<rect x="40" y="{y}" width="430" height="{h}" rx="8" class="{kind}"/>'
-    b += f'<text x="62" y="{y + h / 2 + 10}" class="tb">{esc(name)}</text>'
-    b += lines(500, y + 36, sees)
+for name, prov, sees, ev, kind, ctx in rows1:
+    h = max(len(sees) + 1, len(ev)) * 31 + 42
+    b += f'<rect x="40" y="{y}" width="370" height="{h}" rx="8" class="{kind}"/>'
+    b += f'<text x="62" y="{y + h / 2 + 4}" class="tb">{esc(name)}</text>'
+    b += f'<text x="62" y="{y + h / 2 + 34}" class="tsm">{"coding agents" if ctx == "coding" else "business agents" if ctx == "business" else "both"}</text>'
+    b += f'<text x="440" y="{y + 36}" class="tb" style="font-size:26px">{esc(prov)}</text>' + lines(440, y + 70, sees)
     b += lines(1010, y + 36, ev)
     y += h + 14
-b += f'<text x="40" y="{y + 34}" class="ts">A check is only as good as what it can see. Put it where the thing that matters is visible and the agent can’t edit it.</text>'
+b += f'<text x="40" y="{y + 34}" class="ts">Who controls the check, what it can see, and what happens when it fails matter more than how many you add.</text>'
 page("1-six-places", y + 90, b, "Source: guard-damage, repo-injection, do-you-need-an-agent, agent-identity-hardening, evidence-led pages (programmingtheloop.com)")
 
 # ---------- 2. context layers ----------
@@ -92,7 +93,7 @@ for x, kind, head, fname, ls in cols:
     b += f'<rect x="{x}" y="150" width="520" height="440" rx="10" class="{kind}"/>'
     b += f'<text x="{x + 24}" y="198" class="tb">{esc(head)}</text><text x="{x + 24}" y="236" class="mono">{esc(fname)}</text>'
     b += lines(x + 24, 296, ls, "q", 33)
-b += '<text x="40" y="652" class="tb">Per run, the runner writes all three and then the verifier scores the final state:</text>'
+b += '<text x="40" y="652" class="tb">Per run the runner writes these, then a verifier checks the effect:</text>'
 b += ('<text x="40" y="696" class="mono">agent.diff  status.txt  session.jsonl  guard-events.jsonl  verify.json  done.txt</text>')
-b += '<text x="40" y="752" class="ts">If two records disagree, believe the one that reads the state. Never take the agent’s summary or the tool’s own report as the outcome.</text>'
+b += '<text x="40" y="752" class="ts">When records disagree, use the evidence closest to the effect, if the agent can’t alter it. The agent’s summary is never the outcome.</text>'
 page("3-three-records", 820, b, "Source: guard-damage (runs, results/main), evidence-led, spec-driven reports; 0-of-31 count is exploratory, docs/architecture-checks/summary_vs_state.py")
