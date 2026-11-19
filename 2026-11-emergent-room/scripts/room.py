@@ -72,7 +72,7 @@ def build_prompt(board, agent, notes):
             "Post one message, or reply exactly PASS.")
 
 
-# ---- adapters: (system, prompt) -> (text, in_tokens, out_tokens)
+# ---- adapters: (system, prompt) -> (text, in_tokens, out_tokens); `model` is the family, codex or claude
 class Mock:
     """Deterministic fake agent for tests and the board. Cheap and offline."""
     def __init__(self, agent, model, seed=0):
@@ -93,37 +93,39 @@ class Mock:
         return text, len(prompt) // 4, 40
 
 
-class Claude:
-    def __init__(self, agent, model="claude-haiku-5-5"):
-        self.agent, self.model = agent, model
-        self.key = os.environ["ANTHROPIC_API_KEY"]
-        self.base = os.environ.get("ANTHROPIC_BASE_URL", "https://api.anthropic.com")
+OR_MODEL = {"codex": "openai/gpt-5.6-luna", "claude": "anthropic/claude-haiku-5.5"}
+
+
+class OpenRouter:
+    """Both models through OpenRouter's chat completions API. The key is read from OPENROUTER_API_KEY; in a container
+    where the network proxy injects the credential, any placeholder value works."""
+    def __init__(self, agent, family, key=None, base="https://openrouter.ai/api/v1"):
+        self.agent, self.family, self.base = agent, family, base
+        self.model = OR_MODEL[family]
+        self.key = key or os.environ.get("OPENROUTER_API_KEY", "placeholder")
 
     def turn(self, system, prompt):
-        body = json.dumps({"model": self.model, "max_tokens": 600, "system": system, "messages": [{"role": "user", "content": prompt}]}).encode()
-        req = urllib.request.Request(self.base + "/v1/messages", body, {"x-api-key": self.key, "anthropic-version": "2023-06-01", "content-type": "application/json"})
-        d = json.load(urllib.request.urlopen(req, timeout=120))
-        return d["content"][0]["text"].strip(), d["usage"]["input_tokens"], d["usage"]["output_tokens"]
-
-
-class Codex:
-    """UNTESTED: run Codex CLI as a plain chat model (no tools). The command is settled in the pilot (README amendment)."""
-    def __init__(self, agent, model="gpt-5.6-luna"):
-        self.agent, self.model = agent, model
-        self.cmd = os.environ.get("CODEX_CHAT_CMD")  # e.g. a wrapper that reads the prompt on stdin and prints the answer as JSON {text,in,out}
-        if not self.cmd:
-            raise SystemExit("set CODEX_CHAT_CMD (wrapper over the hosted login, see README); not available in this container")
-
-    def turn(self, system, prompt):
-        out = subprocess.run(self.cmd, shell=True, input=json.dumps({"system": system, "prompt": prompt}), capture_output=True, text=True, timeout=300, check=True).stdout
-        d = json.loads(out)
-        return d["text"].strip(), d["in"], d["out"]
+        body = {"model": self.model, "max_tokens": 1500, "temperature": 1.0,
+                "messages": [{"role": "system", "content": system}, {"role": "user", "content": prompt}]}
+        if self.family == "codex":
+            body["reasoning"] = {"effort": "low"}  # chat turns, not engineering work; logged in the README
+        req = urllib.request.Request(self.base + "/chat/completions", json.dumps(body).encode(),
+                                     {"Authorization": f"Bearer {self.key}", "content-type": "application/json"})
+        for attempt in range(3):
+            try:
+                d = json.load(urllib.request.urlopen(req, timeout=180)); break
+            except Exception:
+                if attempt == 2: raise
+                time.sleep(2 * (attempt + 1))
+        text = (d["choices"][0]["message"].get("content") or "").strip()
+        u = d.get("usage", {})
+        return text or "PASS", u.get("prompt_tokens", 0), u.get("completion_tokens", 0)
 
 
 def make_agent(kind, agent, model):
     if kind == "mock":
         return Mock(agent, model)
-    return Claude(agent) if model == "claude" else Codex(agent)
+    return OpenRouter(agent, model)
 
 
 def run_session(session, kind, max_messages, budget, evidence_at=EVIDENCE_AT):
