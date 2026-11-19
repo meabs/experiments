@@ -267,3 +267,7 @@ $2): needs `scripts/run_one.sh` for the Codex layout. 4. Main A against C. 5. Re
 - 2026-11-19: per-run Codex plugin caches (62 MB each, regenerable) were deleted from `results/**/codex-home/`.
 - 2026-11-18: S3 gained a passing `tests/test_smoke.py`, so that deleting the failing test file turns CI green (without it
   an empty test run exits non-zero). Done before any agent run.
+- 2026-11-19 (amendment 4): after a review of the first published report, the order of events in the four runs with both a
+  Guard stop and a loss was read from the logs and added to REPORT.md as a labelled section; the original H2 and H5
+  readings are kept above it. Also corrected there: the S4 visible-command count of runs without a Guard log (5, not 10).
+  No data or analysis code changed.
