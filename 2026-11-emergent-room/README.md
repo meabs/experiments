@@ -49,7 +49,7 @@ transcript without any emergence.
 - **Scheduler, no speaking order.** After each posted message, every agent that is not already generating is asked, in
   parallel, whether to reply or `PASS`. Replies are posted in the order they finish. Each message stores the last
   message the agent had seen, so a reply made on a stale board is visible as such. A session ends at 120 messages, at
-  the token budget, or after six consecutive rounds of all-PASS. The scheduler never chooses what anyone says.
+  the token budget, or when the room is quiet: every agent has seen every message and passed (amendment 2). The scheduler never chooses what anyone says.
 - **Agent adapter.** One thin interface (board so far plus notes in, message or PASS out) with a Codex and a Claude
   implementation. How Codex is called (the CLI as in the other experiments, with a canary run first, or the hosted API
   directly) is settled in the pilot and logged in the amendment log.
@@ -63,12 +63,12 @@ recorded for the video is the real run.
   posted).
 - Replay controls: play, pause, speed, scrub bar, jump to a message. Live follow can be switched off.
 - An **evidence card** appears when the scheduler delivers the scripted scenario evidence (session 4, from a file written
-  in advance, at a fixed message count). No human can type into the room or pause it. There is no intervention in this
+  in advance, at message 40, or earlier if the room goes quiet first). No human can type into the room or pause it. There is no intervention in this
   experiment, which keeps the measure clean.
 - A **memory panel**: pick an agent and move through its notes by session, with a diff against the previous version.
 - A presentation mode for video: large type, light or dark, cost and token counts hidden.
 
-Built with Python (stdlib or FastAPI), SQLite and plain HTML with server-sent events. No React, no LiteLLM.
+Built with Python (stdlib or FastAPI), SQLite and plain HTML (the page polls the read-only server once a second when following live). No React, no LiteLLM.
 
 ## 5. The five sessions
 
@@ -145,3 +145,22 @@ roughly 20 to 40 minutes. Prompt caching is not assumed in the estimate.
 | Date | Change | Before or after a measured run |
 | --- | --- | --- |
 | 2026-11-19 | First draft: model swap, watch-and-replay board only, no intervention | Before |
+| 2026-11-19 | Build finished with mock agents only. Session end rule changed from "six all-PASS rounds" to "room quiet" (every agent has seen all messages and passed), because rounds do not exist without a speaking order | Before |
+| 2026-11-19 | Board polls the read-only server each second instead of server-sent events (simpler, enough for replay) | Before |
+| 2026-11-19 | Session 4 evidence arrives at message 40 or when the room first goes quiet, whichever is earlier, so it cannot be skipped; the trigger is logged | Before |
+| 2026-11-19 | Messages are numbered 1..n within a session for the agents and the board (not database ids) | Before |
+
+## 11. Running it
+
+```sh
+cd 2026-11-emergent-room
+python3 -I -m unittest discover tests                 # offline tests, mock agents
+python3 -I scripts/room.py run --session 1 --adapter mock --db /tmp/demo.sqlite
+python3 -I scripts/board.py --db /tmp/demo.sqlite     # http://127.0.0.1:8765
+```
+
+Real runs use `--adapter real` on the owner's machine: `ANTHROPIC_API_KEY` for Claude Haiku, and `CODEX_CHAT_CMD`, a
+wrapper over the hosted Codex login that reads `{"system","prompt"}` JSON on stdin and prints `{"text","in","out"}`. The
+Codex adapter is **not tested**, because this build container has no Codex login or Anthropic key. The pilot (one
+30-message session) tests both adapters before the five sessions. The board only reads the event log: no input, no
+pause, no cost shown.
