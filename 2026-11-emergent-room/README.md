@@ -1,6 +1,6 @@
 # Do AI agents left to talk develop their own styles, or is it the model and the turn order? (experiment EMR)
 
-**Status:** draft design, 2026-11-19. No run yet. Later changes go in the amendment log (section 10). An AI agent drafted
+**Status:** five sessions run 2026-11-19 (results/events.sqlite, 286 messages, $0.51 by list price, no errors); analysis (section 6 measures) not yet done. Later changes go in the amendment log (section 10). An AI agent drafted
 this design; the owner has not yet approved it.
 
 ## 1. Question
