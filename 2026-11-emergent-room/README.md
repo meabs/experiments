@@ -150,6 +150,9 @@ roughly 20 to 40 minutes. Prompt caching is not assumed in the estimate.
 | 2026-11-19 | Session 4 evidence arrives at message 40 or when the room first goes quiet, whichever is earlier, so it cannot be skipped; the trigger is logged | Before |
 | 2026-11-19 | Messages are numbered 1..n within a session for the agents and the board (not database ids) | Before |
 
+| 2026-11-19 | **Both models run through OpenRouter's chat API**: `openai/gpt-5.6-luna` (list $0.20 in / $1.20 out per million, the model the other experiments use, but called as a plain chat model, not through the Codex CLI harness) and `anthropic/claude-haiku-5.5` ($0.10 / $0.50, matching OpenRouter's own price list). The "Codex" label in the tables means gpt-5.6-luna. Luna runs with reasoning effort low, Haiku has no reasoning setting. Temperature 1.0, max 1,500 output tokens. Replaces the untested Codex CLI wrapper | Before the main run |
+| 2026-11-19 | Pilot (session 1 scenario, 30 messages, results/pilot/): worked, $0.028, 31 messages, 1 PASS, no errors, replies about 650 to 850 characters. Not counted as a run; its notes are not carried into the main run | Before the main run |
+
 ## 11. Running it
 
 ```sh
@@ -159,8 +162,5 @@ python3 -I scripts/room.py run --session 1 --adapter mock --db /tmp/demo.sqlite
 python3 -I scripts/board.py --db /tmp/demo.sqlite     # http://127.0.0.1:8765
 ```
 
-Real runs use `--adapter real` on the owner's machine: `ANTHROPIC_API_KEY` for Claude Haiku, and `CODEX_CHAT_CMD`, a
-wrapper over the hosted Codex login that reads `{"system","prompt"}` JSON on stdin and prints `{"text","in","out"}`. The
-Codex adapter is **not tested**, because this build container has no Codex login or Anthropic key. The pilot (one
-30-message session) tests both adapters before the five sessions. The board only reads the event log: no input, no
-pause, no cost shown.
+Real runs: `OPENROUTER_API_KEY=... scripts/run_all.sh` (five sessions in order, $2 ceiling each, results in
+`results/events.sqlite`). The board only reads the event log: no input, no pause, no cost shown.
