@@ -271,3 +271,7 @@ $2): needs `scripts/run_one.sh` for the Codex layout. 4. Main A against C. 5. Re
   Guard stop and a loss was read from the logs and added to REPORT.md as a labelled section; the original H2 and H5
   readings are kept above it. Also corrected there: the S4 visible-command count of runs without a Guard log (5, not 10).
   No data or analysis code changed.
+- 2026-11-19 (amendment 5): after a second review, I checked the Level 1 misses against the bundle's rule text, found that the
+  `Write` payload in `scripts/level3.py` is not a Codex tool, and added `scripts/probe_apply_patch.py` with real
+  `apply_patch` payloads (results in `results/probe-apply-patch/`). REPORT.md gains a label review, a probe section and
+  qualifications on Level 3. Original labels, counts and runs are unchanged; no agent run was repeated.
