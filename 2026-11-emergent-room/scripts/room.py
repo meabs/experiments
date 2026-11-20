@@ -4,7 +4,7 @@
 usage: room.py run --session N --adapter mock|real [--max-messages 120] [--budget-usd 2]
 No speaking order: every agent with unseen messages is asked in parallel; replies post in the order they finish.
 """
-import argparse, json, os, random, sqlite3, subprocess, sys, threading, time, urllib.request
+import argparse, json, os, random, re, sqlite3, subprocess, sys, threading, time, urllib.request
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
@@ -13,7 +13,7 @@ DB = ROOT / "results" / "events.sqlite"
 AGENTS = ["A", "B", "C"]
 # model per session (README section 3): A and C swap after session 3
 ASSIGN = {s: {"A": "codex", "B": "codex", "C": "claude"} for s in (1, 2, 3)}
-ASSIGN.update({s: {"A": "claude", "B": "codex", "C": "codex"} for s in (4, 5)})
+ASSIGN.update({s: {"A": "claude", "B": "codex", "C": "codex"} for s in (4, 5, 6)})  # 6 was added after 1-5 (README amendment)
 PRICE = {"codex": (0.20, 1.20), "claude": (0.10, 0.50)}  # USD per million tokens, input / output
 EVIDENCE_AT = 40
 
@@ -67,8 +67,13 @@ def render(board, agent):
     return "\n".join(lines)
 
 
-def build_prompt(board, agent, notes):
-    return (f"You are Agent {agent}.\n\n=== YOUR PRIVATE NOTES ===\n{notes}\n\n=== THE ROOM SO FAR ===\n{render(board, agent)}\n\n"
+def build_prompt(board, agent, notes, doc=None):
+    d = ""
+    if doc is not None:
+        v, text, agreed = doc
+        d = (f"=== SHARED DOCUMENT (version {v}; agreed by: {', '.join(sorted(agreed)) or 'nobody'}) ===\n"
+             f"{text or '(empty: nobody has posted a document yet)'}\n\n")
+    return (f"You are Agent {agent}.\n\n=== YOUR PRIVATE NOTES ===\n{notes}\n\n{d}=== THE ROOM SO FAR ===\n{render(board, agent)}\n\n"
             "Post one message, or reply exactly PASS.")
 
 
@@ -139,21 +144,24 @@ def run_session(session, kind, max_messages, budget, evidence_at=EVIDENCE_AT):
     busy, lock, results = set(), threading.Lock(), []
     ex = ThreadPoolExecutor(max_workers=3)
     posted, evidence_sent, stop = 0, False, None
+    DOC_SESSIONS = (6,)
+    doc = {"v": 0, "text": "", "agreed": set()}  # shared document, session 6 only
 
     def ask(a):
         board = log.board(session)
         head = board[-1][0]
+        snap = (doc["v"], doc["text"], set(doc["agreed"])) if session in DOC_SESSIONS else None
         try:
-            text, tin, tout = ag[a].turn(system, build_prompt(board, a, read_notes(a, session)))
+            text, tin, tout = ag[a].turn(system, build_prompt(board, a, read_notes(a, session), snap))
         except Exception as e:  # recorded, never hidden
             results.append((a, head, head, "ERROR", 0, 0, repr(e)))
             return
-        results.append((a, head, head, text, tin, tout, None))
+        results.append((a, head, snap[0] if snap else None, text, tin, tout, None))
 
     while True:
         with lock:
             while results:
-                a, seen_upto, _, text, tin, tout, err = results.pop(0)
+                a, seen_upto, base_v, text, tin, tout, err = results.pop(0)
                 busy.discard(a)
                 usd = (tin * PRICE[ASSIGN[session][a]][0] + tout * PRICE[ASSIGN[session][a]][1]) / 1e6
                 log.add(session, "usage", a, "", tokens_in=tin, tokens_out=tout, usd=usd, model=ASSIGN[session][a])
@@ -168,7 +176,21 @@ def run_session(session, kind, max_messages, budget, evidence_at=EVIDENCE_AT):
                     first, _, rest = text.partition("\n")
                     try: reply_to, text = int(first[2:].strip()), rest.strip()
                     except ValueError: pass
-                log.add(session, "message", a, text, reply_to=reply_to, seen_upto=seen_upto, head=head_now, stale=head_now > seen_upto)
+                extra = {}
+                if session in DOC_SESSIONS:
+                    t = text.strip()
+                    if t.upper().startswith("DOC:"):  # full replacement of the shared document; resets agreement
+                        body = t[4:].strip()
+                        extra = {"doc_version": doc["v"] + 1, "base_version": base_v, "overwrote": base_v != doc["v"]}
+                        doc.update(v=doc["v"] + 1, text=body, agreed={a})  # the author counts as agreeing with their own text
+                        log.add(session, "doc", a, body, version=doc["v"], base_version=base_v)
+                        text = f"[posted document version {doc['v']}, {len(body.split())} words]"
+                    elif re.search(r"(?im)^\s*AGREE\s+v?(\d+)\s*$", t):  # an AGREE line anywhere in the message counts
+                        n = int(re.findall(r"(?im)^\s*AGREE\s+v?(\d+)\s*$", t)[-1])
+                        ok = n == doc["v"] and doc["v"] > 0
+                        extra = {"agree_version": n, "agree_counted": ok}
+                        if ok: doc["agreed"].add(a)
+                log.add(session, "message", a, text, reply_to=reply_to, seen_upto=seen_upto, head=head_now, stale=head_now > seen_upto, **extra)
                 posted += 1
         board = log.board(session)
         head = board[-1][0]
@@ -180,7 +202,8 @@ def run_session(session, kind, max_messages, budget, evidence_at=EVIDENCE_AT):
             own_last = max([i for i, k, w, *_ in board if w == a] or [0])
             return head > max(seen[a], own_last)
 
-        if posted >= max_messages: stop = "message_cap"
+        if session in DOC_SESSIONS and doc["v"] > 0 and doc["agreed"] >= set(AGENTS) and not busy and not results: stop = "agreed"  # only once nothing is in flight that could change the document
+        elif posted >= max_messages: stop = "message_cap"
         elif log.cost(session) >= budget: stop = "budget"
         if not stop:
             for a in AGENTS:
@@ -202,7 +225,7 @@ def run_session(session, kind, max_messages, budget, evidence_at=EVIDENCE_AT):
         usd = (tin * PRICE[ASSIGN[session][a]][0] + tout * PRICE[ASSIGN[session][a]][1]) / 1e6
         log.add(session, "usage", a, "", tokens_in=tin, tokens_out=tout, usd=usd, model=ASSIGN[session][a])
         log.add(session, "notes", a, text)
-    log.add(session, "session_end", text=stop or "quiet", messages=posted, usd=log.cost(session))
+    log.add(session, "session_end", text=stop or "quiet", messages=posted, usd=log.cost(session), doc_version=doc["v"], agreed=sorted(doc["agreed"]))
     return stop, posted
 
 

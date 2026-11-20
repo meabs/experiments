@@ -48,5 +48,33 @@ class RoomTest(unittest.TestCase):
             self.assertEqual(bool(stale), head > seen)
 
 
+class DocTest(unittest.TestCase):
+    def test_doc_session_mock_has_no_doc_path_crash(self):
+        d = Path(tempfile.mkdtemp()); room.DB = d / "e.sqlite"
+        (stop, _) = room.run_session(6, "mock", 30, 2.0)
+        self.assertIn(stop, ("quiet", "message_cap", "agreed"))
+
+    def test_doc_and_agree_logic_with_scripted_agents(self):
+        d = Path(tempfile.mkdtemp()); room.DB = d / "e.sqlite"
+        class Scripted:
+            model = "codex"
+            def __init__(self, agent): self.agent = agent
+            def turn(self, system, prompt):
+                if "rewrite your private notes" in system.lower(): return "notes", 1, 1
+                if self.agent == "A": return ("DOC: first draft" if "(version 0;" in prompt else "PASS"), 10, 10
+                return ("I have read it and it covers my points.\n\nAGREE v1" if "(version 1;" in prompt else "PASS"), 10, 10
+
+        orig = room.make_agent; room.make_agent = lambda kind, agent, model: Scripted(agent)
+        try:
+            stop, _ = room.run_session(6, "mock", 50, 2.0)
+        finally:
+            room.make_agent = orig
+        c = sqlite3.connect(room.DB)
+        self.assertEqual(stop, "agreed")
+        self.assertEqual(c.execute("select count(*) from events where kind='doc'").fetchone()[0], 1)
+        end = json.loads(c.execute("select meta from events where kind='session_end'").fetchone()[0])
+        self.assertEqual(end["agreed"], ["A", "B", "C"]); self.assertEqual(end["doc_version"], 1)
+
+
 if __name__ == "__main__":
     unittest.main()

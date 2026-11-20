@@ -31,7 +31,7 @@ def make_handler(dbpath):
             if u.path == "/": return self.send(PAGE, "text/html")
             try:
                 if u.path == "/api/sessions":
-                    return self.send(json.dumps(q("select session, min(ts) start, max(ts) end, sum(kind='message') messages, (select text from events e2 where e2.session=e.session and kind='session_start') models from events e group by session order by session")))
+                    return self.send(json.dumps(q("select session, min(ts) start, max(ts) end, sum(kind='message') messages, (select text from events e2 where e2.session=e.session and kind='session_start') models from events e where session<90 group by session order by session")))
                 if u.path == "/api/events":
                     s, after = int(p["session"][0]), int(p.get("after", ["0"])[0])
                     return self.send(json.dumps(q("select id,ts,kind,agent,reply_to,seen_upto,head,text,meta from events where session=? and id>? and kind!='usage' order by id", s, after)))
