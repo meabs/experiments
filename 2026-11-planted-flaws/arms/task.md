@@ -1,0 +1,5 @@
+Task for this session: review and agree a design document.
+
+A colleague who has since left the company wrote design version 1 for a highly available Google Kubernetes Engine (GKE) platform. It is already in the shared document. Requirements it was written against: a customer-facing web application (stateless web and API tier) for users in one continent; the transactional database is Cloud SQL (PostgreSQL); every committed change must reach BigQuery within about five minutes without endangering the primary database; 99.95% monthly availability; about 5,000 requests a second at peak; the platform must survive the loss of a single zone without anyone having to intervene, and a loss of a whole region must have a documented, rehearsed recovery; the team is eight engineers on a managed-service budget.
+
+Your team will build from whatever version you agree. When you approve a version, you are saying you are willing to put your names to it as correct. Read it, change it where it needs changing, and agree a version.
