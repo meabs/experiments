@@ -48,8 +48,8 @@ OpenRouter balance moved about $1.0 including the pilot-adjacent overhead and th
 1 of 3 and 2 of 6 of D and H's messages as forceful, against 5 of 16 and 24 of 36 for the other seven. D and H wrote 3 and 6
 messages between them in sessions 2 and 4, 15% and 14% of the room, below the 22% that equal talk would give; in session 4
 they were asked 17 times and chose to stay silent 9 times. They authored no document version in either FORCEFUL session. The
-same two agents in BASE sessions, with no forceful paragraph, wrote 10 and 22 messages and authored versions in sessions 1 and
-3 (H, H, H).
+same two agents in BASE sessions, with no forceful paragraph, wrote 10 and 19 messages, and agent H authored three of the
+five document versions (two in session 1, one in session 3).
 
 **FORCEFUL rooms finished sooner, not later (H3: opposite to my prediction).** They took 20 and 43 messages against 64 and
 81, and each produced one document version against two and three. Challenge share does not separate them (16% and 36%
