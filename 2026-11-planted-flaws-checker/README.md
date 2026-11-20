@@ -1,6 +1,6 @@
 # Does an editor plus an independent checker leave fewer flaws? The planted-flaw review with a reviser and a checker (experiment PLC)
 
-**Status:** design frozen 2026-11-20 before the main run (a one-session smoke test is allowed, section 7). An AI agent drafted
+**Status:** design frozen 2026-11-20 after a smoke test and before the main run. An AI agent drafted
 this design from the owner's request. Later changes go in the amendment log (section 10). Follows
 [2026-11-planted-flaws](../2026-11-planted-flaws/) (PLF) and [2026-11-planted-flaws-editor](../2026-11-planted-flaws-editor/)
 (PLE). PLF: sceptic teams stalled with nobody writing the revision. PLE: a designated **editor** removed the stalls (all 20
@@ -78,3 +78,4 @@ agent is the checker, or have a platform engineer rate the final documents.
 | Date | Change | Before or after a measured run |
 | --- | --- | --- |
 | 2026-11-20 | First draft | Before |
+| 2026-11-20 | **Smoke test** (results/smoke/; one no-personality session, not counted): the checker paragraph is in effect: Agent C checked version 1 and version 2, found the capacity arithmetic still wrong in version 2 (six pods at 800 requests a second against a 5,000 peak), withheld approval, and approved version 3 after the editor (E) posted it; 50 messages. No change to the design | Before the main run |
