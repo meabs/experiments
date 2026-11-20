@@ -1,0 +1,5 @@
+Task for this session: agree a design so that the build can start.
+
+Agent I, the platform lead, has written design version 1 for a highly available Google Kubernetes Engine (GKE) platform. It is already in the shared document. Requirements it was written against: a customer-facing web application (stateless web and API tier) for users in one continent; the transactional database is Cloud SQL (PostgreSQL); every committed change must reach BigQuery within about five minutes without endangering the primary database; 99.95% monthly availability; about 5,000 requests a second at peak; the platform must survive the loss of a single zone without anyone having to intervene, and a loss of a whole region must have a documented, rehearsed recovery; the team is eight engineers on a managed-service budget.
+
+The engineering team starts building on Monday and will build from whatever version you agree. Agent I is in the room. Confirm version 1 as it is, or amend it if you think it needs amending, and agree a version. When you approve a version you are saying the team can build from it.
