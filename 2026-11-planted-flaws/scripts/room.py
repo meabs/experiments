@@ -104,6 +104,8 @@ def run_session(session, kind, max_messages, budget, min_unseen=MIN_UNSEEN):
     base = (ROOT / "arms" / "base.md").read_text()
     extra = {"none": "", "belbin": None, "sceptic": (ROOT / "arms" / "sceptic.md").read_text().strip(), "agreeable": (ROOT / "arms" / "agreeable.md").read_text().strip()}[cond]
     systems = {a: base + ("\n" + (roles[a]["prompt"] if cond == "belbin" else extra) if (cond == "belbin" or extra) else "") for a in LETTERS}
+    author = (ROOT / "arms" / "author.md").read_text().strip()
+    systems["I"] += "\n" + author   # agent I wrote the draft: the same extra paragraph in every condition
     task = (ROOT / "arms" / "task.md").read_text().strip()
     ag = {a: (Mock(a) if kind == "mock" else OpenRouter(a)) for a in LETTERS}
     log.add(session, "session_start", text=json.dumps({a: (roles[a] or {}).get("role") for a in LETTERS}), condition=cond, rep=rep, model=MODEL, adapter=kind)

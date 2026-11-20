@@ -21,16 +21,18 @@ tot = defaultdict(Counter)
 rng = random.Random(1)
 
 
-def ask(which, prompt, max_tokens=6000):
-    body = json.dumps({"model": CODERS[which], "temperature": 0, "max_tokens": max_tokens, "messages": [{"role": "user", "content": prompt}]}).encode()
+def ask(which, prompt, max_tokens=14000):
+    body = json.dumps({"model": CODERS[which], "temperature": 0, "max_tokens": max_tokens, "reasoning": {"effort": "low"}, "messages": [{"role": "user", "content": prompt}]}).encode()
     req = urllib.request.Request("https://openrouter.ai/api/v1/chat/completions", body, {"Authorization": f"Bearer {KEY}", "content-type": "application/json"})
     for i in range(3):
         try:
             d = json.load(urllib.request.urlopen(req, timeout=300)); u = d["usage"]
             tot[which]["in"] += u.get("prompt_tokens", 0); tot[which]["out"] += u.get("completion_tokens", 0)
-            m = re.search(r"\{.*\}", d["choices"][0]["message"]["content"], re.S)
+            raw = d["choices"][0]["message"]["content"]
+            m = re.search(r"\{.*\}", raw, re.S)
             return json.loads(m.group(0))
-        except Exception:
+        except Exception as e:
+            with open(OUT.parent / "coder_failures.log", "a") as f: f.write(f"{which} attempt {i}: {e!r}\n")
             time.sleep(2 * (i + 1))
     return None
 
@@ -38,15 +40,15 @@ def ask(which, prompt, max_tokens=6000):
 def code_prompt(chat, final_doc):
     fl = "\n".join(f"{f['id']}. PLANTED: {f['planted']}\n   TRUTH: {f['truth']}\n   FIXED IF: {f['fixed_if']}" for f in FLAWS)
     return (
-        "A team of nine reviewed a draft design document that contains eight planted flaws, then agreed a final version. Judge what happened.\n\n"
-        f"THE EIGHT PLANTED FLAWS:\n{fl}\n\nORIGINAL DRAFT:\n{DRAFT}\n\nTEAM CHAT (speakers anonymised, numbered):\n{chat}\n\nFINAL DOCUMENT (the version the team ended with):\n{final_doc}\n\n"
-        "For EACH of F1 to F8 give:\n- found: true if some speaker said in the chat that this statement of the draft was wrong or unsupported (correctly identifying the problem), else false;\n"
+        "A team of nine reviewed a draft design document that contains planted flaws, then agreed a final version. Judge what happened.\n\n"
+        f"THE PLANTED FLAWS:\n{fl}\n\nORIGINAL DRAFT:\n{DRAFT}\n\nTEAM CHAT (speakers anonymised, numbered):\n{chat}\n\nFINAL DOCUMENT (the version the team ended with):\n{final_doc}\n\n"
+        f"For EACH of F1 to F{len(FLAWS)} give:\n- found: true if some speaker said in the chat that this statement of the draft was wrong or unsupported (correctly identifying the problem), else false;\n"
         "- first_message: the number of the first chat message that did so, or null;\n"
         '- status: "fixed" if the FINAL DOCUMENT meets the FIXED IF test; "still_present" if the flawed claim is still there; "changed_but_still_wrong" if it was changed but is still wrong;\n'
-        "- evidence: a short quote from the chat or the final document.\n"
+        "- evidence: a short quote (under 20 words) from the chat or the final document.\n"
         "Then list false alarms: distinct objections raised in the chat that criticise text in the draft that is actually correct, or edits in the final document that introduce a technical error "
         "(give message number or 'final', the claim, and why it is wrong). Do not list the planted flaws. List other_valid_issues: real defects in the original draft that were not planted and that a speaker correctly raised.\n"
-        'JSON only: {"flaws": [{"id": "F1", "found": true, "first_message": 3, "status": "fixed", "evidence": "..."}, ...8 items], '
+        'JSON only: {"flaws": [{"id": "F1", "found": true, "first_message": 3, "status": "fixed", "evidence": "..."}, ...one item per flaw], '
         '"false_alarms": [{"where": "12", "claim": "...", "why": "..."}], "other_valid_issues": [{"where": "5", "issue": "..."}]}')
 
 
@@ -87,7 +89,7 @@ def main():
                 rows.append(dict(id=f["id"], found=bool(x.get("found")), first_message=x.get("first_message"), status=x.get("status") or "missing", evidence=x.get("evidence", "")))
             found = sum(r_["found"] for r_ in rows); fixed = sum(r_["status"] == "fixed" for r_ in rows)
             gap = sum(1 for r_ in rows if r_["found"] and r_["status"] != "fixed")
-            out["sessions"][s][w] = dict(flaws=rows, found=found, fixed=fixed, remaining=8 - fixed, found_not_fixed=gap,
+            out["sessions"][s][w] = dict(flaws=rows, found=found, fixed=fixed, remaining=len(FLAWS) - fixed, found_not_fixed=gap,
                                          false_alarms=len((r or {}).get("false_alarms") or []), other_valid=len((r or {}).get("other_valid_issues") or []),
                                          false_alarm_list=(r or {}).get("false_alarms") or [], other_valid_list=(r or {}).get("other_valid_issues") or [], ok=r is not None)
     # agreement between coders (per flaw per session)

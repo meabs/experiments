@@ -24,9 +24,9 @@ class T(unittest.TestCase):
 
     def test_eight_flaws_present_in_draft_and_documented(self):
         flaws = json.load(open(ROOT / "flaws.json")); draft = (ROOT / "arms" / "draft.md").read_text()
-        self.assertEqual(len(flaws), 8)
-        for key in ["zonal GKE Standard cluster", "80% utilisation", "guarantees that at least four", "fails over automatically to the replica",
-                    "recovery point objective of zero", "regional external Application Load Balancer, whose single anycast", "enforces the primary key", "4.4 hours"]:
+        self.assertEqual(len(flaws), 10)
+        for key in ["time to live of 3,600 seconds", "We budget each of them at 99.95%", "minAvailable equal to its replica count", "read from the high availability standby",
+                    "data staleness limit is set to 15 minutes", "Rapid release channel", "preferredDuringSchedulingIgnoredDuringExecution", "regardless of the size of the database", "about 800 requests a second", "/22 (1,024 addresses)"]:
             self.assertIn(key, draft)
         for f in flaws: self.assertTrue(all(f[k] for k in ("id", "planted", "truth", "fixed_if")))
 
@@ -45,6 +45,18 @@ class T(unittest.TestCase):
                     if cond == "belbin": self.assertIn("Belbin", seen[a])
                     if cond == "sceptic": self.assertIn("sceptical by temperament", seen[a])
                     if cond == "agreeable": self.assertIn("agreeable and supportive by temperament", seen[a])
+        finally: room.Mock = o
+
+    def test_author_paragraph_only_for_agent_i(self):
+        seen = {}
+        class Spy:
+            def __init__(self, a): self.a = a
+            def turn(self, system, prompt): seen.setdefault(self.a, system); return "PASS", 1, 1
+        o = room.Mock; room.Mock = Spy
+        try:
+            for sess in (1, 2):
+                fresh(); seen.clear(); room.run_session(sess, "mock", 3, 1.0)
+                for a in room.LETTERS: self.assertEqual("wrote design version 1" in seen[a], a == "I")
         finally: room.Mock = o
 
     def test_session_starts_with_draft_as_version_1(self):
