@@ -1,6 +1,6 @@
 # Does an editor plus an independent checker leave fewer flaws? The planted-flaw review with a reviser and a checker (experiment PLC)
 
-**Status:** design frozen 2026-11-20 after a smoke test and before the main run. An AI agent drafted
+**Status:** run and analysed 2026-11-20 (20 sessions); results in [REPORT.md](REPORT.md). Design frozen after a smoke test and before the main run. An AI agent drafted
 this design from the owner's request. Later changes go in the amendment log (section 10). Follows
 [2026-11-planted-flaws](../2026-11-planted-flaws/) (PLF) and [2026-11-planted-flaws-editor](../2026-11-planted-flaws-editor/)
 (PLE). PLF: sceptic teams stalled with nobody writing the revision. PLE: a designated **editor** removed the stalls (all 20
@@ -79,3 +79,4 @@ agent is the checker, or have a platform engineer rate the final documents.
 | --- | --- | --- |
 | 2026-11-20 | First draft | Before |
 | 2026-11-20 | **Smoke test** (results/smoke/; one no-personality session, not counted): the checker paragraph is in effect: Agent C checked version 1 and version 2, found the capacity arithmetic still wrong in version 2 (six pods at 800 requests a second against a 5,000 peak), withheld approval, and approved version 3 after the editor (E) posted it; 50 messages. No change to the design | Before the main run |
+| 2026-11-20 | **Main run finished:** 20 sessions, 18 ended with all nine approving and 2 (session 15, a sceptic team; session 18, a Belbin team) at the 120-message cap without agreement; $5.41 at list price. Analysis as designed. **Correction to this README:** section 6 gives PLE's median message count as 68; PLE's actual median is 64 (sessions sorted: 39 ... 124). H4's threshold, "at least 10 above PLE's median", is therefore 74, not 78; the result (median 86.5) is the same either way. No change to the design after the main run began | After the run |
