@@ -1,6 +1,6 @@
 # Does giving a team an editor stop sceptics stalling? The planted-flaw review with a designated reviser (experiment PLE)
 
-**Status:** design frozen 2026-11-20 before the main run (a one-session smoke test is allowed, section 7). An AI agent drafted this
+**Status:** design frozen 2026-11-20 after a smoke test and before the main run. An AI agent drafted this
 design from the owner's request. Later changes go in the amendment log (section 10). Follows
 [2026-11-planted-flaws](../2026-11-planted-flaws/) (PLF), whose main finding was that every team found most of ten planted flaws,
 agreeable teams approved more of them, and two of five sceptic teams refused to approve the draft but **nobody wrote the
@@ -89,3 +89,4 @@ temperament, or run the no-editor and editor conditions in the same run to remov
 | Date | Change | Before or after a measured run |
 | --- | --- | --- |
 | 2026-11-20 | First draft | Before |
+| 2026-11-20 | **Smoke test** (results/smoke/; one SCEPTIC session, not counted): the editor paragraph works as a prompt: Agent E tried to post a revision twice, but both attempts were rejected by compare-and-swap because another agent's edit (Agent I's) landed first, and the team agreed version 3 in 74 messages. So who writes the revision can be decided by timing, not by the job; H4 may fail for that reason. No change to the design | Before the main run |

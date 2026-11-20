@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# 20 sessions, four at a time (one repetition of all four conditions per group), each in its own database, merged at the end.
+# 20 sessions, four at a time (one repetition of all four team types per group), each in its own database, merged at the end.
 set -e
 cd "$(dirname "$0")/.."
 mkdir -p results/runs
