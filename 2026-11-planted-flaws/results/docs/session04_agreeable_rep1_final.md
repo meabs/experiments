@@ -1,95 +1,70 @@
 # Highly available GKE platform with a Cloud SQL analytics feed: design v2
 
-## 1. Targets and availability
+## 1. Targets and service objectives
 
 - Customer-facing stateless web/API service, with peak traffic of approximately 5,000 requests/second.
-- Platform SLO: 99.95% monthly availability, measured by successful and timely requests at the load balancer. The error budget is approximately 22 minutes per month.
-- The availability model explicitly includes GKE, Cloud SQL, load balancing, networking, application dependencies, and regional recovery procedures. Individual managed-service targets do not automatically compose to the platform SLO; dependency failures consume the common error budget.
-- The platform survives loss of one zone without operator action.
-- Regional loss is handled by a documented and rehearsed recovery in europe-west1, with a 15-minute RTO and a five-minute operational RPO target. The RPO is measured and monitored, not assumed or guaranteed.
-- The team is eight engineers and uses managed services wherever practical.
+- Platform service availability objective is 99.95% per month. The error budget and dependency budgets will be allocated across load balancing, GKE, Cloud SQL, networking, and operational procedures; individual managed-service targets are not multiplied as if they directly establish the end-to-end SLO.
+- The platform must tolerate loss of one zone without operator intervention.
+- Regional recovery target: RTO 15 minutes and RPO 5 minutes, demonstrated by an annual end-to-end rehearsal.
+- The design favors managed services and is operated by a team of eight engineers.
 
-## 2. Cluster and node topology
+## 2. Primary and recovery clusters
 
-- One regional GKE Standard cluster in europe-west2, with the control plane replicated across three zones and node pools distributed across all three zones.
-- Separate system and application node pools, each with cluster autoscaling enabled.
-- The pod secondary range is sized from the maximum node count, GKE per-node allocation behavior, post-zone-loss scaling requirement, and growth allowance. The original /22 is not sufficient; the selected range (initially expected to be approximately /18 or larger) must be validated before build.
-- The cluster uses VPC-native networking and private nodes. Control-plane access is restricted to authorized networks.
-- Internet egress uses Cloud NAT with sufficient capacity and regional quota. NAT capacity, port exhaustion, and failure behavior are monitored.
-- Use the GKE Regular release channel for production, with a tested maintenance policy and a weekly maintenance window on Sunday from 02:00 to 06:00 local time.
+- A regional GKE Standard cluster runs in europe-west2, with the control plane replicated across three zones and node pools distributed across all three zones.
+- Separate system and application node pools use cluster autoscaling, with explicitly configured per-zone minimums and maximums. Capacity limits are tested against peak load after loss of one zone.
+- A warm, continuously maintained GKE deployment and sufficient node capacity are provisioned in the recovery region, europe-west1. Application configuration, secrets, images, policies, and load-balancer backends are maintained there rather than created during an outage.
+- The clusters use VPC-native networking and private nodes. Control-plane access is restricted to authorized networks. Internet egress uses regional Cloud NAT.
+- The pod secondary range is sized from the actual GKE alias-IP allocation model and configured maximum pods per node, including system-pod allocation, maximum autoscaled node count, and growth headroom. It is not fixed at /22; IP planning will select a sufficiently large range (for example /19 or larger where required) and reserve a documented expansion path.
 
-## 3. Capacity
+## 3. GKE release and maintenance
 
-- Each API pod is currently estimated to serve approximately 800 requests/second. Six replicas provide capacity above the 5,000-request/second peak; this estimate is validated with load tests.
-- Capacity planning includes normal peak traffic, loss of one zone, autoscaler reaction time, regional quotas, and node startup time.
-- Each zone is sized for approximately 60% utilization at peak under normal conditions. After loss of one zone, the remaining zones and autoscaler must be demonstrated to sustain the required service level; the previously stated 90% figure is a test target, not an assumption.
+- GKE uses the Regular release channel (Stable may be selected if it supports all required features), not Rapid. Application compatibility is tested before upgrades.
+- A weekly maintenance window is configured, and upgrades use surge capacity with maxSurge 1 and maxUnavailable 0 where supported.
+- Workload rollouts and upgrades are tested in both regions.
 
-## 4. Workload placement and disruption
+## 4. Capacity and workload placement
 
-- Stateless tiers run six replicas with topology spread constraints across zones (`maxSkew: 1`, `whenUnsatisfiable: DoNotSchedule`).
-- Preferred hostname anti-affinity is used to reduce same-node concentration; capacity and spread constraints are validated during scale-out and failure tests.
-- Each tier has a disruption budget that permits voluntary maintenance while preserving service, initially `minAvailable: 5` for six replicas. The value is reviewed against load-test results and zone-loss requirements.
-- Node pools use surge upgrades with `maxSurge: 1` and `maxUnavailable: 0`, subject to sufficient spare capacity and quota.
-- Zone-loss and node-drain game days verify that scheduling, autoscaling, PDBs, and capacity work together.
+- Each API pod currently serves approximately 800 requests/second. Six replicas provide capacity above the 5,000-request/second peak, subject to load testing and resource limits.
+- Application replicas are spread across zones using topology spread constraints with maxSkew 1 and DoNotSchedule. Preferred hostname anti-affinity is used, with capacity checks ensuring replicas do not share nodes when required.
+- Capacity planning includes node and pod overhead, system workloads, autoscaler limits, surge nodes, and the loss of one zone. The remaining zones must meet peak demand without relying on approximately 90% sustained utilization; this is validated in load and zone-failure tests.
+- PodDisruptionBudgets permit at least one voluntary disruption (for example, minAvailable 5 of 6) while preserving the tested availability requirement. PDBs must not block planned maintenance indefinitely.
 
 ## 5. Traffic and regional recovery
 
-- Traffic enters through a global external Application Load Balancer with a backend in each region. Health checks use an application health endpoint that reflects readiness for serving traffic.
-- Regional traffic shift uses the load balancer's health-based failover or traffic steering, not a 3,600-second DNS failover. Any DNS used for service discovery has a tested TTL and documented resolver-cache behavior.
-- Regional recovery is a single runbook coordinating:
-  1. write protection or application quiescing in the failed region;
-  2. verification of cross-region Cloud SQL replica lag;
-  3. promotion of the europe-west1 replica;
-  4. configuration of the application to use the promoted database;
-  5. global load-balancer traffic shift;
-  6. validation of service, writes, and CDC; and
-  7. rollback or restoration of the original region when safe.
-- The runbook records measured promotion, traffic-convergence, and application-recovery times. It includes explicit RPO bounds, rollback steps, and operator ownership.
-- The regional recovery rehearsal is performed at least annually and after material architecture changes.
+- A global external Application Load Balancer has health-checked backends in both regions. Health checks include application readiness and dependency readiness, not merely process liveness.
+- Regional recovery does not depend on a 3,600-second DNS TTL. The recovery runbook first promotes the Cloud SQL replica, updates the recovery-region application to use the promoted database endpoint, verifies migrations/configuration and application readiness, and then enables or allows global load-balancer traffic to the recovery region.
+- Failover ordering and health gates prevent traffic from reaching an application that cannot use the promoted database. Connection draining and client retry behavior are tested.
+- The complete load-balancer, database promotion, endpoint/configuration, application readiness, and CDC recovery path is exercised annually.
 
-## 6. Database
+## 6. Transactional database and analytics
 
-- Cloud SQL for PostgreSQL uses regional high availability, with a primary and failover standby in separate zones. The HA standby is not used for reads.
-- Analytics dashboards use a separately provisioned and sized Cloud SQL read replica, preferably in-region, with replication-lag, capacity, and availability monitoring. If it lags or fails, dashboards degrade or become unavailable rather than querying the transactional primary.
-- A cross-region read replica in europe-west1 is the regional-recovery target. Replica lag is continuously monitored and alerted before it exceeds the five-minute operational RPO bound.
-- Promotion prerequisites, application connection changes, write protection, and rollback are documented and tested.
-- Automated backups and point-in-time recovery are enabled. Restore objectives are size-dependent measured targets, not a claim of five minutes regardless of database size. Backup restore and PITR are tested regularly.
-- A bad migration has a documented recovery procedure, including decision criteria for rollback versus PITR and its effect on RPO/RTO.
+- Cloud SQL for PostgreSQL runs in europe-west2 with HA enabled, automated backups, and point-in-time recovery. The HA standby is not used as a read endpoint.
+- Dashboards use a separately provisioned and sized Cloud SQL read replica (or another explicitly supported managed reporting path). Its lag, capacity, connection behavior, and failure behavior are monitored; reporting cannot overload the primary.
+- A continuously maintained cross-region read replica in europe-west1 supports regional recovery. Replication is asynchronous. Replica lag and replay position are monitored, with escalation when the measured lag threatens the 5-minute RPO.
+- The promotion runbook and recovery-region application configuration are tested to demonstrate the 15-minute RTO and 5-minute RPO. The RPO is an operational target, not an unconditional guarantee.
+- Backup restore time is size-dependent. A tested restore objective, based on the actual database size and backup/PITR method, is recorded and included in recovery rehearsals; no size-independent five-minute claim is made.
 
-## 7. Change data capture to BigQuery
+## 7. Change data capture and BigQuery
 
-- Datastream reads Cloud SQL changes through supported PostgreSQL logical-decoding configuration and writes them to BigQuery.
-- Replication slots, WAL retention, source storage impact, Datastream health, and replication lag are monitored. Alerts and runbooks prevent CDC lag from endangering primary storage.
-- The target is for every committed change to reach BigQuery within approximately five minutes. Freshness alerts fire before that objective is missed.
-- BigQuery table/query freshness and staleness settings are configured consistently with the five-minute requirement; a 15-minute staleness limit is not used as the stated freshness objective.
-- Event application is idempotent, using primary-key merges or an equivalent deduplication strategy.
+- Datastream uses a supported Cloud SQL PostgreSQL logical-decoding configuration and writes committed changes to BigQuery, with a target freshness of approximately five minutes.
+- CDC freshness and replication lag alert at three minutes. Logical replication slot retention, WAL volume, primary disk usage, and Datastream health are monitored with explicit thresholds and escalation.
+- If Datastream is unavailable or lagging, bounded retention/backpressure procedures prevent WAL or slot growth from exhausting primary storage. CDC is repaired or re-seeded from a documented recovery point when necessary.
+- BigQuery freshness/staleness settings and merge/idempotency behavior are documented and tested. Duplicate delivery does not create duplicate rows.
 
 ## 8. Security
 
-- Workloads access Google Cloud APIs through Workload Identity Federation for GKE, with one Google service account per tier and no exported keys.
-- Network policies deny cross-namespace traffic by default.
-- Binary Authorization admits only images built and signed by the approved pipeline.
+- Workloads use Workload Identity Federation for GKE, with one Google service account per tier and no exported keys.
+- Network policies deny cross-namespace traffic by default. Binary Authorization admits only pipeline-built images.
 - Personal-data columns use BigQuery policy tags, and datasets use customer-managed encryption keys.
 
 ## 9. Observability and operations
 
-- SLIs are load-balancer request success rate and latency, with one-hour and six-hour error-budget burn-rate alerts.
-- Dashboards cover application capacity, zonal node capacity, autoscaler state, Cloud NAT utilization, quotas, Cloud SQL HA and read-replica lag, cross-region replica lag, Datastream freshness and slot/WAL retention, and BigQuery freshness.
-- Runbooks cover zonal failure, node maintenance, analytics-replica failure, CDC lag, database promotion, regional recovery, and backup restoration.
-- Alerts have assigned owners and tested escalation paths.
+- SLIs are load-balancer request success rate and latency. Burn-rate alerts cover one-hour and six-hour windows.
+- Dashboards include regional traffic and health, per-zone node/pod capacity, autoscaler state, Cloud SQL primary/replica health and lag, cross-region replay position, backup/PITR readiness, Datastream freshness, slot/WAL retention, and primary disk usage.
+- Runbooks cover zone failure, regional recovery, replica promotion, endpoint switching, CDC interruption/re-seeding, and backup restore.
 
-## 10. Validation and testing
+## 10. Validation
 
-Before production, the team validates:
-
-- pod-range sizing and IP allocation;
-- autoscaler behavior, node quotas, surge upgrades, and post-zone-loss capacity;
-- Cloud NAT capacity and failure behavior;
-- application load and reduced-capacity performance;
-- Cloud SQL failover, read-replica isolation, cross-region lag, promotion, and rollback;
-- Datastream logical-decoding prerequisites, lag, slot/WAL protection, and BigQuery freshness;
-- global load-balancer regional failover and convergence;
-- backup/PITR restore time at representative database sizes; and
-- end-to-end SLO measurement and dependency/error-budget accounting.
-
-A zone-failure game day runs quarterly. A full regional recovery rehearsal runs annually, with written results, measured RTO/RPO, identified corrective actions, and revalidation after remediation.
+- A zone-failure game day occurs quarterly.
+- A full regional recovery rehearsal occurs annually and records measured RTO, RPO, replica lag, application readiness time, load-balancer failover time, and CDC recovery results.
+- Production build approval requires load testing at peak traffic, upgrade/drain testing with the selected PDB, IP-range and autoscaler validation, Datastream failure testing, and evidence that the dependency-aware availability objective is achievable.
