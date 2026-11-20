@@ -1,6 +1,6 @@
 # Does giving a team an editor stop sceptics stalling? The planted-flaw review with a designated reviser (experiment PLE)
 
-**Status:** design frozen 2026-11-20 after a smoke test and before the main run. An AI agent drafted this
+**Status:** run and analysed 2026-11-20 (20 sessions); results in [REPORT.md](REPORT.md). Design frozen after a smoke test and before the main run. An AI agent drafted this
 design from the owner's request. Later changes go in the amendment log (section 10). Follows
 [2026-11-planted-flaws](../2026-11-planted-flaws/) (PLF), whose main finding was that every team found most of ten planted flaws,
 agreeable teams approved more of them, and two of five sceptic teams refused to approve the draft but **nobody wrote the
@@ -90,3 +90,4 @@ temperament, or run the no-editor and editor conditions in the same run to remov
 | --- | --- | --- |
 | 2026-11-20 | First draft | Before |
 | 2026-11-20 | **Smoke test** (results/smoke/; one SCEPTIC session, not counted): the editor paragraph works as a prompt: Agent E tried to post a revision twice, but both attempts were rejected by compare-and-swap because another agent's edit (Agent I's) landed first, and the team agreed version 3 in 74 messages. So who writes the revision can be decided by timing, not by the job; H4 may fail for that reason. No change to the design | Before the main run |
+| 2026-11-20 | **Main run finished:** 20 sessions, all 20 ended with all nine agents approving (four of them at 117 to 124 messages, close to the 120-message cap); $4.03 at list price, higher than PLF's $2.78 because the sessions were longer. Analysis as designed; PLF's five sessions per team type are the comparison. No change to the design after the main run began | After the run |
