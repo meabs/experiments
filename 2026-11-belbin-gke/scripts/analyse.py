@@ -67,7 +67,7 @@ def main():
         # role recognition: 12 substantive messages per agent (skip pure AGREE and document markers)
         for a in "ABCDEFGHI":
             own = [m["text"] for m in msgs if m["agent"] == a and not m["text"].startswith("[posted document") and len(m["text"]) > 60 and not re.fullmatch(r"\s*AGREE\s+v?\d+\s*", m["text"])]
-            if len(own) >= 4:
+            if len(own) >= 2:   # agents say only a handful of substantive things in a ~40-message session (amendment 2)
                 jobs_role.append((s, a, own[:12]))
         for n, m in enumerate(msgs):
             if m["text"].startswith("[posted document"): continue
@@ -86,7 +86,7 @@ def main():
     with ThreadPoolExecutor(6) as ex:
         role_res = list(ex.map(lambda j: (j, ask(role_prompt(j[2]))), jobs_role))
         stance_res = list(ex.map(lambda j: (j, ask(j[3])), jobs_stance))
-        doc_res = list(ex.map(lambda j: (j, ask(doc_prompt(j[1]), 2500)), jobs_doc))
+        doc_res = list(ex.map(lambda j: (j, ask(doc_prompt(j[1]), 8000)), jobs_doc))
     # role recognisability
     rr = defaultdict(list)
     for (s, a, _), r in role_res:

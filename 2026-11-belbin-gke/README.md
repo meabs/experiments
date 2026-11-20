@@ -113,3 +113,6 @@ have a human platform engineer review the documents for technical correctness.
 | --- | --- | --- |
 | 2026-11-20 | First draft | Before |
 | 2026-11-20 | Pilot (BELBIN, 30-message cap, results/pilot/): worked; 36 messages, 2 document versions, 6 rejected edits, $0.065, so I expect $0.3 to $0.8 a session and about $2 in all. Not counted. Observed: after version 1 many agents sent near-identical requests to revise the same paragraph and nobody edited. No change to the design | Before the main run |
+| 2026-11-20 | Main run finished: 4 sessions, all ended with all nine agents agreeing (versions 1, 1, 2, 1), $0.42 at list price. | After the run |
+| 2026-11-20 | Analysis change: agents say only about four substantive things per session (many messages are `AGREE`), so the planned "12 messages per agent" for role recognition is impossible; the coder now gets every substantive message (over 60 characters, not an `AGREE` line) of each agent that has at least 2. The first pass of the script used 4 and covered only 4 agents; it is not reported | After the run |
+| 2026-11-20 | The first scoring call for session 1's checklist returned nothing (output limit); rerun with a larger limit | After the run |
