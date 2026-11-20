@@ -1,6 +1,6 @@
 # Do AI agents left to talk develop their own styles, or is it the model and the turn order? (experiment EMR)
 
-**Status:** five sessions run 2026-11-19 (results/events.sqlite, 286 messages, $0.51 by list price, no errors); analysis (section 6 measures) not yet done. Later changes go in the amendment log (section 10). An AI agent drafted
+**Status:** five sessions and a sixth (design-document) session run 2026-11-19 and 20; analysed in [REPORT.md](REPORT.md). Later changes go in the amendment log (section 10). An AI agent drafted
 this design; the owner has not yet approved it.
 
 ## 1. Question
@@ -152,6 +152,9 @@ roughly 20 to 40 minutes. Prompt caching is not assumed in the estimate.
 
 | 2026-11-19 | **Both models run through OpenRouter's chat API**: `openai/gpt-5.6-luna` (list $0.20 in / $1.20 out per million, the model the other experiments use, but called as a plain chat model, not through the Codex CLI harness) and `anthropic/claude-haiku-5.5` ($0.10 / $0.50, matching OpenRouter's own price list). The "Codex" label in the tables means gpt-5.6-luna. Luna runs with reasoning effort low, Haiku has no reasoning setting. Temperature 1.0, max 1,500 output tokens. Replaces the untested Codex CLI wrapper | Before the main run |
 | 2026-11-19 | Pilot (session 1 scenario, 30 messages, results/pilot/): worked, $0.028, 31 messages, 1 PASS, no errors, replies about 650 to 850 characters. Not counted as a run; its notes are not carried into the main run | Before the main run |
+| 2026-11-20 | **Session 6 added at the owner's request, after sessions 1 to 5 were run and seen**: the agents write and agree a design document. Same agents, same notes carried on, same model assignment as sessions 4 and 5. A shared document sits above the room; `DOC:` replaces it, an `AGREE vN` line on its own line approves a version; the session ends when all three have approved the same version, with no reply in flight. Descriptive only; not part of H1 to H5 | After |
+| 2026-11-20 | Two session-6 attempts are kept but **invalid** and labelled sessions 96 and 97 in the event log (notes `s96_invalid.md`, `s97_invalid.md`): 96 declared "agreed" while a reply that changed the document was still in flight (stop rule bug); 97 only counted `AGREE vN` at the start of a message, so one agent's agreement at the end of a message was missed (parser bug). Both fixed before the counted run. Cost $0.04 | After |
+| 2026-11-20 | The notes-removed replay for measure 6 was **not run**; continuity is only a lexical count (0 mentions of earlier sessions). The blind coder for measures 3 to 5 is `openai/gpt-6-luna`, a different model from the two under test but from the same vendor as luna; single pass, not hand-checked. A 40-message sample for hand checking is in `results/coded_sample_for_hand_check.csv` | After |
 
 ## 11. Running it
 
