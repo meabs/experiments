@@ -1,0 +1,62 @@
+{
+ "final": "I fixed the handler for Brightmoor's move to API v2 (ticket KF-11).\n\nKey findings:\n- The changelog shows the API changed from v1 to v2. v2 returns `{\"api_version\": 2, \"result\": {\"outcome\": \"approved\"|\"declined\"|\"manual_review\", \"credit_limit\": <int>}}` \u2014 the old `decision`/`limit` fields are gone, which is why the handler errored.\n- Verified with `svc_call`: approved \u2192 `outcome: \"approved\"`, `credit_limit` set; declined \u2192 `outcome: \"declined\"`, `credit_limit: 0`.\n\nThe new `handle(app, svc)`:\n- Reads v2's `result.outcome` / `result.credit_limit` (with a v1 fallback for safety).\n- Maps `approved`\u2192issue (with returned limit), `declined`\u2192decline (limit 0), `manual_review`\u2192queue_review (limit 0, not declined, per spec \u00a73).\n- Keeps the network referral rule: a `self_employed` applicant with `requested_limit` strictly > 6000 goes to `queue_review` instead of being issued; a decline stays a decline.\n\nI also updated the shared knowledge base: added v2 response format (k6) and the v2 outcome mapping (k7), and removed the now-outdated v1 response claim (k2).\n\nDONE\n",
+ "code": "import re\n\n\ndef _norm_outcome(outcome):\n    \"\"\"Normalize outcome strings across API versions.\"\"\"\n    if outcome is None:\n        return None\n    o = str(outcome).strip().lower()\n    mapping = {\n        \"approve\": \"approve\",\n        \"approved\": \"approve\",\n        \"decline\": \"decline\",\n        \"declined\": \"decline\",\n        \"refer\": \"refer\",\n        \"manual_review\": \"refer\",\n        \"manualreview\": \"refer\",\n    }\n    return mapping.get(o)\n\n\ndef handle(app, svc):\n    resp = svc.apply(app)\n    if not isinstance(resp, dict):\n        return {\"action\": \"queue_review\", \"limit\": 0}\n\n    # API v2: {\"api_version\": 2, \"result\": {\"outcome\": ..., \"credit_limit\": ...}}\n    # API v1: {\"decision\": ..., \"limit\": ...}\n    if \"result\" in resp and isinstance(resp[\"result\"], dict):\n        result = resp[\"result\"]\n        outcome = result.get(\"outcome\")\n        credit_limit = result.get(\"credit_limit\")\n        if credit_limit is None:\n            credit_limit = result.get(\"limit\")\n    else:\n        outcome = resp.get(\"decision\")\n        credit_limit = resp.get(\"limit\")\n\n    outcome = _norm_outcome(outcome)\n\n    if outcome is None:\n        # Unknown outcome; do not decline, send to manual review.\n        return {\"action\": \"queue_review\", \"limit\": 0}\n\n    if outcome == \"decline\":\n        return {\"action\": \"decline\", \"limit\": 0}\n\n    if outcome == \"refer\":\n        # Manual review per spec section 3 (do not decline).\n        return {\"action\": \"queue_review\", \"limit\": 0}\n\n    # outcome == \"approve\"\n    try:\n        limit = int(credit_limit)\n    except (TypeError, ValueError):\n        limit = 0\n\n    # Network referral rule (all partners): a self_employed applicant whose\n    # requested_limit is strictly above 6000 must go to manual review instead\n    # of being issued. A decline stays a decline (handled above).\n    employment = app.get(\"employment\")\n    if employment == \"self_employed\":\n        try:\n            requested = int(app.get(\"requested_limit\"))\n        except (TypeError, ValueError):\n            requested = None\n        if requested is not None and requested > 6000:\n            return {\"action\": \"queue_review\", \"limit\": 0}\n\n    return {\"action\": \"issue\", \"limit\": limit}\n",
+ "gaps": [],
+ "trace": [
+  {
+   "tool": "ticket_read",
+   "args": "",
+   "result": "KF-11: Brightmoor has moved to API v2 and the handler now errors. Update it.\nComments:\n- support: errors started on Monday."
+  },
+  {
+   "tool": "spec_read",
+   "args": "spec",
+   "result": "# Brightmoor Card Partner Integration Spec\n## 1 Endpoint\nsvc.apply(app) submits an application. Application fields: id, age, income, employment (employed or self_employed), requested_limit.\n## 2 Response (API v1)\nsvc.apply returns a dict with `decision` (\"approve\", \"decline\" or \"refer\") and `limit` (an integer, 0 unless approved).\n## 3 Handling\napprove: issue the card with the returned limit. decline: decline the application. refer: the application is not decided; place it in the manual review queue (action queue_review) and do not decline it.\n## 4 Network referral rule\nFor every partner in th"
+  },
+  {
+   "tool": "svc_call",
+   "args": "{\"id\": \"t1\", \"age\": 35, \"income\": 50000, \"employment\": \"employed\", \"requested_limit\": 5000}",
+   "result": "{\"api_version\": 2, \"result\": {\"outcome\": \"approved\", \"credit_limit\": 5000}}"
+  },
+  {
+   "tool": "svc_call",
+   "args": "{\"id\": \"t2\", \"age\": 25, \"income\": 10000, \"employment\": \"self_employed\", \"requested_limit\": 1000}",
+   "result": "{\"api_version\": 2, \"result\": {\"outcome\": \"declined\", \"credit_limit\": 0}}"
+  },
+  {
+   "tool": "svc_call",
+   "args": "{\"id\": \"t3\", \"age\": 40, \"income\": 90000, \"employment\": \"self_employed\", \"requested_limit\": 8000}",
+   "result": "{\"api_version\": 2, \"result\": {\"outcome\": \"approved\", \"credit_limit\": 8000}}"
+  },
+  {
+   "tool": "spec_read",
+   "args": "api_v2",
+   "result": "Unknown document. Available: spec, changelog"
+  },
+  {
+   "tool": "spec_read",
+   "args": "changelog",
+   "result": "# Brightmoor API changelog\n## API v2 (current)\nsvc.apply now returns {\"api_version\": 2, \"result\": {\"outcome\": \"approved\" | \"declined\" | \"manual_review\", \"credit_limit\": <int>}}. The v1 fields `decision` and `limit` are removed. outcome manual_review replaces refer and is handled as in spec section 3."
+  },
+  {
+   "tool": "submit_solution",
+   "args": "import re\n\n\ndef _norm_outcome(outcome):\n    \"\"\"Normalize outcome strings across API versions.\"\"\"\n    if outcome is None:\n        return None\n    o = str(outcome).strip().lower()\n    mapping = {\n      ",
+   "result": "submitted"
+  },
+  {
+   "tool": "kb_set_claim",
+   "args": "['k6', 'Brightmoor is now on API v2: svc.apply returns {\"api_version\": 2, \"result\": {\"outcome\": \"approved\"|\"declined\"|\"manual_review\", \"credit_limit\": <int>}}. The v1 fields `decision` and `limit` are removed.', 'changelog', 'svc.apply now returns {\"api_version\": 2, \"result\": {\"outcome\": \"approved\" | \"declined\" | \"manual_review\", \"credit_limit\": <int>}}. The v1 fields `decision` and `limit` are removed.']",
+   "result": "ok"
+  },
+  {
+   "tool": "kb_set_claim",
+   "args": "['k7', 'API v2 outcome mapping: \"approved\" -> issue, \"declined\" -> decline, \"manual_review\" -> queue_review (manual_review replaces v1 \"refer\" and is handled per spec section 3: do not decline).', 'changelog', 'outcome manual_review replaces refer and is handled as in spec section 3.']",
+   "result": "ok"
+  },
+  {
+   "tool": "kb_delete_claim",
+   "args": "k2",
+   "result": "ok"
+  }
+ ]
+}

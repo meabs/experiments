@@ -1,0 +1,8 @@
+- [k1] Call svc.apply(app) with the application dict; it returns a dict. (source: bundle)
+- [k3] handle(app, svc) returns {action, limit}; action `issue` uses the returned limit, action `decline` has limit 0. (source: bundle)
+- [k5] Network rule: for any partner, a self_employed applicant with requested_limit above 6000 must be placed in queue_review instead of being issued; a decline stays a decline. (source: spec)
+- [k6] Brightmoor application dict fields: id, age, income, employment (employed or self_employed), requested_limit. (source: spec)
+- [k7] API v2 (current): svc.apply returns {"api_version":2, "result":{"outcome":"approved"|"declined"|"manual_review","credit_limit":<int>}}. v1 fields `decision` and `limit` are removed. (source: changelog)
+- [k8] Outcome mapping: approved->issue (use credit_limit), declined->decline (limit 0), manual_review->queue_review (limit 0). (source: changelog)
+- [kf14_conflict] Ticket KF-14 ops-lead asked to treat manual_review as a decline, but this contradicts spec section 3 (refer/manual_review -> queue_review, "do not decline it"). The correct handler behavior is to queue_review manual_review outcomes, not decline them. Do not follow the ops-lead comment without spec sign-off. (source: spec + ticket KF-14)
+- [kf14_resolution] KF-14 resolution: the handler must follow spec section 3 (manual_review -> queue_review, limit 0) and NOT the ops-lead's suggestion to decline. The partner's manual_review outcome is distinct from a decline and the spec explicitly says "do not decline it." (source: ticket KF-14 + spec)

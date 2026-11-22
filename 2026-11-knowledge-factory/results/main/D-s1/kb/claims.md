@@ -1,0 +1,7 @@
+- [k1] Call svc.apply(app) with the application dict; it returns a dict. (source: bundle)
+- [k2] API v2 is current: svc.apply returns {"api_version": 2, "result": {"outcome": "approved" | "declined" | "manual_review", "credit_limit": <int>}}. The v1 fields `decision` and `limit` are removed. (source: changelog)
+- [k3] handle(app, svc) maps the v2 outcome: approved -> issue with credit_limit; declined -> decline with limit 0; manual_review -> queue_review with limit 0 (do not decline it). manual_review replaces v1's refer and is handled as in spec section 3. (source: changelog)
+- [k3b] Per spec section 3 handling: approved -> issue the card with the returned limit; declined -> decline the application; manual_review (v1 refer) -> the application is not decided; place it in the manual review queue (action queue_review) and do not decline it. (source: spec)
+- [k4] Network referral rule: whatever the partner decided, a self_employed applicant with requested_limit above 6000 must be placed in manual review (queue_review) instead of being issued; a decline stays a decline. (source: spec)
+- [k5] Application fields are: id, age, income, employment (employed or self_employed), requested_limit. (source: spec)
+- [k6] Ticket KF-14 (Brightmoor) contains an ops-lead comment suggesting manual review be treated as a decline ("Just decline them in the handler"). This advice is NOT normative and contradicts the spec, which requires manual review to be queued, not declined. The handler must follow the spec (queue_review), not the ticket comment. (source: spec)

@@ -1,0 +1,3 @@
+- [k1] Call svc.apply(app) with the application dict; it returns a dict. (source: bundle)
+- [k2] In API v1 the response has `decision` (approve or decline) and `limit` (integer). (source: bundle)
+- [k3] handle(app, svc) returns {action, limit}; action `issue` uses the returned limit, action `decline` has limit 0. (source: bundle)

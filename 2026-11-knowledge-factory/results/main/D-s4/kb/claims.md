@@ -1,0 +1,5 @@
+- [k1] svc.apply(app) submits an application and returns a dict. Application fields: id, age, income, employment (employed or self_employed), requested_limit. (source: spec)
+- [k2] Calloway is on API v2 (current). svc.apply returns {"api_version": 2, "result": {"outcome": "approved" | "declined" | "manual_review", "credit_limit": <int>}}. The v1 fields `decision` and `limit` are removed. (v1 had decision approve/decline/refer and limit.) (source: changelog)
+- [k3] Handling (API v2 outcome): approved → issue the card with the returned credit_limit; declined → decline the application; manual_review → place in the manual review queue (action queue_review, limit 0) and do not decline it. (source: changelog)
+- [k4] For outcome manual_review the application is not decided: place it in the manual review queue (action queue_review, limit 0) and do not decline it. (source: spec)
+- [k5] Network referral rule (all partners): whatever the partner decided, an application from a self_employed applicant whose requested_limit is above 7000 must be placed in manual review (queue_review) instead of being issued; a decline stays a decline. (source: spec)
