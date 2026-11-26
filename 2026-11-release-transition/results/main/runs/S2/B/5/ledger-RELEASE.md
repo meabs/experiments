@@ -1,0 +1,5 @@
+# Ledger rollout
+
+Deploy customer fully first, then deploy ledger one instance at a time, as declared in `plan.json`. Customer's old and new versions can run against the old ledger while it rolls out. The ledger migration adds `amount_cents` and backfills it while retaining the legacy `amount` column. New ledger instances write both columns, read cents, and return the existing decimal fields plus `balanceCents`. Old ledger instances continue to read and write `amount`; new reads fall back to converting that column, so either ledger version can serve traffic during a partial rollout. The `payment.posted` event keeps its existing decimal `amount` field, so old and new customer instances can consume it.
+
+If the ledger rollout fails, stop and roll back to the previous ledger version; the retained `amount` column and additive schema version let old instances continue operating. Do not remove `amount_cents` or rewrite the schema during rollback. Any postings made by a new instance remain readable by old instances through the legacy `amount` column.

@@ -1,0 +1,104 @@
+diff -ruN /home/garry/code/experiments/2026-11-release-transition/estate/customer/src/main/java/estate/svc/Main.java /home/garry/code/experiments/2026-11-release-transition/results/main/runs/S3/B/1/work/customer/customer/src/main/java/estate/svc/Main.java
+--- /home/garry/code/experiments/2026-11-release-transition/estate/customer/src/main/java/estate/svc/Main.java	2026-11-26 00:31:13.236583626 +0000
++++ /home/garry/code/experiments/2026-11-release-transition/results/main/runs/S3/B/1/work/customer/customer/src/main/java/estate/svc/Main.java	2026-11-26 08:48:36.020238711 +0000
+@@ -64,17 +64,24 @@
+     }
+ 
+     private Map<String, String> pay(Map<String, String> req) throws Exception {
+-        Map<String, String> post = new HashMap<>();
+-        post.put("account", req.get("account"));
+-        post.put("amount", req.get("amount"));
+-        post.put("requestId", req.get("ref"));
+-        try {
+-            ctx.call("ledger", "post", post);
+-            return Map.of("status", "OK");
+-        } catch (ServiceException e) {
+-            if ("timeout".equals(e.code)) return Map.of("status", "FAILED", "reason", "timeout");
+-            throw e;
++        String ref = req.get("ref");
++        for (int attempt = 1; attempt <= 3; attempt++) {
++            Map<String, String> post = new HashMap<>();
++            post.put("account", req.get("account"));
++            post.put("amount", req.get("amount"));
++            // idempotencyKey is understood by the new ledger; requestId keeps this
++            // request compatible with the existing ledger contract during rollback.
++            post.put("idempotencyKey", ref);
++            post.put("requestId", ref + "-" + attempt);
++            try {
++                ctx.call("ledger", "post", post);
++                return Map.of("status", "OK");
++            } catch (ServiceException e) {
++                if (!"timeout".equals(e.code)) throw e;
++                if (attempt == 3) return Map.of("status", "FAILED", "reason", "timeout");
++            }
+         }
++        throw new IllegalStateException("unreachable");
+     }
+ 
+     @Override
+diff -ruN /home/garry/code/experiments/2026-11-release-transition/estate/customer/src/test/java/estate/svc/MainTest.java /home/garry/code/experiments/2026-11-release-transition/results/main/runs/S3/B/1/work/customer/customer/src/test/java/estate/svc/MainTest.java
+--- /home/garry/code/experiments/2026-11-release-transition/estate/customer/src/test/java/estate/svc/MainTest.java	2026-11-26 00:31:13.239032207 +0000
++++ /home/garry/code/experiments/2026-11-release-transition/results/main/runs/S3/B/1/work/customer/customer/src/test/java/estate/svc/MainTest.java	2026-11-26 08:48:57.634519613 +0000
+@@ -2,6 +2,8 @@
+ 
+ import org.junit.jupiter.api.Test;
+ 
++import java.util.ArrayList;
++import java.util.List;
+ import java.util.Map;
+ 
+ import static org.junit.jupiter.api.Assertions.*;
+@@ -28,10 +30,50 @@
+     void payPostsToTheLedgerAndReportsTimeouts() throws Exception {
+         FakeContext c = new FakeContext();
+         Main m = start(c);
+-        c.stubs.put("ledger.post", r -> Map.of("id", "1", "dup", "false"));
++        List<Map<String, String>> posts = new ArrayList<>();
++        c.stubs.put("ledger.post", r -> {
++            posts.add(r);
++            return Map.of("id", "1", "dup", "false");
++        });
+         assertEquals("OK", m.handle("pay", Map.of("customerId", "c1", "account", "a1", "amount", "5.00", "ref", "r1")).get("status"));
+-        c.stubs.put("ledger.post", r -> { throw new estate.api.ServiceException("timeout", "lost"); });
+-        assertEquals("FAILED", m.handle("pay", Map.of("customerId", "c1", "account", "a1", "amount", "5.00", "ref", "r2")).get("status"));
++        assertEquals(List.of("r1"), posts.get(0).entrySet().stream()
++                .filter(e -> e.getKey().equals("idempotencyKey"))
++                .map(Map.Entry::getValue).toList());
++        assertEquals("r1-1", posts.get(0).get("requestId"));
++
++        posts.clear();
++        c.stubs.put("ledger.post", r -> {
++            posts.add(r);
++            if (posts.size() < 3) throw new estate.api.ServiceException("timeout", "lost");
++            return Map.of("id", "2", "dup", "false");
++        });
++        assertEquals("OK", m.handle("pay", Map.of("customerId", "c1", "account", "a1", "amount", "5.00", "ref", "r2")).get("status"));
++        assertEquals(List.of("r2-1", "r2-2", "r2-3"), posts.stream().map(r -> r.get("requestId")).toList());
++        assertTrue(posts.stream().allMatch(r -> "r2".equals(r.get("idempotencyKey"))));
++
++        posts.clear();
++        c.stubs.put("ledger.post", r -> {
++            posts.add(r);
++            throw new estate.api.ServiceException("timeout", "lost");
++        });
++        assertEquals("FAILED", m.handle("pay", Map.of("customerId", "c1", "account", "a1", "amount", "5.00", "ref", "r3")).get("status"));
++        assertEquals(List.of("r3-1", "r3-2", "r3-3"), posts.stream().map(r -> r.get("requestId")).toList());
++        assertTrue(posts.stream().allMatch(r -> "r3".equals(r.get("idempotencyKey"))));
++    }
++
++    @Test
++    void payDoesNotRetryNonTimeoutFailures() throws Exception {
++        FakeContext c = new FakeContext();
++        Main m = start(c);
++        int[] attempts = {0};
++        c.stubs.put("ledger.post", r -> {
++            attempts[0]++;
++            throw new estate.api.ServiceException("unavailable", "down");
++        });
++        estate.api.ServiceException e = assertThrows(estate.api.ServiceException.class,
++                () -> m.handle("pay", Map.of("account", "a1", "amount", "5.00", "ref", "r4")));
++        assertEquals("unavailable", e.code);
++        assertEquals(1, attempts[0]);
+     }
+ 
+     @Test

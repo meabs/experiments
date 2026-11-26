@@ -1,0 +1,124 @@
+diff -ruN /home/garry/code/experiments/2026-11-release-transition/estate/notifier/src/main/java/estate/svc/Main.java /home/garry/code/experiments/2026-11-release-transition/results/pilot/runs/S4/A/3/work/notifier/notifier/src/main/java/estate/svc/Main.java
+--- /home/garry/code/experiments/2026-11-release-transition/estate/notifier/src/main/java/estate/svc/Main.java	2026-11-26 00:30:54.652185134 +0000
++++ /home/garry/code/experiments/2026-11-release-transition/results/pilot/runs/S4/A/3/work/notifier/notifier/src/main/java/estate/svc/Main.java	2026-11-26 00:51:08.436721129 +0000
+@@ -22,20 +22,53 @@
+         try (Statement s = db.createStatement()) {
+             s.execute("CREATE TABLE IF NOT EXISTS sent(id BIGINT AUTO_INCREMENT PRIMARY KEY, customer_id VARCHAR(40) NOT NULL, "
+                     + "offer_id VARCHAR(40) NOT NULL, ts BIGINT NOT NULL)");
++            s.execute("CREATE TABLE IF NOT EXISTS offer_drops(customer_id VARCHAR(40) PRIMARY KEY, dropped BIGINT NOT NULL)");
+         }
+     }
+ 
+     @Override
+     public void onEvent(String topic, Map<String, String> ev) throws Exception {
+         if (!"offer.queued".equals(topic)) return;
++        String customerId = ev.get("customerId");
++        long tick = ctx.now();
++        long day = tick / 100;
++        long dayStart = day * 100;
++        long dayEnd = dayStart + 100;
++        try (PreparedStatement count = db.prepareStatement(
++                "SELECT COUNT(*) FROM sent WHERE customer_id = ? AND ts >= ? AND ts < ?")) {
++            count.setString(1, customerId);
++            count.setLong(2, dayStart);
++            count.setLong(3, dayEnd);
++            try (ResultSet rs = count.executeQuery()) {
++                rs.next();
++                if (rs.getLong(1) >= 2) {
++                    recordDrop(customerId);
++                    return;
++                }
++            }
++        }
+         try (PreparedStatement ins = db.prepareStatement("INSERT INTO sent(customer_id, offer_id, ts) VALUES (?,?,?)")) {
+-            ins.setString(1, ev.get("customerId"));
++            ins.setString(1, customerId);
+             ins.setString(2, ev.get("offerId"));
+-            ins.setLong(3, ctx.now());
++            ins.setLong(3, tick);
+             ins.executeUpdate();
+         }
+     }
+ 
++    private void recordDrop(String customerId) throws Exception {
++        try (PreparedStatement update = db.prepareStatement(
++                "UPDATE offer_drops SET dropped = dropped + 1 WHERE customer_id = ?")) {
++            update.setString(1, customerId);
++            if (update.executeUpdate() == 0) {
++                try (PreparedStatement insert = db.prepareStatement(
++                        "INSERT INTO offer_drops(customer_id, dropped) VALUES (?, 1)")) {
++                    insert.setString(1, customerId);
++                    insert.executeUpdate();
++                }
++            }
++        }
++    }
++
+     @Override
+     public Map<String, String> handle(String op, Map<String, String> req) throws ServiceException {
+         try {
+@@ -54,7 +87,7 @@
+         }
+     }
+ 
+-    /** Messages sent to a customer: count, and the ticks as a comma separated list. */
++    /** Messages sent to a customer: count, ticks, and total offers dropped by the daily cap. */
+     private Map<String, String> sent(Map<String, String> req) throws Exception {
+         try (PreparedStatement q = db.prepareStatement("SELECT ts FROM sent WHERE customer_id = ? ORDER BY id")) {
+             q.setString(1, req.get("customerId"));
+@@ -63,7 +96,15 @@
+             try (ResultSet rs = q.executeQuery()) {
+                 while (rs.next()) { if (n++ > 0) ticks.append(','); ticks.append(rs.getLong(1)); }
+             }
+-            return Map.of("count", String.valueOf(n), "ticks", ticks.toString());
++            try (PreparedStatement drops = db.prepareStatement(
++                    "SELECT COALESCE(dropped, 0) FROM offer_drops WHERE customer_id = ?")) {
++                drops.setString(1, req.get("customerId"));
++                String capped = "0";
++                try (ResultSet rs = drops.executeQuery()) {
++                    if (rs.next()) capped = String.valueOf(rs.getLong(1));
++                }
++                return Map.of("count", String.valueOf(n), "ticks", ticks.toString(), "capped", capped);
++            }
+         }
+     }
+ }
+diff -ruN /home/garry/code/experiments/2026-11-release-transition/estate/notifier/src/test/java/estate/svc/MainTest.java /home/garry/code/experiments/2026-11-release-transition/results/pilot/runs/S4/A/3/work/notifier/notifier/src/test/java/estate/svc/MainTest.java
+--- /home/garry/code/experiments/2026-11-release-transition/estate/notifier/src/test/java/estate/svc/MainTest.java	2026-11-26 00:30:54.653185102 +0000
++++ /home/garry/code/experiments/2026-11-release-transition/results/pilot/runs/S4/A/3/work/notifier/notifier/src/test/java/estate/svc/MainTest.java	2026-11-26 00:51:46.033482589 +0000
+@@ -17,6 +17,35 @@
+         Map<String, String> r = m.handle("sent", Map.of("customerId", "c1"));
+         assertEquals("1", r.get("count"));
+         assertEquals("7", r.get("ticks"));
++        assertEquals("0", r.get("capped"));
++    }
++
++    @Test
++    void dailyCapDropsFurtherOffersAndResetsNextDay() throws Exception {
++        FakeContext c = new FakeContext();
++        Main m = new Main();
++        m.start(c);
++
++        c.tick = 7;
++        m.onEvent("offer.queued", Map.of("customerId", "c1", "offerId", "o1"));
++        c.tick = 50;
++        m.onEvent("offer.queued", Map.of("customerId", "c1", "offerId", "o2"));
++        c.tick = 75;
++        m.onEvent("offer.queued", Map.of("customerId", "c1", "offerId", "o3"));
++        c.tick = 99;
++        m.onEvent("offer.queued", Map.of("customerId", "c1", "offerId", "o4"));
++
++        Map<String, String> sameDay = m.handle("sent", Map.of("customerId", "c1"));
++        assertEquals("2", sameDay.get("count"));
++        assertEquals("7,50", sameDay.get("ticks"));
++        assertEquals("2", sameDay.get("capped"));
++
++        c.tick = 100;
++        m.onEvent("offer.queued", Map.of("customerId", "c1", "offerId", "o5"));
++        Map<String, String> nextDay = m.handle("sent", Map.of("customerId", "c1"));
++        assertEquals("3", nextDay.get("count"));
++        assertEquals("7,50,100", nextDay.get("ticks"));
++        assertEquals("2", nextDay.get("capped"));
+     }
+ 
+     @Test

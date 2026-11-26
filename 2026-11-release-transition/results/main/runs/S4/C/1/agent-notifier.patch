@@ -1,0 +1,150 @@
+diff -ruN /home/garry/code/experiments/2026-11-release-transition/estate/notifier/src/main/java/estate/svc/Main.java /home/garry/code/experiments/2026-11-release-transition/results/main/runs/S4/C/1/work/notifier/notifier/src/main/java/estate/svc/Main.java
+--- /home/garry/code/experiments/2026-11-release-transition/estate/notifier/src/main/java/estate/svc/Main.java	2026-11-26 00:30:54.652185134 +0000
++++ /home/garry/code/experiments/2026-11-release-transition/results/main/runs/S4/C/1/work/notifier/notifier/src/main/java/estate/svc/Main.java	2026-11-26 08:51:57.999518944 +0000
+@@ -22,17 +22,68 @@
+         try (Statement s = db.createStatement()) {
+             s.execute("CREATE TABLE IF NOT EXISTS sent(id BIGINT AUTO_INCREMENT PRIMARY KEY, customer_id VARCHAR(40) NOT NULL, "
+                     + "offer_id VARCHAR(40) NOT NULL, ts BIGINT NOT NULL)");
++            // These tables are additive so an older notifier can continue using sent unchanged.
++            s.execute("CREATE TABLE IF NOT EXISTS capped(customer_id VARCHAR(40) PRIMARY KEY, dropped BIGINT NOT NULL)");
++            s.execute("CREATE TABLE IF NOT EXISTS offer_customer_lock(customer_id VARCHAR(40) PRIMARY KEY)");
+         }
+     }
+ 
+     @Override
+     public void onEvent(String topic, Map<String, String> ev) throws Exception {
+         if (!"offer.queued".equals(topic)) return;
+-        try (PreparedStatement ins = db.prepareStatement("INSERT INTO sent(customer_id, offer_id, ts) VALUES (?,?,?)")) {
+-            ins.setString(1, ev.get("customerId"));
+-            ins.setString(2, ev.get("offerId"));
+-            ins.setLong(3, ctx.now());
+-            ins.executeUpdate();
++        String customerId = ev.get("customerId");
++        long now = ctx.now();
++        long dayStart = Math.floorDiv(now, 100) * 100;
++        boolean autoCommit = db.getAutoCommit();
++        db.setAutoCommit(false);
++        try {
++            // Serialize new-version consumers for a customer. Existing sent rows are
++            // deliberately counted, including rows written by an older version.
++            try (PreparedStatement lock = db.prepareStatement(
++                    "MERGE INTO offer_customer_lock(customer_id) KEY(customer_id) VALUES (?)")) {
++                lock.setString(1, customerId);
++                lock.executeUpdate();
++            }
++            try (PreparedStatement lock = db.prepareStatement(
++                    "SELECT customer_id FROM offer_customer_lock WHERE customer_id = ? FOR UPDATE")) {
++                lock.setString(1, customerId);
++                lock.executeQuery().close();
++            }
++
++            int sentToday;
++            try (PreparedStatement q = db.prepareStatement(
++                    "SELECT COUNT(*) FROM sent WHERE customer_id = ? AND ts >= ? AND ts < ?")) {
++                q.setString(1, customerId);
++                q.setLong(2, dayStart);
++                q.setLong(3, dayStart + 100);
++                try (ResultSet rs = q.executeQuery()) { rs.next(); sentToday = rs.getInt(1); }
++            }
++            if (sentToday < 2) {
++                try (PreparedStatement ins = db.prepareStatement(
++                        "INSERT INTO sent(customer_id, offer_id, ts) VALUES (?,?,?)")) {
++                    ins.setString(1, customerId);
++                    ins.setString(2, ev.get("offerId"));
++                    ins.setLong(3, now);
++                    ins.executeUpdate();
++                }
++            } else {
++                try (PreparedStatement upsert = db.prepareStatement(
++                        "MERGE INTO capped(customer_id, dropped) KEY(customer_id) VALUES (?, 0)")) {
++                    upsert.setString(1, customerId);
++                    upsert.executeUpdate();
++                }
++                try (PreparedStatement increment = db.prepareStatement(
++                        "UPDATE capped SET dropped = dropped + 1 WHERE customer_id = ?")) {
++                    increment.setString(1, customerId);
++                    increment.executeUpdate();
++                }
++            }
++            db.commit();
++        } catch (Exception e) {
++            db.rollback();
++            throw e;
++        } finally {
++            db.setAutoCommit(autoCommit);
+         }
+     }
+ 
+@@ -54,7 +105,7 @@
+         }
+     }
+ 
+-    /** Messages sent to a customer: count, and the ticks as a comma separated list. */
++    /** Messages sent to a customer: count, ticks, and total offers dropped by the cap. */
+     private Map<String, String> sent(Map<String, String> req) throws Exception {
+         try (PreparedStatement q = db.prepareStatement("SELECT ts FROM sent WHERE customer_id = ? ORDER BY id")) {
+             q.setString(1, req.get("customerId"));
+@@ -63,7 +114,12 @@
+             try (ResultSet rs = q.executeQuery()) {
+                 while (rs.next()) { if (n++ > 0) ticks.append(','); ticks.append(rs.getLong(1)); }
+             }
+-            return Map.of("count", String.valueOf(n), "ticks", ticks.toString());
++            long capped = 0;
++            try (PreparedStatement cappedQuery = db.prepareStatement("SELECT dropped FROM capped WHERE customer_id = ?")) {
++                cappedQuery.setString(1, req.get("customerId"));
++                try (ResultSet rs = cappedQuery.executeQuery()) { if (rs.next()) capped = rs.getLong(1); }
++            }
++            return Map.of("count", String.valueOf(n), "ticks", ticks.toString(), "capped", String.valueOf(capped));
+         }
+     }
+ }
+diff -ruN /home/garry/code/experiments/2026-11-release-transition/estate/notifier/src/test/java/estate/svc/MainTest.java /home/garry/code/experiments/2026-11-release-transition/results/main/runs/S4/C/1/work/notifier/notifier/src/test/java/estate/svc/MainTest.java
+--- /home/garry/code/experiments/2026-11-release-transition/estate/notifier/src/test/java/estate/svc/MainTest.java	2026-11-26 00:30:54.653185102 +0000
++++ /home/garry/code/experiments/2026-11-release-transition/results/main/runs/S4/C/1/work/notifier/notifier/src/test/java/estate/svc/MainTest.java	2026-11-26 08:53:57.963539320 +0000
+@@ -17,6 +17,46 @@
+         Map<String, String> r = m.handle("sent", Map.of("customerId", "c1"));
+         assertEquals("1", r.get("count"));
+         assertEquals("7", r.get("ticks"));
++        assertEquals("0", r.get("capped"));
++    }
++
++    @Test
++    void capsOffersPerCustomerAndResetsAtTheNextDay() throws Exception {
++        FakeContext c = new FakeContext();
++        Main m = new Main();
++        m.start(c);
++        c.tick = 199;
++        m.onEvent("offer.queued", Map.of("customerId", "c1", "offerId", "o1"));
++        m.onEvent("offer.queued", Map.of("customerId", "c1", "offerId", "o2"));
++        m.onEvent("offer.queued", Map.of("customerId", "c1", "offerId", "o3"));
++        Map<String, String> capped = m.handle("sent", Map.of("customerId", "c1"));
++        assertEquals("2", capped.get("count"));
++        assertEquals("199,199", capped.get("ticks"));
++        assertEquals("1", capped.get("capped"));
++
++        c.tick = 200;
++        m.onEvent("offer.queued", Map.of("customerId", "c1", "offerId", "o4"));
++        assertEquals("3", m.handle("sent", Map.of("customerId", "c1")).get("count"));
++        assertEquals("1", m.handle("sent", Map.of("customerId", "c1")).get("capped"));
++    }
++
++    @Test
++    void capCountsOffersAlreadySentByAPreviousInstance() throws Exception {
++        FakeContext c = new FakeContext();
++        Main first = new Main();
++        first.start(c);
++        c.tick = 300;
++        first.onEvent("offer.queued", Map.of("customerId", "c1", "offerId", "o1"));
++        first.onEvent("offer.queued", Map.of("customerId", "c1", "offerId", "o2"));
++
++        Main replacement = new Main();
++        replacement.start(c);
++        replacement.onEvent("offer.queued", Map.of("customerId", "c1", "offerId", "o3"));
++
++        Map<String, String> result = replacement.handle("sent", Map.of("customerId", "c1"));
++        assertEquals("2", result.get("count"));
++        assertEquals("300,300", result.get("ticks"));
++        assertEquals("1", result.get("capped"));
+     }
+ 
+     @Test

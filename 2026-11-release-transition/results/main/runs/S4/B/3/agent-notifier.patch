@@ -1,0 +1,161 @@
+diff -ruN /home/garry/code/experiments/2026-11-release-transition/estate/notifier/src/main/java/estate/svc/Main.java /home/garry/code/experiments/2026-11-release-transition/results/main/runs/S4/B/3/work/notifier/notifier/src/main/java/estate/svc/Main.java
+--- /home/garry/code/experiments/2026-11-release-transition/estate/notifier/src/main/java/estate/svc/Main.java	2026-11-26 00:30:54.652185134 +0000
++++ /home/garry/code/experiments/2026-11-release-transition/results/main/runs/S4/B/3/work/notifier/notifier/src/main/java/estate/svc/Main.java	2026-11-26 09:20:14.520315231 +0000
+@@ -22,17 +22,48 @@
+         try (Statement s = db.createStatement()) {
+             s.execute("CREATE TABLE IF NOT EXISTS sent(id BIGINT AUTO_INCREMENT PRIMARY KEY, customer_id VARCHAR(40) NOT NULL, "
+                     + "offer_id VARCHAR(40) NOT NULL, ts BIGINT NOT NULL)");
++            s.execute("CREATE TABLE IF NOT EXISTS offer_daily(customer_id VARCHAR(40) NOT NULL, offer_day BIGINT NOT NULL, "
++                    + "sent_count INT NOT NULL, capped BIGINT NOT NULL, PRIMARY KEY(customer_id, offer_day))");
+         }
++        seedDailyCounts();
+     }
+ 
+     @Override
+     public void onEvent(String topic, Map<String, String> ev) throws Exception {
+         if (!"offer.queued".equals(topic)) return;
+-        try (PreparedStatement ins = db.prepareStatement("INSERT INTO sent(customer_id, offer_id, ts) VALUES (?,?,?)")) {
+-            ins.setString(1, ev.get("customerId"));
+-            ins.setString(2, ev.get("offerId"));
+-            ins.setLong(3, ctx.now());
+-            ins.executeUpdate();
++        String customerId = ev.get("customerId");
++        long tick = ctx.now();
++        long day = Math.floorDiv(tick, 100);
++        boolean wasAutoCommit = db.getAutoCommit();
++        if (wasAutoCommit) db.setAutoCommit(false);
++        try {
++            ensureDailyCount(customerId, day);
++            try (PreparedStatement accept = db.prepareStatement(
++                    "UPDATE offer_daily SET sent_count = sent_count + 1 WHERE customer_id = ? AND offer_day = ? AND sent_count < 2")) {
++                accept.setString(1, customerId);
++                accept.setLong(2, day);
++                if (accept.executeUpdate() == 1) {
++                    try (PreparedStatement ins = db.prepareStatement("INSERT INTO sent(customer_id, offer_id, ts) VALUES (?,?,?)")) {
++                        ins.setString(1, customerId);
++                        ins.setString(2, ev.get("offerId"));
++                        ins.setLong(3, tick);
++                        ins.executeUpdate();
++                    }
++                } else {
++                    try (PreparedStatement capped = db.prepareStatement(
++                            "UPDATE offer_daily SET capped = capped + 1 WHERE customer_id = ? AND offer_day = ?")) {
++                        capped.setString(1, customerId);
++                        capped.setLong(2, day);
++                        capped.executeUpdate();
++                    }
++                }
++            }
++            db.commit();
++        } catch (Exception e) {
++            db.rollback();
++            throw e;
++        } finally {
++            if (wasAutoCommit) db.setAutoCommit(true);
+         }
+     }
+ 
+@@ -54,7 +85,39 @@
+         }
+     }
+ 
+-    /** Messages sent to a customer: count, and the ticks as a comma separated list. */
++    private void seedDailyCounts() throws Exception {
++        try (Statement s = db.createStatement();
++             ResultSet rs = s.executeQuery("SELECT customer_id, CAST(FLOOR(ts / 100) AS BIGINT), COUNT(*) FROM sent GROUP BY customer_id, CAST(FLOOR(ts / 100) AS BIGINT)")) {
++            while (rs.next()) {
++                try (PreparedStatement add = db.prepareStatement(
++                        "INSERT INTO offer_daily(customer_id, offer_day, sent_count, capped) "
++                                + "SELECT ?, ?, ?, 0 WHERE NOT EXISTS "
++                                + "(SELECT 1 FROM offer_daily WHERE customer_id = ? AND offer_day = ?)")) {
++                    add.setString(1, rs.getString(1));
++                    add.setLong(2, rs.getLong(2));
++                    add.setInt(3, rs.getInt(3));
++                    add.setString(4, rs.getString(1));
++                    add.setLong(5, rs.getLong(2));
++                    add.executeUpdate();
++                }
++            }
++        }
++    }
++
++    private void ensureDailyCount(String customerId, long day) throws Exception {
++        try (PreparedStatement add = db.prepareStatement(
++                "INSERT INTO offer_daily(customer_id, offer_day, sent_count, capped) "
++                        + "SELECT ?, ?, 0, 0 WHERE NOT EXISTS "
++                        + "(SELECT 1 FROM offer_daily WHERE customer_id = ? AND offer_day = ?)")) {
++            add.setString(1, customerId);
++            add.setLong(2, day);
++            add.setString(3, customerId);
++            add.setLong(4, day);
++            add.executeUpdate();
++        }
++    }
++
++    /** Messages sent to a customer: count, ticks, and offers dropped by the daily cap. */
+     private Map<String, String> sent(Map<String, String> req) throws Exception {
+         try (PreparedStatement q = db.prepareStatement("SELECT ts FROM sent WHERE customer_id = ? ORDER BY id")) {
+             q.setString(1, req.get("customerId"));
+@@ -63,7 +126,13 @@
+             try (ResultSet rs = q.executeQuery()) {
+                 while (rs.next()) { if (n++ > 0) ticks.append(','); ticks.append(rs.getLong(1)); }
+             }
+-            return Map.of("count", String.valueOf(n), "ticks", ticks.toString());
++            try (PreparedStatement cappedQuery = db.prepareStatement("SELECT COALESCE(SUM(capped), 0) FROM offer_daily WHERE customer_id = ?")) {
++                cappedQuery.setString(1, req.get("customerId"));
++                try (ResultSet rs = cappedQuery.executeQuery()) {
++                    rs.next();
++                    return Map.of("count", String.valueOf(n), "ticks", ticks.toString(), "capped", String.valueOf(rs.getLong(1)));
++                }
++            }
+         }
+     }
+ }
+diff -ruN /home/garry/code/experiments/2026-11-release-transition/estate/notifier/src/test/java/estate/svc/MainTest.java /home/garry/code/experiments/2026-11-release-transition/results/main/runs/S4/B/3/work/notifier/notifier/src/test/java/estate/svc/MainTest.java
+--- /home/garry/code/experiments/2026-11-release-transition/estate/notifier/src/test/java/estate/svc/MainTest.java	2026-11-26 00:30:54.653185102 +0000
++++ /home/garry/code/experiments/2026-11-release-transition/results/main/runs/S4/B/3/work/notifier/notifier/src/test/java/estate/svc/MainTest.java	2026-11-26 09:19:38.745500286 +0000
+@@ -17,6 +17,44 @@
+         Map<String, String> r = m.handle("sent", Map.of("customerId", "c1"));
+         assertEquals("1", r.get("count"));
+         assertEquals("7", r.get("ticks"));
++        assertEquals("0", r.get("capped"));
++    }
++
++    @Test
++    void dailyCapCountsDroppedOffersAndResetsOnNextDay() throws Exception {
++        FakeContext c = new FakeContext();
++        Main m = new Main();
++        m.start(c);
++        c.tick = 100;
++        m.onEvent("offer.queued", Map.of("customerId", "c1", "offerId", "o1"));
++        m.onEvent("offer.queued", Map.of("customerId", "c1", "offerId", "o2"));
++        m.onEvent("offer.queued", Map.of("customerId", "c1", "offerId", "o3"));
++        m.onEvent("offer.queued", Map.of("customerId", "c1", "offerId", "o4"));
++
++        Map<String, String> sameDay = m.handle("sent", Map.of("customerId", "c1"));
++        assertEquals("2", sameDay.get("count"));
++        assertEquals("100,100", sameDay.get("ticks"));
++        assertEquals("2", sameDay.get("capped"));
++
++        c.tick = 200;
++        m.onEvent("offer.queued", Map.of("customerId", "c1", "offerId", "o5"));
++        assertEquals("3", m.handle("sent", Map.of("customerId", "c1")).get("count"));
++        assertEquals("2", m.handle("sent", Map.of("customerId", "c1")).get("capped"));
++    }
++
++    @Test
++    void existingSentRowsAreIncludedWhenDailyTableIsAdded() throws Exception {
++        FakeContext c = new FakeContext();
++        try (var s = c.db().createStatement()) {
++            s.execute("CREATE TABLE sent(id BIGINT AUTO_INCREMENT PRIMARY KEY, customer_id VARCHAR(40) NOT NULL, offer_id VARCHAR(40) NOT NULL, ts BIGINT NOT NULL)");
++            s.execute("INSERT INTO sent(customer_id, offer_id, ts) VALUES ('c1', 'old1', 7), ('c1', 'old2', 8)");
++        }
++        Main m = new Main();
++        m.start(c);
++        c.tick = 9;
++        m.onEvent("offer.queued", Map.of("customerId", "c1", "offerId", "new"));
++        assertEquals("2", m.handle("sent", Map.of("customerId", "c1")).get("count"));
++        assertEquals("1", m.handle("sent", Map.of("customerId", "c1")).get("capped"));
+     }
+ 
+     @Test

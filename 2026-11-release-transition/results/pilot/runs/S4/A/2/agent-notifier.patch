@@ -1,0 +1,107 @@
+diff -ruN /home/garry/code/experiments/2026-11-release-transition/estate/notifier/src/main/java/estate/svc/Main.java /home/garry/code/experiments/2026-11-release-transition/results/pilot/runs/S4/A/2/work/notifier/notifier/src/main/java/estate/svc/Main.java
+--- /home/garry/code/experiments/2026-11-release-transition/estate/notifier/src/main/java/estate/svc/Main.java	2026-11-26 00:30:54.652185134 +0000
++++ /home/garry/code/experiments/2026-11-release-transition/results/pilot/runs/S4/A/2/work/notifier/notifier/src/main/java/estate/svc/Main.java	2026-11-26 00:48:28.905976508 +0000
+@@ -22,17 +22,43 @@
+         try (Statement s = db.createStatement()) {
+             s.execute("CREATE TABLE IF NOT EXISTS sent(id BIGINT AUTO_INCREMENT PRIMARY KEY, customer_id VARCHAR(40) NOT NULL, "
+                     + "offer_id VARCHAR(40) NOT NULL, ts BIGINT NOT NULL)");
++            s.execute("CREATE TABLE IF NOT EXISTS dropped(customer_id VARCHAR(40) PRIMARY KEY, count BIGINT NOT NULL)");
+         }
+     }
+ 
+     @Override
+     public void onEvent(String topic, Map<String, String> ev) throws Exception {
+         if (!"offer.queued".equals(topic)) return;
+-        try (PreparedStatement ins = db.prepareStatement("INSERT INTO sent(customer_id, offer_id, ts) VALUES (?,?,?)")) {
+-            ins.setString(1, ev.get("customerId"));
+-            ins.setString(2, ev.get("offerId"));
+-            ins.setLong(3, ctx.now());
+-            ins.executeUpdate();
++        String customerId = ev.get("customerId");
++        long now = ctx.now();
++        long day = now / 100;
++        long start = day * 100;
++        long end = start + 100;
++        try (PreparedStatement q = db.prepareStatement(
++                "SELECT COUNT(*) FROM sent WHERE customer_id = ? AND ts >= ? AND ts < ?")) {
++            q.setString(1, customerId);
++            q.setLong(2, start);
++            q.setLong(3, end);
++            try (ResultSet rs = q.executeQuery()) {
++                rs.next();
++                if (rs.getLong(1) < 2) {
++                    try (PreparedStatement ins = db.prepareStatement(
++                            "INSERT INTO sent(customer_id, offer_id, ts) VALUES (?,?,?)")) {
++                        ins.setString(1, customerId);
++                        ins.setString(2, ev.get("offerId"));
++                        ins.setLong(3, now);
++                        ins.executeUpdate();
++                    }
++                } else {
++                    try (PreparedStatement inc = db.prepareStatement(
++                            "MERGE INTO dropped(customer_id, count) KEY(customer_id) VALUES (?, "
++                                    + "COALESCE((SELECT count FROM dropped WHERE customer_id = ?), 0) + 1)")) {
++                        inc.setString(1, customerId);
++                        inc.setString(2, customerId);
++                        inc.executeUpdate();
++                    }
++                }
++            }
+         }
+     }
+ 
+@@ -54,7 +80,7 @@
+         }
+     }
+ 
+-    /** Messages sent to a customer: count, and the ticks as a comma separated list. */
++    /** Messages sent to a customer: count, ticks, and the cumulative dropped count. */
+     private Map<String, String> sent(Map<String, String> req) throws Exception {
+         try (PreparedStatement q = db.prepareStatement("SELECT ts FROM sent WHERE customer_id = ? ORDER BY id")) {
+             q.setString(1, req.get("customerId"));
+@@ -63,7 +89,14 @@
+             try (ResultSet rs = q.executeQuery()) {
+                 while (rs.next()) { if (n++ > 0) ticks.append(','); ticks.append(rs.getLong(1)); }
+             }
+-            return Map.of("count", String.valueOf(n), "ticks", ticks.toString());
++            long dropped = 0;
++            try (PreparedStatement d = db.prepareStatement("SELECT count FROM dropped WHERE customer_id = ?")) {
++                d.setString(1, req.get("customerId"));
++                try (ResultSet rs = d.executeQuery()) {
++                    if (rs.next()) dropped = rs.getLong(1);
++                }
++            }
++            return Map.of("count", String.valueOf(n), "ticks", ticks.toString(), "capped", String.valueOf(dropped));
+         }
+     }
+ }
+diff -ruN /home/garry/code/experiments/2026-11-release-transition/estate/notifier/src/test/java/estate/svc/MainTest.java /home/garry/code/experiments/2026-11-release-transition/results/pilot/runs/S4/A/2/work/notifier/notifier/src/test/java/estate/svc/MainTest.java
+--- /home/garry/code/experiments/2026-11-release-transition/estate/notifier/src/test/java/estate/svc/MainTest.java	2026-11-26 00:30:54.653185102 +0000
++++ /home/garry/code/experiments/2026-11-release-transition/results/pilot/runs/S4/A/2/work/notifier/notifier/src/test/java/estate/svc/MainTest.java	2026-11-26 00:48:28.905976508 +0000
+@@ -17,6 +17,26 @@
+         Map<String, String> r = m.handle("sent", Map.of("customerId", "c1"));
+         assertEquals("1", r.get("count"));
+         assertEquals("7", r.get("ticks"));
++        assertEquals("0", r.get("capped"));
++    }
++
++    @Test
++    void capsOffersPerCustomerPerDayAndReportsDroppedOffers() throws Exception {
++        FakeContext c = new FakeContext();
++        Main m = new Main();
++        m.start(c);
++
++        c.tick = 199;
++        m.onEvent("offer.queued", Map.of("customerId", "c1", "offerId", "o1"));
++        m.onEvent("offer.queued", Map.of("customerId", "c1", "offerId", "o2"));
++        m.onEvent("offer.queued", Map.of("customerId", "c1", "offerId", "o3"));
++        c.tick = 200;
++        m.onEvent("offer.queued", Map.of("customerId", "c1", "offerId", "o4"));
++
++        Map<String, String> r = m.handle("sent", Map.of("customerId", "c1"));
++        assertEquals("3", r.get("count"));
++        assertEquals("199,199,200", r.get("ticks"));
++        assertEquals("1", r.get("capped"));
+     }
+ 
+     @Test

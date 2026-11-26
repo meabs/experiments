@@ -1,0 +1,106 @@
+diff -ruN /home/garry/code/experiments/2026-11-release-transition/estate/ledger/src/main/java/estate/svc/Main.java /home/garry/code/experiments/2026-11-release-transition/results/main/runs/S3/A/4/work/ledger/ledger/src/main/java/estate/svc/Main.java
+--- /home/garry/code/experiments/2026-11-release-transition/estate/ledger/src/main/java/estate/svc/Main.java	2026-11-26 00:30:54.646185329 +0000
++++ /home/garry/code/experiments/2026-11-release-transition/results/main/runs/S3/A/4/work/ledger/ledger/src/main/java/estate/svc/Main.java	2026-11-26 09:28:34.267760892 +0000
+@@ -12,7 +12,7 @@
+ import java.util.HashMap;
+ import java.util.Map;
+ 
+-/** Ledger: persistent postings with idempotent posting by requestId. */
++/** Ledger: persistent postings with idempotent posting by requestId or idempotencyKey. */
+ public class Main implements Service {
+     private Context ctx;
+     private Connection db;
+@@ -31,6 +31,26 @@
+                 s.execute("CREATE TABLE postings(id BIGINT AUTO_INCREMENT PRIMARY KEY, account VARCHAR(40) NOT NULL, "
+                         + "amount DECIMAL(18,2) NOT NULL, request_id VARCHAR(80) NOT NULL UNIQUE, ts BIGINT NOT NULL)");
+                 s.execute("INSERT INTO schema_version(v) VALUES (1)");
++                v = 1;
++            }
++            if (v < 2) {
++                s.execute("ALTER TABLE postings ADD COLUMN idempotency_key VARCHAR(80)");
++                try (PreparedStatement q = db.prepareStatement(
++                        "SELECT tc.CONSTRAINT_NAME FROM INFORMATION_SCHEMA.TABLE_CONSTRAINTS tc "
++                                + "JOIN INFORMATION_SCHEMA.KEY_COLUMN_USAGE kcu "
++                                + "ON tc.CONSTRAINT_SCHEMA = kcu.CONSTRAINT_SCHEMA "
++                                + "AND tc.CONSTRAINT_NAME = kcu.CONSTRAINT_NAME "
++                                + "WHERE tc.TABLE_NAME = 'POSTINGS' AND tc.CONSTRAINT_TYPE = 'UNIQUE' "
++                                + "AND kcu.COLUMN_NAME = 'REQUEST_ID'")) {
++                    try (ResultSet rs = q.executeQuery()) {
++                        while (rs.next()) {
++                            String constraint = rs.getString(1).replace("\"", "\"\"");
++                            s.execute("ALTER TABLE postings DROP CONSTRAINT \"" + constraint + "\"");
++                        }
++                    }
++                }
++                s.execute("CREATE UNIQUE INDEX ux_postings_idempotency_key ON postings(idempotency_key)");
++                s.execute("INSERT INTO schema_version(v) VALUES (2)");
+             }
+         }
+     }
+@@ -63,19 +83,23 @@
+         String account = req.get("account");
+         BigDecimal amount = new BigDecimal(req.get("amount")).setScale(2);
+         String requestId = req.get("requestId");
+-        try (PreparedStatement q = db.prepareStatement("SELECT id FROM postings WHERE request_id = ?")) {
+-            q.setString(1, requestId);
++        String idempotencyKey = req.get("idempotencyKey");
++        boolean keyed = idempotencyKey != null;
++        String dedupeColumn = keyed ? "idempotency_key" : "request_id";
++        try (PreparedStatement q = db.prepareStatement("SELECT id FROM postings WHERE " + dedupeColumn + " = ?")) {
++            q.setString(1, keyed ? idempotencyKey : requestId);
+             try (ResultSet rs = q.executeQuery()) {
+                 if (rs.next()) return Map.of("id", String.valueOf(rs.getLong(1)), "dup", "true");
+             }
+         }
+         long id;
+         try (PreparedStatement ins = db.prepareStatement(
+-                "INSERT INTO postings(account, amount, request_id, ts) VALUES (?,?,?,?)", Statement.RETURN_GENERATED_KEYS)) {
++                "INSERT INTO postings(account, amount, request_id, idempotency_key, ts) VALUES (?,?,?,?,?)", Statement.RETURN_GENERATED_KEYS)) {
+             ins.setString(1, account);
+             ins.setBigDecimal(2, amount);
+             ins.setString(3, requestId);
+-            ins.setLong(4, ctx.now());
++            ins.setString(4, idempotencyKey);
++            ins.setLong(5, ctx.now());
+             ins.executeUpdate();
+             try (ResultSet k = ins.getGeneratedKeys()) { k.next(); id = k.getLong(1); }
+         }
+diff -ruN /home/garry/code/experiments/2026-11-release-transition/estate/ledger/src/test/java/estate/svc/MainTest.java /home/garry/code/experiments/2026-11-release-transition/results/main/runs/S3/A/4/work/ledger/ledger/src/test/java/estate/svc/MainTest.java
+--- /home/garry/code/experiments/2026-11-release-transition/estate/ledger/src/test/java/estate/svc/MainTest.java	2026-11-26 00:30:54.647185296 +0000
++++ /home/garry/code/experiments/2026-11-release-transition/results/main/runs/S3/A/4/work/ledger/ledger/src/test/java/estate/svc/MainTest.java	2026-11-26 09:28:12.947467136 +0000
+@@ -36,6 +36,35 @@
+     }
+ 
+     @Test
++    void sameIdempotencyKeyReturnsOriginalPostingWithoutPublishing() throws Exception {
++        FakeContext c = new FakeContext();
++        Main m = start(c);
++        Map<String, String> first = m.handle("post", Map.of("account", "a1", "amount", "5.00",
++                "requestId", "retry-1", "idempotencyKey", "payment-1"));
++        Map<String, String> retry = m.handle("post", Map.of("account", "a1", "amount", "99.00",
++                "requestId", "retry-2", "idempotencyKey", "payment-1"));
++
++        assertEquals(first.get("id"), retry.get("id"));
++        assertEquals("true", retry.get("dup"));
++        assertEquals("5.00", m.handle("balance", Map.of("account", "a1")).get("balance"));
++        assertEquals(1, c.events.size());
++        assertEquals("retry-1", c.events.get(0).get("requestId"));
++    }
++
++    @Test
++    void requestIdIsNotDedupeKeyWhenIdempotencyKeyIsPresent() throws Exception {
++        FakeContext c = new FakeContext();
++        Main m = start(c);
++        m.handle("post", Map.of("account", "a1", "amount", "5.00",
++                "requestId", "same-request", "idempotencyKey", "payment-1"));
++        Map<String, String> second = m.handle("post", Map.of("account", "a1", "amount", "7.00",
++                "requestId", "same-request", "idempotencyKey", "payment-2"));
++
++        assertEquals("false", second.get("dup"));
++        assertEquals("2", m.handle("postings", Map.of("account", "a1")).get("count"));
++    }
++
++    @Test
+     void healthIsUp() throws Exception {
+         assertEquals("UP", start(new FakeContext()).handle("health", Map.of()).get("status"));
+     }
