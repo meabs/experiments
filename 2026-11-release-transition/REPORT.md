@@ -105,6 +105,14 @@ only as good as its rules.
 - I chose the scenarios to contain a transition hazard. How often real changes contain one is not measured.
 - B bundles awareness (peer ticket and code) with an instruction (write a plan); I did not separate them.
 - The default order is alphabetical, so arm A's outcomes depend partly on that convention.
+- **Arm A is a basic pipeline, not a mature CI/CD pipeline.** It has unit tests, a smoke test of the all-new estate (the final
+  state, not the transition) and one repair round. It has no consumer-driven contract tests, mixed-version tests, rollback
+  rehearsal or business-invariant tests. I did not run that arm, so I cannot say how much of A's failure a mature pipeline would
+  have caught, and the experiment does not show that existing release-engineering practice is insufficient for agents. It shows
+  that independently successful agent changes can produce unsafe transitions when estate-level assurance is missing or basic.
+- B's release plan is executed: its constraints can change the deployment order, make two services switch together, or drain
+  events first. Some of B's gain may therefore come from a better order and not from safer implementations; I did not separate
+  the two.
 - **A flaw found and fixed:** the first main run was invalid (see section 10). Its data is kept as `results/main-invalid-auth`
   and is not analysed.
 - The "not delivered" bucket is empty in the charts: the two C trajectories that did not deliver were also released with an
@@ -112,7 +120,11 @@ only as good as its rules.
 
 ## 8. What I'd test next
 
-Separate awareness from instruction in B. Hazards the gate was not built around (a feature-flag removal, a cache-key change).
+**A mature-CI/CD arm** (consumer-driven contract tests, mixed-version tests, rollback rehearsal, business-invariant tests,
+failures returned to agents), with B and C built on top of it, to see whether agent awareness and release planning add anything
+beyond established practice; measured on first-time success, repair cycles, cost and time per safe release, unnecessary blocking
+and invariant violations throughout the transition. If mature CI/CD does as well at lower cost, that is a result worth
+publishing. Separate awareness from instruction in B. Hazards the gate was not built around (a feature-flag removal, a cache-key change).
 A stronger model. Agents allowed to run the gate while they work. Real HTTP services with latency. Another look at S4: why did
 the gate's repair loop end in an admit with violations?
 
@@ -138,5 +150,7 @@ python3 -I scripts/diagrams.py && bash diagrams/render.sh
   whose sessions hit a login error is not recorded), kept the old data labelled invalid, and reran all 90 after a fresh login.
   Side effect: the rotation may have logged out other sessions that share this login.
 - The replay viewer in the design was **not built**.
+- **Claims narrowed after a second review (2026-11-26, no new data):** the limits now say that arm A is a basic pipeline and
+  not a mature one, that B's plan can change the deployment order, and the next-experiments list has a mature-CI/CD arm.
 - **Wording corrected after review (2026-11-26, no new data):** the limits no longer call C an "upper bound"; they say what
   B bundles, and that an interval from -4 to +20 points does not show the gate has no benefit. The numbers are unchanged.
