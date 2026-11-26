@@ -95,8 +95,13 @@ only as good as its rules.
 ## 7. What the experiment does not prove
 
 - A toy estate of four small services, one fault schedule, one agent and model, 5 repetitions per cell.
-- The gate and the oracle share an author, the simulator engine and the hazard vocabulary. C is an upper bound on what a gate
-  like this does against hazards it was not built around, and even so it did not clearly beat B.
+- The gate and the oracle share an author (Claude Code), the simulator engine and the hazard vocabulary. That may flatter the
+  gate on the hazards it was built around, and so overstate how this gate would do against hazards it was not built around.
+  That is a suspicion I have not tested; it is not an upper bound. The result is about this gate (a rehearsal of the release
+  plan on a staging copy with eight generic rules), not about deterministic gates in general. The interval for C minus B
+  (-4 to +20 points) includes no benefit and a large one, so the result does not show that the gate has no benefit.
+- B bundles four things: read-only copies of the peer services, the other ticket's title, a paragraph on rolling deployment,
+  rollback and persisted state, and the instruction to write a release plan. I did not separate them.
 - I chose the scenarios to contain a transition hazard. How often real changes contain one is not measured.
 - B bundles awareness (peer ticket and code) with an instruction (write a plan); I did not separate them.
 - The default order is alphabetical, so arm A's outcomes depend partly on that convention.
@@ -133,3 +138,5 @@ python3 -I scripts/diagrams.py && bash diagrams/render.sh
   whose sessions hit a login error is not recorded), kept the old data labelled invalid, and reran all 90 after a fresh login.
   Side effect: the rotation may have logged out other sessions that share this login.
 - The replay viewer in the design was **not built**.
+- **Wording corrected after review (2026-11-26, no new data):** the limits no longer call C an "upper bound"; they say what
+  B bundles, and that an interval from -4 to +20 points does not show the gate has no benefit. The numbers are unchanged.
