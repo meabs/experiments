@@ -1,0 +1,96 @@
+diff -ruN /home/garry/code/experiments/2026-11-mature-pipeline/estate/customer/src/main/java/estate/svc/Main.java /home/garry/code/experiments/2026-11-mature-pipeline/results/main/runs/S4/B/4/work/customer/customer/src/main/java/estate/svc/Main.java
+--- /home/garry/code/experiments/2026-11-mature-pipeline/estate/customer/src/main/java/estate/svc/Main.java	2026-11-26 00:31:13.000000000 +0000
++++ /home/garry/code/experiments/2026-11-mature-pipeline/results/main/runs/S4/B/4/work/customer/customer/src/main/java/estate/svc/Main.java	2026-11-26 15:18:42.010120152 +0000
+@@ -25,8 +25,21 @@
+         this.ctx = c;
+         this.db = c.db();
+         try (Statement s = db.createStatement()) {
++            s.execute("CREATE TABLE IF NOT EXISTS schema_version(v INT NOT NULL)");
+             s.execute("CREATE TABLE IF NOT EXISTS customers(id VARCHAR(40) PRIMARY KEY, consent VARCHAR(20) NOT NULL)");
+             s.execute("CREATE TABLE IF NOT EXISTS statement(account VARCHAR(40) PRIMARY KEY, balance_cents BIGINT NOT NULL, lines INT NOT NULL)");
++
++            // Persist the consent-rule cutover.  Old instances read this same table and
++            // therefore cannot treat pre-existing implied consent as marketing consent
++            // after a failed rollout or rollback.
++            int version = 0;
++            try (ResultSet rs = s.executeQuery("SELECT COALESCE(MAX(v),0) FROM schema_version")) {
++                if (rs.next()) version = rs.getInt(1);
++            }
++            if (version < 1) {
++                s.executeUpdate("UPDATE customers SET consent = 'none' WHERE consent = 'implied'");
++                s.execute("INSERT INTO schema_version(v) VALUES (1)");
++            }
+         }
+     }
+ 
+@@ -57,7 +70,10 @@
+     private Map<String, String> create(Map<String, String> req) throws Exception {
+         try (PreparedStatement ins = db.prepareStatement("INSERT INTO customers(id, consent) VALUES (?,?)")) {
+             ins.setString(1, req.get("customerId"));
+-            ins.setString(2, req.get("consent"));
++            // Keep newly written data in the post-cutover representation.  This also
++            // prevents a new instance from reintroducing legacy implied consent while
++            // old and new instances coexist.
++            ins.setString(2, "implied".equals(req.get("consent")) ? "none" : req.get("consent"));
+             ins.executeUpdate();
+         }
+         return Map.of("status", "OK");
+@@ -121,13 +137,13 @@
+ 
+     private Map<String, String> consentCheck(Map<String, String> req) throws Exception {
+         String c = consentOf(req.get("customerId"));
+-        boolean allowed = c.equals("implied") || c.equals("explicit");
++        boolean allowed = c.equals("explicit");
+         return Map.of("allowed", String.valueOf(allowed), "basis", c);
+     }
+ 
+     private Map<String, String> offer(Map<String, String> req) throws Exception {
+         String c = consentOf(req.get("customerId"));
+-        if (!(c.equals("implied") || c.equals("explicit"))) return Map.of("queued", "false");
++        if (!c.equals("explicit")) return Map.of("queued", "false");
+         ctx.publish("offer.queued", Map.of("customerId", req.get("customerId"), "offerId", req.get("offerId")));
+         return Map.of("queued", "true");
+     }
+diff -ruN /home/garry/code/experiments/2026-11-mature-pipeline/estate/customer/src/test/java/estate/svc/MainTest.java /home/garry/code/experiments/2026-11-mature-pipeline/results/main/runs/S4/B/4/work/customer/customer/src/test/java/estate/svc/MainTest.java
+--- /home/garry/code/experiments/2026-11-mature-pipeline/estate/customer/src/test/java/estate/svc/MainTest.java	2026-11-26 00:31:13.000000000 +0000
++++ /home/garry/code/experiments/2026-11-mature-pipeline/results/main/runs/S4/B/4/work/customer/customer/src/test/java/estate/svc/MainTest.java	2026-11-26 15:18:42.010120152 +0000
+@@ -51,9 +51,38 @@
+         FakeContext c = new FakeContext();
+         Main m = start(c);
+         m.handle("create", Map.of("customerId", "c1", "consent", "explicit"));
+-        m.handle("create", Map.of("customerId", "c2", "consent", "none"));
++        m.handle("create", Map.of("customerId", "c2", "consent", "implied"));
++        m.handle("create", Map.of("customerId", "c3", "consent", "none"));
+         assertEquals("true", m.handle("offer", Map.of("customerId", "c1", "offerId", "o1")).get("queued"));
+         assertEquals("false", m.handle("offer", Map.of("customerId", "c2", "offerId", "o1")).get("queued"));
++        assertEquals("false", m.handle("offer", Map.of("customerId", "c3", "offerId", "o1")).get("queued"));
+         assertEquals(1, c.events.size());
+     }
++
++    @Test
++    void consentCheckRequiresExplicitConsent() throws Exception {
++        FakeContext c = new FakeContext();
++        Main m = start(c);
++        m.handle("create", Map.of("customerId", "explicit", "consent", "explicit"));
++        m.handle("create", Map.of("customerId", "implied", "consent", "implied"));
++
++        assertEquals("true", m.handle("consent.check", Map.of("customerId", "explicit", "purpose", "marketing")).get("allowed"));
++        assertEquals("false", m.handle("consent.check", Map.of("customerId", "implied", "purpose", "marketing")).get("allowed"));
++        assertEquals("false", m.handle("consent.check", Map.of("customerId", "missing", "purpose", "marketing")).get("allowed"));
++    }
++
++    @Test
++    void startupMigratesLegacyConsentForRolledBackInstances() throws Exception {
++        FakeContext c = new FakeContext();
++        try (var s = c.db().createStatement()) {
++            s.execute("CREATE TABLE customers(id VARCHAR(40) PRIMARY KEY, consent VARCHAR(20) NOT NULL)");
++            s.execute("INSERT INTO customers(id, consent) VALUES ('c1', 'implied')");
++        }
++
++        Main m = start(c);
++
++        assertEquals("false", m.handle("consent.check", Map.of("customerId", "c1", "purpose", "marketing")).get("allowed"));
++        assertEquals("false", m.handle("offer", Map.of("customerId", "c1", "offerId", "o1")).get("queued"));
++        assertTrue(c.events.isEmpty());
++    }
+ }

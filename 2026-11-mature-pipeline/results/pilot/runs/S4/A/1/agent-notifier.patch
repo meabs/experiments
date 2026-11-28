@@ -1,0 +1,221 @@
+diff -ruN /home/garry/code/experiments/2026-11-mature-pipeline/estate/notifier/src/main/java/estate/svc/Main.java /home/garry/code/experiments/2026-11-mature-pipeline/results/pilot/runs/S4/A/1/work/notifier/notifier/src/main/java/estate/svc/Main.java
+--- /home/garry/code/experiments/2026-11-mature-pipeline/estate/notifier/src/main/java/estate/svc/Main.java	2026-11-26 00:30:54.000000000 +0000
++++ /home/garry/code/experiments/2026-11-mature-pipeline/results/pilot/runs/S4/A/1/work/notifier/notifier/src/main/java/estate/svc/Main.java	2026-11-26 14:00:26.152741832 +0000
+@@ -22,17 +22,92 @@
+         try (Statement s = db.createStatement()) {
+             s.execute("CREATE TABLE IF NOT EXISTS sent(id BIGINT AUTO_INCREMENT PRIMARY KEY, customer_id VARCHAR(40) NOT NULL, "
+                     + "offer_id VARCHAR(40) NOT NULL, ts BIGINT NOT NULL)");
++            s.execute("CREATE TABLE IF NOT EXISTS offer_day(customer_id VARCHAR(40) NOT NULL, offer_day BIGINT NOT NULL, "
++                    + "sent_count BIGINT NOT NULL, PRIMARY KEY(customer_id, offer_day))");
++            s.execute("CREATE TABLE IF NOT EXISTS dropped_offers(customer_id VARCHAR(40) PRIMARY KEY, dropped_count BIGINT NOT NULL)");
++            s.execute("MERGE INTO offer_day(customer_id, offer_day, sent_count) KEY(customer_id, offer_day) "
++                    + "SELECT customer_id, CAST(FLOOR(ts / 100.0) AS BIGINT), COUNT(*) FROM sent "
++                    + "GROUP BY customer_id, CAST(FLOOR(ts / 100.0) AS BIGINT)");
+         }
+     }
+ 
+     @Override
+     public void onEvent(String topic, Map<String, String> ev) throws Exception {
+         if (!"offer.queued".equals(topic)) return;
+-        try (PreparedStatement ins = db.prepareStatement("INSERT INTO sent(customer_id, offer_id, ts) VALUES (?,?,?)")) {
+-            ins.setString(1, ev.get("customerId"));
+-            ins.setString(2, ev.get("offerId"));
+-            ins.setLong(3, ctx.now());
+-            ins.executeUpdate();
++        String customerId = ev.get("customerId");
++
++        boolean oldAutoCommit = db.getAutoCommit();
++        try {
++            db.setAutoCommit(false);
++            long now = ctx.now();
++            long day = now / 100;
++            try (PreparedStatement ensureDay = db.prepareStatement(
++                    "INSERT INTO offer_day(customer_id, offer_day, sent_count) "
++                            + "SELECT ?, ?, 0 WHERE NOT EXISTS "
++                            + "(SELECT 1 FROM offer_day WHERE customer_id = ? AND offer_day = ?)")) {
++                ensureDay.setString(1, customerId);
++                ensureDay.setLong(2, day);
++                ensureDay.setString(3, customerId);
++                ensureDay.setLong(4, day);
++                ensureDay.executeUpdate();
++            }
++
++            long sentToday;
++            try (PreparedStatement q = db.prepareStatement(
++                    "SELECT sent_count FROM offer_day WHERE customer_id = ? AND offer_day = ? FOR UPDATE")) {
++                q.setString(1, customerId);
++                q.setLong(2, day);
++                try (ResultSet rs = q.executeQuery()) {
++                    rs.next();
++                    sentToday = rs.getLong(1);
++                }
++            }
++
++            if (sentToday < 2) {
++                // Check consent while holding the customer/day lock and immediately
++                // before creating the externally visible send effect. This keeps a
++                // consent rule change from being separated from the send by the
++                // database work used to enforce the daily cap.
++                Map<String, String> consent = ctx.call("customer", "consent.check",
++                        Map.of("customerId", customerId, "purpose", "marketing"));
++                if (!"true".equalsIgnoreCase(consent.get("allowed"))) {
++                    db.commit();
++                    return;
++                }
++                try (PreparedStatement ins = db.prepareStatement(
++                        "INSERT INTO sent(customer_id, offer_id, ts) VALUES (?,?,?)")) {
++                    ins.setString(1, customerId);
++                    ins.setString(2, ev.get("offerId"));
++                    ins.setLong(3, now);
++                    ins.executeUpdate();
++                }
++                try (PreparedStatement update = db.prepareStatement(
++                        "UPDATE offer_day SET sent_count = sent_count + 1 WHERE customer_id = ? AND offer_day = ?")) {
++                    update.setString(1, customerId);
++                    update.setLong(2, day);
++                    update.executeUpdate();
++                }
++            } else {
++                try (PreparedStatement ensureDropped = db.prepareStatement(
++                        "INSERT INTO dropped_offers(customer_id, dropped_count) "
++                                + "SELECT ?, 0 WHERE NOT EXISTS "
++                                + "(SELECT 1 FROM dropped_offers WHERE customer_id = ?)")) {
++                    ensureDropped.setString(1, customerId);
++                    ensureDropped.setString(2, customerId);
++                    ensureDropped.executeUpdate();
++                }
++                try (PreparedStatement update = db.prepareStatement(
++                        "UPDATE dropped_offers SET dropped_count = dropped_count + 1 WHERE customer_id = ?")) {
++                    update.setString(1, customerId);
++                    update.executeUpdate();
++                }
++            }
++            db.commit();
++        } catch (Exception e) {
++            db.rollback();
++            throw e;
++        } finally {
++            db.setAutoCommit(oldAutoCommit);
+         }
+     }
+ 
+@@ -54,7 +129,7 @@
+         }
+     }
+ 
+-    /** Messages sent to a customer: count, and the ticks as a comma separated list. */
++    /** Messages sent to a customer: count, send ticks, and the number dropped by the daily cap. */
+     private Map<String, String> sent(Map<String, String> req) throws Exception {
+         try (PreparedStatement q = db.prepareStatement("SELECT ts FROM sent WHERE customer_id = ? ORDER BY id")) {
+             q.setString(1, req.get("customerId"));
+@@ -63,7 +138,15 @@
+             try (ResultSet rs = q.executeQuery()) {
+                 while (rs.next()) { if (n++ > 0) ticks.append(','); ticks.append(rs.getLong(1)); }
+             }
+-            return Map.of("count", String.valueOf(n), "ticks", ticks.toString());
++            long capped = 0;
++            try (PreparedStatement dropped = db.prepareStatement(
++                    "SELECT dropped_count FROM dropped_offers WHERE customer_id = ?")) {
++                dropped.setString(1, req.get("customerId"));
++                try (ResultSet rs = dropped.executeQuery()) {
++                    if (rs.next()) capped = rs.getLong(1);
++                }
++            }
++            return Map.of("count", String.valueOf(n), "ticks", ticks.toString(), "capped", String.valueOf(capped));
+         }
+     }
+ }
+diff -ruN /home/garry/code/experiments/2026-11-mature-pipeline/estate/notifier/src/test/java/estate/svc/FakeContext.java /home/garry/code/experiments/2026-11-mature-pipeline/results/pilot/runs/S4/A/1/work/notifier/notifier/src/test/java/estate/svc/FakeContext.java
+--- /home/garry/code/experiments/2026-11-mature-pipeline/estate/notifier/src/test/java/estate/svc/FakeContext.java	2026-11-26 00:31:13.000000000 +0000
++++ /home/garry/code/experiments/2026-11-mature-pipeline/results/pilot/runs/S4/A/1/work/notifier/notifier/src/test/java/estate/svc/FakeContext.java	2026-11-26 13:58:39.366142294 +0000
+@@ -35,6 +35,9 @@
+ 
+     public Map<String, String> call(String service, String op, Map<String, String> request) throws ServiceException {
+         Stub s = stubs.get(service + "." + op);
++        if (s == null && "customer".equals(service) && "consent.check".equals(op)) {
++            return Map.of("allowed", "true", "basis", "test");
++        }
+         if (s == null) throw new ServiceException("unavailable", "no stub for " + service + "." + op);
+         return s.apply(request);
+     }
+diff -ruN /home/garry/code/experiments/2026-11-mature-pipeline/estate/notifier/src/test/java/estate/svc/MainTest.java /home/garry/code/experiments/2026-11-mature-pipeline/results/pilot/runs/S4/A/1/work/notifier/notifier/src/test/java/estate/svc/MainTest.java
+--- /home/garry/code/experiments/2026-11-mature-pipeline/estate/notifier/src/test/java/estate/svc/MainTest.java	2026-11-26 00:30:54.000000000 +0000
++++ /home/garry/code/experiments/2026-11-mature-pipeline/results/pilot/runs/S4/A/1/work/notifier/notifier/src/test/java/estate/svc/MainTest.java	2026-11-26 14:00:26.152741832 +0000
+@@ -17,6 +17,77 @@
+         Map<String, String> r = m.handle("sent", Map.of("customerId", "c1"));
+         assertEquals("1", r.get("count"));
+         assertEquals("7", r.get("ticks"));
++        assertEquals("0", r.get("capped"));
++    }
++
++    @Test
++    void dropsOffersAfterTwoInTheSameDayAndReportsCumulativeDrops() throws Exception {
++        FakeContext c = new FakeContext();
++        Main m = new Main();
++        m.start(c);
++        c.tick = 199;
++        m.onEvent("offer.queued", Map.of("customerId", "c1", "offerId", "o1"));
++        m.onEvent("offer.queued", Map.of("customerId", "c1", "offerId", "o2"));
++        m.onEvent("offer.queued", Map.of("customerId", "c1", "offerId", "o3"));
++        m.onEvent("offer.queued", Map.of("customerId", "c1", "offerId", "o4"));
++
++        Map<String, String> r = m.handle("sent", Map.of("customerId", "c1"));
++        assertEquals("2", r.get("count"));
++        assertEquals("199,199", r.get("ticks"));
++        assertEquals("2", r.get("capped"));
++    }
++
++    @Test
++    void doesNotSendQueuedOfferWhenConsentWasRevoked() throws Exception {
++        FakeContext c = new FakeContext();
++        c.stubs.put("customer.consent.check", req -> Map.of("allowed", "false", "basis", "none"));
++        Main m = new Main();
++        m.start(c);
++
++        m.onEvent("offer.queued", Map.of("customerId", "c1", "offerId", "o1"));
++
++        Map<String, String> r = m.handle("sent", Map.of("customerId", "c1"));
++        assertEquals("0", r.get("count"));
++        assertEquals("", r.get("ticks"));
++        assertEquals("0", r.get("capped"));
++    }
++
++    @Test
++    void checksConsentAtTheSendBoundary() throws Exception {
++        FakeContext c = new FakeContext();
++        c.stubs.put("customer.consent.check", req -> {
++            // The rule is revoked while notifier is waiting to process the event.
++            c.tick = 100;
++            return Map.of("allowed", "false", "basis", "none");
++        });
++        Main m = new Main();
++        m.start(c);
++
++        c.tick = 7;
++        m.onEvent("offer.queued", Map.of("customerId", "c1", "offerId", "o1"));
++
++        Map<String, String> r = m.handle("sent", Map.of("customerId", "c1"));
++        assertEquals("0", r.get("count"));
++        assertEquals("", r.get("ticks"));
++        assertEquals("0", r.get("capped"));
++    }
++
++    @Test
++    void dailyCapResetsOnTheNextDay() throws Exception {
++        FakeContext c = new FakeContext();
++        Main m = new Main();
++        m.start(c);
++        c.tick = 100;
++        for (int i = 1; i <= 3; i++) {
++            m.onEvent("offer.queued", Map.of("customerId", "c1", "offerId", "o" + i));
++        }
++        c.tick = 200;
++        m.onEvent("offer.queued", Map.of("customerId", "c1", "offerId", "o4"));
++
++        Map<String, String> r = m.handle("sent", Map.of("customerId", "c1"));
++        assertEquals("3", r.get("count"));
++        assertEquals("100,100,200", r.get("ticks"));
++        assertEquals("1", r.get("capped"));
+     }
+ 
+     @Test

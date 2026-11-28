@@ -1,0 +1,162 @@
+diff -ruN /home/garry/code/experiments/2026-11-mature-pipeline/estate/ledger/src/main/java/estate/svc/Main.java /home/garry/code/experiments/2026-11-mature-pipeline/results/main/runs/S2/A/5/work/ledger/ledger/src/main/java/estate/svc/Main.java
+--- /home/garry/code/experiments/2026-11-mature-pipeline/estate/ledger/src/main/java/estate/svc/Main.java	2026-11-26 00:30:54.000000000 +0000
++++ /home/garry/code/experiments/2026-11-mature-pipeline/results/main/runs/S2/A/5/work/ledger/ledger/src/main/java/estate/svc/Main.java	2026-11-26 15:28:48.056406525 +0000
+@@ -31,6 +31,17 @@
+                 s.execute("CREATE TABLE postings(id BIGINT AUTO_INCREMENT PRIMARY KEY, account VARCHAR(40) NOT NULL, "
+                         + "amount DECIMAL(18,2) NOT NULL, request_id VARCHAR(80) NOT NULL UNIQUE, ts BIGINT NOT NULL)");
+                 s.execute("INSERT INTO schema_version(v) VALUES (1)");
++                v = 1;
++            }
++            if (v < 2) {
++                // Keep the old major-unit column while rolling out the new one. The
++                // old release can therefore still read and write this table if the
++                // rollout is rolled back. IF NOT EXISTS also makes a retry safe if
++                // the process stopped after the ALTER but before the version mark.
++                s.execute("ALTER TABLE postings ADD COLUMN IF NOT EXISTS amount_cents BIGINT");
++                s.execute("UPDATE postings SET amount_cents = CAST(amount * 100 AS BIGINT) "
++                        + "WHERE amount_cents IS NULL");
++                s.execute("INSERT INTO schema_version(v) VALUES (2)");
+             }
+         }
+     }
+@@ -53,7 +64,8 @@
+     }
+ 
+     private Map<String, String> health() throws Exception {
+-        try (Statement s = db.createStatement(); ResultSet rs = s.executeQuery("SELECT COALESCE(SUM(amount),0) FROM postings")) {
++        try (Statement s = db.createStatement(); ResultSet rs = s.executeQuery(
++                "SELECT COALESCE(SUM(COALESCE(amount_cents, CAST(amount * 100 AS BIGINT))),0) FROM postings")) {
+             rs.next();
+         }
+         return Map.of("status", "UP");
+@@ -61,7 +73,9 @@
+ 
+     private Map<String, String> post(Map<String, String> req) throws Exception {
+         String account = req.get("account");
+-        BigDecimal amount = new BigDecimal(req.get("amount")).setScale(2);
++        BigDecimal amount = new BigDecimal(req.get("amount"));
++        long amountCents = amount.movePointRight(2).longValueExact();
++        amount = BigDecimal.valueOf(amountCents, 2);
+         String requestId = req.get("requestId");
+         try (PreparedStatement q = db.prepareStatement("SELECT id FROM postings WHERE request_id = ?")) {
+             q.setString(1, requestId);
+@@ -71,11 +85,12 @@
+         }
+         long id;
+         try (PreparedStatement ins = db.prepareStatement(
+-                "INSERT INTO postings(account, amount, request_id, ts) VALUES (?,?,?,?)", Statement.RETURN_GENERATED_KEYS)) {
++                "INSERT INTO postings(account, amount, request_id, ts, amount_cents) VALUES (?,?,?,?,?)", Statement.RETURN_GENERATED_KEYS)) {
+             ins.setString(1, account);
+             ins.setBigDecimal(2, amount);
+             ins.setString(3, requestId);
+             ins.setLong(4, ctx.now());
++            ins.setLong(5, amountCents);
+             ins.executeUpdate();
+             try (ResultSet k = ins.getGeneratedKeys()) { k.next(); id = k.getLong(1); }
+         }
+@@ -88,21 +103,29 @@
+     }
+ 
+     private Map<String, String> balance(Map<String, String> req) throws Exception {
+-        try (PreparedStatement q = db.prepareStatement("SELECT COALESCE(SUM(amount),0) FROM postings WHERE account = ?")) {
++        try (PreparedStatement q = db.prepareStatement(
++                "SELECT COALESCE(SUM(COALESCE(amount_cents, CAST(amount * 100 AS BIGINT))),0) "
++                        + "FROM postings WHERE account = ?")) {
+             q.setString(1, req.get("account"));
+             try (ResultSet rs = q.executeQuery()) {
+                 rs.next();
+-                return Map.of("balance", rs.getBigDecimal(1).setScale(2).toPlainString());
++                long balanceCents = rs.getLong(1);
++                return Map.of("balance", BigDecimal.valueOf(balanceCents, 2).toPlainString(),
++                        "balanceCents", String.valueOf(balanceCents));
+             }
+         }
+     }
+ 
+     private Map<String, String> postings(Map<String, String> req) throws Exception {
+-        try (PreparedStatement q = db.prepareStatement("SELECT COUNT(*), COALESCE(SUM(amount),0) FROM postings WHERE account = ?")) {
++        try (PreparedStatement q = db.prepareStatement(
++                "SELECT COUNT(*), COALESCE(SUM(COALESCE(amount_cents, CAST(amount * 100 AS BIGINT))),0) "
++                        + "FROM postings WHERE account = ?")) {
+             q.setString(1, req.get("account"));
+             try (ResultSet rs = q.executeQuery()) {
+                 rs.next();
+-                return Map.of("count", String.valueOf(rs.getLong(1)), "total", rs.getBigDecimal(2).setScale(2).toPlainString());
++                long totalCents = rs.getLong(2);
++                return Map.of("count", String.valueOf(rs.getLong(1)),
++                        "total", BigDecimal.valueOf(totalCents, 2).toPlainString());
+             }
+         }
+     }
+diff -ruN /home/garry/code/experiments/2026-11-mature-pipeline/estate/ledger/src/test/java/estate/svc/MainTest.java /home/garry/code/experiments/2026-11-mature-pipeline/results/main/runs/S2/A/5/work/ledger/ledger/src/test/java/estate/svc/MainTest.java
+--- /home/garry/code/experiments/2026-11-mature-pipeline/estate/ledger/src/test/java/estate/svc/MainTest.java	2026-11-26 00:30:54.000000000 +0000
++++ /home/garry/code/experiments/2026-11-mature-pipeline/results/main/runs/S2/A/5/work/ledger/ledger/src/test/java/estate/svc/MainTest.java	2026-11-26 15:28:48.056406525 +0000
+@@ -20,6 +20,7 @@
+         Map<String, String> r = m.handle("post", Map.of("account", "a1", "amount", "12.5", "requestId", "r1"));
+         assertEquals("false", r.get("dup"));
+         assertEquals("12.50", m.handle("balance", Map.of("account", "a1")).get("balance"));
++        assertEquals("1250", m.handle("balance", Map.of("account", "a1")).get("balanceCents"));
+         assertEquals("payment.posted", c.published.get(0));
+         assertEquals("12.50", c.events.get(0).get("amount"));
+     }
+@@ -36,6 +37,60 @@
+     }
+ 
+     @Test
++    void migratesExistingPostingsToCents() throws Exception {
++        FakeContext c = new FakeContext();
++        try (var s = c.db().createStatement()) {
++            s.execute("CREATE TABLE schema_version(v INT NOT NULL)");
++            s.execute("INSERT INTO schema_version(v) VALUES (1)");
++            s.execute("CREATE TABLE postings(id BIGINT AUTO_INCREMENT PRIMARY KEY, account VARCHAR(40) NOT NULL, "
++                    + "amount DECIMAL(18,2) NOT NULL, request_id VARCHAR(80) NOT NULL UNIQUE, ts BIGINT NOT NULL)");
++            s.execute("INSERT INTO postings(account, amount, request_id, ts) VALUES ('a1', 7.25, 'old', 1)");
++        }
++
++        Main m = start(c);
++
++        assertEquals("725", m.handle("balance", Map.of("account", "a1")).get("balanceCents"));
++        try (var q = c.db().createStatement(); var rs = q.executeQuery("SELECT amount_cents FROM postings WHERE request_id = 'old'")) {
++            assertTrue(rs.next());
++            assertEquals(725L, rs.getLong(1));
++        }
++        try (var q = c.db().createStatement(); var rs = q.executeQuery("SELECT MAX(v) FROM schema_version")) {
++            assertTrue(rs.next());
++            assertEquals(2, rs.getInt(1));
++        }
++    }
++
++    @Test
++    void mixedVersionWritesRemainReadableAfterRollback() throws Exception {
++        FakeContext c = new FakeContext();
++        try (var s = c.db().createStatement()) {
++            s.execute("CREATE TABLE schema_version(v INT NOT NULL)");
++            s.execute("INSERT INTO schema_version(v) VALUES (1)");
++            s.execute("CREATE TABLE postings(id BIGINT AUTO_INCREMENT PRIMARY KEY, account VARCHAR(40) NOT NULL, "
++                    + "amount DECIMAL(18,2) NOT NULL, request_id VARCHAR(80) NOT NULL UNIQUE, ts BIGINT NOT NULL)");
++            s.execute("INSERT INTO postings(account, amount, request_id, ts) VALUES ('a1', 7.25, 'old', 1)");
++            // Simulate DDL succeeding before the previous process stopped.
++            s.execute("ALTER TABLE postings ADD amount_cents BIGINT");
++        }
++
++        Main m = start(c);
++
++        assertEquals("725", m.handle("balance", Map.of("account", "a1")).get("balanceCents"));
++        // The rolled-back release writes without knowing amount_cents.
++        try (var s = c.db().createStatement()) {
++            s.execute("INSERT INTO postings(account, amount, request_id, ts) VALUES ('a1', 1.00, 'rollback', 2)");
++        }
++        assertEquals("825", m.handle("balance", Map.of("account", "a1")).get("balanceCents"));
++        m.handle("post", Map.of("account", "a1", "amount", "1.00", "requestId", "new"));
++        try (var q = c.db().createStatement(); var rs = q.executeQuery(
++                "SELECT amount, amount_cents FROM postings WHERE request_id = 'new'")) {
++            assertTrue(rs.next());
++            assertEquals("1.00", rs.getBigDecimal(1).toPlainString());
++            assertEquals(100L, rs.getLong(2));
++        }
++    }
++
++    @Test
+     void healthIsUp() throws Exception {
+         assertEquals("UP", start(new FakeContext()).handle("health", Map.of()).get("status"));
+     }

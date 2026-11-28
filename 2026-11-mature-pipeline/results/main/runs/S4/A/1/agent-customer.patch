@@ -1,0 +1,66 @@
+diff -ruN /home/garry/code/experiments/2026-11-mature-pipeline/estate/customer/src/main/java/estate/svc/Main.java /home/garry/code/experiments/2026-11-mature-pipeline/results/main/runs/S4/A/1/work/customer/customer/src/main/java/estate/svc/Main.java
+--- /home/garry/code/experiments/2026-11-mature-pipeline/estate/customer/src/main/java/estate/svc/Main.java	2026-11-26 00:31:13.000000000 +0000
++++ /home/garry/code/experiments/2026-11-mature-pipeline/results/main/runs/S4/A/1/work/customer/customer/src/main/java/estate/svc/Main.java	2026-11-26 14:16:48.093268754 +0000
+@@ -27,6 +27,10 @@
+         try (Statement s = db.createStatement()) {
+             s.execute("CREATE TABLE IF NOT EXISTS customers(id VARCHAR(40) PRIMARY KEY, consent VARCHAR(20) NOT NULL)");
+             s.execute("CREATE TABLE IF NOT EXISTS statement(account VARCHAR(40) PRIMARY KEY, balance_cents BIGINT NOT NULL, lines INT NOT NULL)");
++            // Make the consent rule safe across a rolling deployment.  Older instances
++            // recognize "implied" as eligible, so legacy rows must be normalized before
++            // any old instance can handle traffic after this version has started.
++            s.executeUpdate("UPDATE customers SET consent = 'none' WHERE consent = 'implied'");
+         }
+     }
+ 
+@@ -121,13 +125,13 @@
+ 
+     private Map<String, String> consentCheck(Map<String, String> req) throws Exception {
+         String c = consentOf(req.get("customerId"));
+-        boolean allowed = c.equals("implied") || c.equals("explicit");
++        boolean allowed = c.equals("explicit");
+         return Map.of("allowed", String.valueOf(allowed), "basis", c);
+     }
+ 
+     private Map<String, String> offer(Map<String, String> req) throws Exception {
+         String c = consentOf(req.get("customerId"));
+-        if (!(c.equals("implied") || c.equals("explicit"))) return Map.of("queued", "false");
++        if (!c.equals("explicit")) return Map.of("queued", "false");
+         ctx.publish("offer.queued", Map.of("customerId", req.get("customerId"), "offerId", req.get("offerId")));
+         return Map.of("queued", "true");
+     }
+diff -ruN /home/garry/code/experiments/2026-11-mature-pipeline/estate/customer/src/test/java/estate/svc/MainTest.java /home/garry/code/experiments/2026-11-mature-pipeline/results/main/runs/S4/A/1/work/customer/customer/src/test/java/estate/svc/MainTest.java
+--- /home/garry/code/experiments/2026-11-mature-pipeline/estate/customer/src/test/java/estate/svc/MainTest.java	2026-11-26 00:31:13.000000000 +0000
++++ /home/garry/code/experiments/2026-11-mature-pipeline/results/main/runs/S4/A/1/work/customer/customer/src/test/java/estate/svc/MainTest.java	2026-11-26 14:16:48.093268754 +0000
+@@ -56,4 +56,32 @@
+         assertEquals("false", m.handle("offer", Map.of("customerId", "c2", "offerId", "o1")).get("queued"));
+         assertEquals(1, c.events.size());
+     }
++
++    @Test
++    void impliedConsentDoesNotAllowMarketing() throws Exception {
++        FakeContext c = new FakeContext();
++        Main m = start(c);
++        m.handle("create", Map.of("customerId", "legacy", "consent", "implied"));
++
++        Map<String, String> check = m.handle("consent.check", Map.of("customerId", "legacy", "purpose", "marketing"));
++        assertEquals("false", check.get("allowed"));
++        assertEquals("implied", check.get("basis"));
++        assertEquals("false", m.handle("offer", Map.of("customerId", "legacy", "offerId", "o1")).get("queued"));
++        assertTrue(c.events.isEmpty());
++    }
++
++    @Test
++    void startupMigratesLegacyConsentForRollingDeploymentSafety() throws Exception {
++        FakeContext c = new FakeContext();
++        Main first = start(c);
++        first.handle("create", Map.of("customerId", "legacy", "consent", "implied"));
++
++        Main afterRuleChange = start(c);
++
++        Map<String, String> check = afterRuleChange.handle("consent.check", Map.of("customerId", "legacy", "purpose", "marketing"));
++        assertEquals("false", check.get("allowed"));
++        assertEquals("none", check.get("basis"));
++        assertEquals("false", afterRuleChange.handle("offer", Map.of("customerId", "legacy", "offerId", "o1")).get("queued"));
++        assertTrue(c.events.isEmpty());
++    }
+ }

@@ -1,0 +1,225 @@
+diff -ruN /home/garry/code/experiments/2026-11-mature-pipeline/estate/ledger/src/main/java/estate/svc/Main.java /home/garry/code/experiments/2026-11-mature-pipeline/results/pilot/runs/S3/A/1/work/ledger/ledger/src/main/java/estate/svc/Main.java
+--- /home/garry/code/experiments/2026-11-mature-pipeline/estate/ledger/src/main/java/estate/svc/Main.java	2026-11-26 00:30:54.000000000 +0000
++++ /home/garry/code/experiments/2026-11-mature-pipeline/results/pilot/runs/S3/A/1/work/ledger/ledger/src/main/java/estate/svc/Main.java	2026-11-26 13:57:24.198535896 +0000
+@@ -8,11 +8,12 @@
+ import java.sql.Connection;
+ import java.sql.PreparedStatement;
+ import java.sql.ResultSet;
++import java.sql.SQLException;
+ import java.sql.Statement;
+ import java.util.HashMap;
+ import java.util.Map;
+ 
+-/** Ledger: persistent postings with idempotent posting by requestId. */
++/** Ledger: persistent postings with idempotency by requestId or idempotencyKey. */
+ public class Main implements Service {
+     private Context ctx;
+     private Connection db;
+@@ -29,8 +30,31 @@
+             }
+             if (v < 1) {
+                 s.execute("CREATE TABLE postings(id BIGINT AUTO_INCREMENT PRIMARY KEY, account VARCHAR(40) NOT NULL, "
+-                        + "amount DECIMAL(18,2) NOT NULL, request_id VARCHAR(80) NOT NULL UNIQUE, ts BIGINT NOT NULL)");
++                        + "amount DECIMAL(18,2) NOT NULL, request_id VARCHAR(80) NOT NULL, ts BIGINT NOT NULL)");
+                 s.execute("INSERT INTO schema_version(v) VALUES (1)");
++                v = 1;
++            }
++            if (v < 2) {
++                String requestIdConstraint = null;
++                try (ResultSet rs = s.executeQuery("SELECT CONSTRAINT_NAME FROM INFORMATION_SCHEMA.CONSTRAINT_COLUMN_USAGE "
++                        + "WHERE TABLE_NAME = 'POSTINGS' AND COLUMN_NAME = 'REQUEST_ID'")) {
++                    if (rs.next()) requestIdConstraint = rs.getString(1);
++                }
++                if (requestIdConstraint != null) {
++                    s.execute("ALTER TABLE postings DROP CONSTRAINT " + requestIdConstraint);
++                }
++                s.execute("ALTER TABLE postings ADD COLUMN idempotency_key VARCHAR(120)");
++                s.execute("CREATE UNIQUE INDEX postings_idempotency_key_uq ON postings(idempotency_key)");
++                s.execute("INSERT INTO schema_version(v) VALUES (2)");
++                v = 2;
++            }
++            if (v < 3) {
++                s.execute("ALTER TABLE postings ADD COLUMN dedupe_key VARCHAR(140)");
++                s.execute("UPDATE postings SET dedupe_key = CASE WHEN idempotency_key IS NULL "
++                        + "THEN 'r:' || request_id ELSE 'k:' || idempotency_key END");
++                s.execute("ALTER TABLE postings ALTER COLUMN dedupe_key SET NOT NULL");
++                s.execute("CREATE UNIQUE INDEX postings_dedupe_key_uq ON postings(dedupe_key)");
++                s.execute("INSERT INTO schema_version(v) VALUES (3)");
+             }
+         }
+     }
+@@ -63,21 +87,37 @@
+         String account = req.get("account");
+         BigDecimal amount = new BigDecimal(req.get("amount")).setScale(2);
+         String requestId = req.get("requestId");
+-        try (PreparedStatement q = db.prepareStatement("SELECT id FROM postings WHERE request_id = ?")) {
+-            q.setString(1, requestId);
++        String idempotencyKey = req.get("idempotencyKey");
++        String dedupeKey = idempotencyKey == null ? "r:" + requestId : "k:" + idempotencyKey;
++        try (PreparedStatement q = db.prepareStatement("SELECT id FROM postings WHERE dedupe_key = ?")) {
++            q.setString(1, dedupeKey);
+             try (ResultSet rs = q.executeQuery()) {
+                 if (rs.next()) return Map.of("id", String.valueOf(rs.getLong(1)), "dup", "true");
+             }
+         }
+         long id;
+-        try (PreparedStatement ins = db.prepareStatement(
+-                "INSERT INTO postings(account, amount, request_id, ts) VALUES (?,?,?,?)", Statement.RETURN_GENERATED_KEYS)) {
+-            ins.setString(1, account);
+-            ins.setBigDecimal(2, amount);
+-            ins.setString(3, requestId);
+-            ins.setLong(4, ctx.now());
+-            ins.executeUpdate();
+-            try (ResultSet k = ins.getGeneratedKeys()) { k.next(); id = k.getLong(1); }
++        try {
++            try (PreparedStatement ins = db.prepareStatement(
++                    "INSERT INTO postings(account, amount, request_id, ts, idempotency_key, dedupe_key) VALUES (?,?,?,?,?,?)", Statement.RETURN_GENERATED_KEYS)) {
++                ins.setString(1, account);
++                ins.setBigDecimal(2, amount);
++                ins.setString(3, requestId);
++                ins.setLong(4, ctx.now());
++                ins.setString(5, idempotencyKey);
++                ins.setString(6, dedupeKey);
++                ins.executeUpdate();
++                try (ResultSet k = ins.getGeneratedKeys()) { k.next(); id = k.getLong(1); }
++            }
++        } catch (SQLException e) {
++            // The unique dedupe-key index is the atomic arbitration between instances.
++            if (!"23505".equals(e.getSQLState())) throw e;
++            try (PreparedStatement q = db.prepareStatement("SELECT id FROM postings WHERE dedupe_key = ?")) {
++                q.setString(1, dedupeKey);
++                try (ResultSet rs = q.executeQuery()) {
++                    if (!rs.next()) throw e;
++                    return Map.of("id", String.valueOf(rs.getLong(1)), "dup", "true");
++                }
++            }
+         }
+         Map<String, String> ev = new HashMap<>();
+         ev.put("account", account);
+diff -ruN /home/garry/code/experiments/2026-11-mature-pipeline/estate/ledger/src/test/java/estate/svc/FakeContext.java /home/garry/code/experiments/2026-11-mature-pipeline/results/pilot/runs/S3/A/1/work/ledger/ledger/src/test/java/estate/svc/FakeContext.java
+--- /home/garry/code/experiments/2026-11-mature-pipeline/estate/ledger/src/test/java/estate/svc/FakeContext.java	2026-11-26 00:31:13.000000000 +0000
++++ /home/garry/code/experiments/2026-11-mature-pipeline/results/pilot/runs/S3/A/1/work/ledger/ledger/src/test/java/estate/svc/FakeContext.java	2026-11-26 13:55:27.531250993 +0000
+@@ -24,8 +24,12 @@
+     private final Connection db;
+ 
+     public FakeContext() {
++        this("jdbc:h2:mem:test" + N.incrementAndGet() + ";DB_CLOSE_DELAY=-1");
++    }
++
++    public FakeContext(String url) {
+         try {
+-            db = DriverManager.getConnection("jdbc:h2:mem:test" + N.incrementAndGet() + ";DB_CLOSE_DELAY=-1");
++            db = DriverManager.getConnection(url);
+         } catch (Exception e) {
+             throw new RuntimeException(e);
+         }
+diff -ruN /home/garry/code/experiments/2026-11-mature-pipeline/estate/ledger/src/test/java/estate/svc/MainTest.java /home/garry/code/experiments/2026-11-mature-pipeline/results/pilot/runs/S3/A/1/work/ledger/ledger/src/test/java/estate/svc/MainTest.java
+--- /home/garry/code/experiments/2026-11-mature-pipeline/estate/ledger/src/test/java/estate/svc/MainTest.java	2026-11-26 00:30:54.000000000 +0000
++++ /home/garry/code/experiments/2026-11-mature-pipeline/results/pilot/runs/S3/A/1/work/ledger/ledger/src/test/java/estate/svc/MainTest.java	2026-11-26 13:57:24.198535896 +0000
+@@ -3,6 +3,10 @@
+ import org.junit.jupiter.api.Test;
+ 
+ import java.util.Map;
++import java.util.concurrent.CountDownLatch;
++import java.util.concurrent.ExecutorService;
++import java.util.concurrent.Executors;
++import java.util.concurrent.Future;
+ 
+ import static org.junit.jupiter.api.Assertions.*;
+ 
+@@ -36,6 +40,95 @@
+     }
+ 
+     @Test
++    void sameIdempotencyKeyReturnsOriginalPostingAndDoesNotRepublish() throws Exception {
++        FakeContext c = new FakeContext();
++        Main m = start(c);
++        Map<String, String> first = m.handle("post", Map.of("account", "a1", "amount", "5.00",
++                "requestId", "trace-1", "idempotencyKey", "payment-1"));
++        Map<String, String> retry = m.handle("post", Map.of("account", "a1", "amount", "5.00",
++                "requestId", "trace-2", "idempotencyKey", "payment-1"));
++
++        assertEquals(first.get("id"), retry.get("id"));
++        assertEquals("true", retry.get("dup"));
++        assertEquals("1", m.handle("postings", Map.of("account", "a1")).get("count"));
++        assertEquals(1, c.events.size());
++        assertEquals("trace-1", c.events.get(0).get("requestId"));
++    }
++
++    @Test
++    void idempotencyKeyTakesPrecedenceOverRequestId() throws Exception {
++        FakeContext c = new FakeContext();
++        Main m = start(c);
++        m.handle("post", Map.of("account", "a1", "amount", "5.00", "requestId", "trace-1",
++                "idempotencyKey", "payment-1"));
++        Map<String, String> r = m.handle("post", Map.of("account", "a2", "amount", "7.00", "requestId", "trace-1",
++                "idempotencyKey", "payment-2"));
++
++        assertEquals("false", r.get("dup"));
++        assertEquals("1", m.handle("postings", Map.of("account", "a1")).get("count"));
++        assertEquals("1", m.handle("postings", Map.of("account", "a2")).get("count"));
++    }
++
++    @Test
++    void concurrentRetriesWithSameIdempotencyKeyPostOnce() throws Exception {
++        String url = "jdbc:h2:mem:concurrent;DB_CLOSE_DELAY=-1";
++        FakeContext c1 = new FakeContext(url);
++        FakeContext c2 = new FakeContext(url);
++        Main m1 = start(c1);
++        Main m2 = start(c2);
++        CountDownLatch ready = new CountDownLatch(2);
++        CountDownLatch go = new CountDownLatch(1);
++        ExecutorService pool = Executors.newFixedThreadPool(2);
++        try {
++            Future<Map<String, String>> first = pool.submit(() -> concurrentPost(m1, ready, go, "trace-1"));
++            Future<Map<String, String>> second = pool.submit(() -> concurrentPost(m2, ready, go, "trace-2"));
++            ready.await();
++            go.countDown();
++            assertNotEquals(first.get().get("dup"), second.get().get("dup"));
++            assertEquals("1", m1.handle("postings", Map.of("account", "a1")).get("count"));
++        } finally {
++            pool.shutdownNow();
++        }
++    }
++
++    @Test
++    void concurrentRetriesWithoutIdempotencyKeyPostOnce() throws Exception {
++        String url = "jdbc:h2:mem:concurrentNoKey;DB_CLOSE_DELAY=-1";
++        FakeContext c1 = new FakeContext(url);
++        FakeContext c2 = new FakeContext(url);
++        Main m1 = start(c1);
++        Main m2 = start(c2);
++        CountDownLatch ready = new CountDownLatch(2);
++        CountDownLatch go = new CountDownLatch(1);
++        ExecutorService pool = Executors.newFixedThreadPool(2);
++        try {
++            Future<Map<String, String>> first = pool.submit(() -> concurrentPostWithoutKey(m1, ready, go));
++            Future<Map<String, String>> second = pool.submit(() -> concurrentPostWithoutKey(m2, ready, go));
++            ready.await();
++            go.countDown();
++            assertNotEquals(first.get().get("dup"), second.get().get("dup"));
++            assertEquals("1", m1.handle("postings", Map.of("account", "a1")).get("count"));
++        } finally {
++            pool.shutdownNow();
++        }
++    }
++
++    private Map<String, String> concurrentPost(Main m, CountDownLatch ready, CountDownLatch go, String requestId)
++            throws Exception {
++        ready.countDown();
++        go.await();
++        return m.handle("post", Map.of("account", "a1", "amount", "5.00", "requestId", requestId,
++                "idempotencyKey", "payment-1"));
++    }
++
++    private Map<String, String> concurrentPostWithoutKey(Main m, CountDownLatch ready, CountDownLatch go)
++            throws Exception {
++        ready.countDown();
++        go.await();
++        return m.handle("post", Map.of("account", "a1", "amount", "5.00", "requestId", "request-1"));
++    }
++
++    @Test
+     void healthIsUp() throws Exception {
+         assertEquals("UP", start(new FakeContext()).handle("health", Map.of()).get("status"));
+     }

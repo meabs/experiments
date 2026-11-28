@@ -1,0 +1,92 @@
+diff -ruN /home/garry/code/experiments/2026-11-mature-pipeline/estate/customer/src/main/java/estate/svc/Main.java /home/garry/code/experiments/2026-11-mature-pipeline/results/main/runs/S1/C/5/work/customer/customer/src/main/java/estate/svc/Main.java
+--- /home/garry/code/experiments/2026-11-mature-pipeline/estate/customer/src/main/java/estate/svc/Main.java	2026-11-26 00:31:13.000000000 +0000
++++ /home/garry/code/experiments/2026-11-mature-pipeline/results/main/runs/S1/C/5/work/customer/customer/src/main/java/estate/svc/Main.java	2026-11-26 15:25:08.553908746 +0000
+@@ -66,7 +66,10 @@
+     private Map<String, String> pay(Map<String, String> req) throws Exception {
+         Map<String, String> post = new HashMap<>();
+         post.put("account", req.get("account"));
++        // Send the new representation and retain the legacy field while old
++        // ledger instances may still receive requests.
+         post.put("amount", req.get("amount"));
++        post.put("amountMinor", String.valueOf(minorUnits(req.get("amount"))));
+         post.put("requestId", req.get("ref"));
+         try {
+             ctx.call("ledger", "post", post);
+@@ -80,7 +83,11 @@
+     @Override
+     public void onEvent(String topic, Map<String, String> ev) throws Exception {
+         if (!"payment.posted".equals(topic)) return;
+-        long cents = new BigDecimal(ev.get("amount")).movePointRight(2).longValueExact();
++        // amountMinor is the published format from the new ledger. Accept the
++        // old amount field as well so queued legacy events remain processable.
++        long cents = ev.containsKey("amountMinor")
++                ? Long.parseLong(ev.get("amountMinor"))
++                : minorUnits(ev.get("amount"));
+         try (PreparedStatement up = db.prepareStatement("UPDATE statement SET balance_cents = balance_cents + ?, lines = lines + 1 WHERE account = ?")) {
+             up.setLong(1, cents);
+             up.setString(2, ev.get("account"));
+@@ -94,6 +101,10 @@
+         }
+     }
+ 
++    private long minorUnits(String amount) {
++        return new BigDecimal(amount).movePointRight(2).longValueExact();
++    }
++
+     private Map<String, String> statement(Map<String, String> req) throws Exception {
+         try (PreparedStatement q = db.prepareStatement("SELECT balance_cents, lines FROM statement WHERE account = ?")) {
+             q.setString(1, req.get("account"));
+diff -ruN /home/garry/code/experiments/2026-11-mature-pipeline/estate/customer/src/test/java/estate/svc/FakeContext.java /home/garry/code/experiments/2026-11-mature-pipeline/results/main/runs/S1/C/5/work/customer/customer/src/test/java/estate/svc/FakeContext.java
+--- /home/garry/code/experiments/2026-11-mature-pipeline/estate/customer/src/test/java/estate/svc/FakeContext.java	2026-11-26 00:31:13.000000000 +0000
++++ /home/garry/code/experiments/2026-11-mature-pipeline/results/main/runs/S1/C/5/work/customer/customer/src/test/java/estate/svc/FakeContext.java	2026-11-26 15:24:55.906341018 +0000
+@@ -18,6 +18,7 @@
+     public interface Stub { Map<String, String> apply(Map<String, String> req) throws ServiceException; }
+ 
+     public final Map<String, Stub> stubs = new HashMap<>();
++    public Map<String, String> lastRequest;
+     public final List<String> published = new ArrayList<>();
+     public final List<Map<String, String>> events = new ArrayList<>();
+     public long tick = 0;
+@@ -34,6 +35,7 @@
+     public Connection db() { return db; }
+ 
+     public Map<String, String> call(String service, String op, Map<String, String> request) throws ServiceException {
++        lastRequest = request;
+         Stub s = stubs.get(service + "." + op);
+         if (s == null) throw new ServiceException("unavailable", "no stub for " + service + "." + op);
+         return s.apply(request);
+diff -ruN /home/garry/code/experiments/2026-11-mature-pipeline/estate/customer/src/test/java/estate/svc/MainTest.java /home/garry/code/experiments/2026-11-mature-pipeline/results/main/runs/S1/C/5/work/customer/customer/src/test/java/estate/svc/MainTest.java
+--- /home/garry/code/experiments/2026-11-mature-pipeline/estate/customer/src/test/java/estate/svc/MainTest.java	2026-11-26 00:31:13.000000000 +0000
++++ /home/garry/code/experiments/2026-11-mature-pipeline/results/main/runs/S1/C/5/work/customer/customer/src/test/java/estate/svc/MainTest.java	2026-11-26 15:24:55.906341018 +0000
+@@ -17,19 +17,29 @@
+     void statementFollowsPaymentEvents() throws Exception {
+         FakeContext c = new FakeContext();
+         Main m = start(c);
+-        m.onEvent("payment.posted", Map.of("account", "a1", "amount", "12.50", "requestId", "r1"));
+-        m.onEvent("payment.posted", Map.of("account", "a1", "amount", "7.25", "requestId", "r2"));
++        m.onEvent("payment.posted", Map.of("account", "a1", "amountMinor", "1250", "requestId", "r1"));
++        m.onEvent("payment.posted", Map.of("account", "a1", "amountMinor", "725", "requestId", "r2"));
+         Map<String, String> s = m.handle("statement", Map.of("account", "a1"));
+         assertEquals("19.75", s.get("balance"));
+         assertEquals("2", s.get("lines"));
+     }
+ 
+     @Test
++    void statementStillConsumesQueuedLegacyPaymentEvents() throws Exception {
++        FakeContext c = new FakeContext();
++        Main m = start(c);
++        m.onEvent("payment.posted", Map.of("account", "a1", "amount", "1.25", "requestId", "old-1"));
++        assertEquals("1.25", m.handle("statement", Map.of("account", "a1")).get("balance"));
++    }
++
++    @Test
+     void payPostsToTheLedgerAndReportsTimeouts() throws Exception {
+         FakeContext c = new FakeContext();
+         Main m = start(c);
+         c.stubs.put("ledger.post", r -> Map.of("id", "1", "dup", "false"));
+         assertEquals("OK", m.handle("pay", Map.of("customerId", "c1", "account", "a1", "amount", "5.00", "ref", "r1")).get("status"));
++        assertEquals("500", c.lastRequest.get("amountMinor"));
++        assertEquals("5.00", c.lastRequest.get("amount"));
+         c.stubs.put("ledger.post", r -> { throw new estate.api.ServiceException("timeout", "lost"); });
+         assertEquals("FAILED", m.handle("pay", Map.of("customerId", "c1", "account", "a1", "amount", "5.00", "ref", "r2")).get("status"));
+     }

@@ -1,0 +1,80 @@
+diff -ruN /home/garry/code/experiments/2026-11-mature-pipeline/estate/customer/src/main/java/estate/svc/Main.java /home/garry/code/experiments/2026-11-mature-pipeline/results/main/runs/S2/C/3/work/customer/customer/src/main/java/estate/svc/Main.java
+--- /home/garry/code/experiments/2026-11-mature-pipeline/estate/customer/src/main/java/estate/svc/Main.java	2026-11-26 00:31:13.000000000 +0000
++++ /home/garry/code/experiments/2026-11-mature-pipeline/results/main/runs/S2/C/3/work/customer/customer/src/main/java/estate/svc/Main.java	2026-11-26 14:49:18.424648745 +0000
+@@ -80,7 +80,10 @@
+     @Override
+     public void onEvent(String topic, Map<String, String> ev) throws Exception {
+         if (!"payment.posted".equals(topic)) return;
+-        long cents = new BigDecimal(ev.get("amount")).movePointRight(2).longValueExact();
++        String amount = ev.get("amount");
++        long cents = amount != null
++                ? new BigDecimal(amount).movePointRight(2).longValueExact()
++                : Long.parseLong(ev.get("amountCents"));
+         try (PreparedStatement up = db.prepareStatement("UPDATE statement SET balance_cents = balance_cents + ?, lines = lines + 1 WHERE account = ?")) {
+             up.setLong(1, cents);
+             up.setString(2, ev.get("account"));
+@@ -95,11 +98,20 @@
+     }
+ 
+     private Map<String, String> statement(Map<String, String> req) throws Exception {
++        Map<String, String> ledgerBalance = ctx.call("ledger", "balance", Map.of("account", req.get("account")));
++        String availableCents = ledgerBalance.get("balanceCents");
++        if (availableCents == null) {
++            // Old ledger instances expose only the decimal balance. Keep this fallback
++            // while old and new ledger instances coexist during rollout or rollback.
++            availableCents = new BigDecimal(ledgerBalance.getOrDefault("balance", "0.00"))
++                    .movePointRight(2).longValueExact() + "";
++        }
+         try (PreparedStatement q = db.prepareStatement("SELECT balance_cents, lines FROM statement WHERE account = ?")) {
+             q.setString(1, req.get("account"));
+             try (ResultSet rs = q.executeQuery()) {
+-                if (!rs.next()) return Map.of("balance", "0.00", "lines", "0");
+-                return Map.of("balance", BigDecimal.valueOf(rs.getLong(1), 2).toPlainString(), "lines", String.valueOf(rs.getInt(2)));
++                if (!rs.next()) return Map.of("balance", "0.00", "lines", "0", "availableCents", availableCents);
++                return Map.of("balance", BigDecimal.valueOf(rs.getLong(1), 2).toPlainString(),
++                        "lines", String.valueOf(rs.getInt(2)), "availableCents", availableCents);
+             }
+         }
+     }
+diff -ruN /home/garry/code/experiments/2026-11-mature-pipeline/estate/customer/src/test/java/estate/svc/MainTest.java /home/garry/code/experiments/2026-11-mature-pipeline/results/main/runs/S2/C/3/work/customer/customer/src/test/java/estate/svc/MainTest.java
+--- /home/garry/code/experiments/2026-11-mature-pipeline/estate/customer/src/test/java/estate/svc/MainTest.java	2026-11-26 00:31:13.000000000 +0000
++++ /home/garry/code/experiments/2026-11-mature-pipeline/results/main/runs/S2/C/3/work/customer/customer/src/test/java/estate/svc/MainTest.java	2026-11-26 14:49:18.424648745 +0000
+@@ -19,9 +19,38 @@
+         Main m = start(c);
+         m.onEvent("payment.posted", Map.of("account", "a1", "amount", "12.50", "requestId", "r1"));
+         m.onEvent("payment.posted", Map.of("account", "a1", "amount", "7.25", "requestId", "r2"));
++        c.stubs.put("ledger.balance", r -> Map.of("balance", "19.75", "balanceCents", "1975"));
+         Map<String, String> s = m.handle("statement", Map.of("account", "a1"));
+         assertEquals("19.75", s.get("balance"));
+         assertEquals("2", s.get("lines"));
++        assertEquals("1975", s.get("availableCents"));
++    }
++
++    @Test
++    void statementFallsBackToOldLedgerBalanceDuringRollout() throws Exception {
++        FakeContext c = new FakeContext();
++        Main m = start(c);
++        c.stubs.put("ledger.balance", r -> Map.of("balance", "7.25"));
++
++        Map<String, String> s = m.handle("statement", Map.of("account", "a1"));
++
++        assertEquals("0.00", s.get("balance"));
++        assertEquals("0", s.get("lines"));
++        assertEquals("725", s.get("availableCents"));
++    }
++
++    @Test
++    void statementReadModelAcceptsIntegerPaymentEvents() throws Exception {
++        FakeContext c = new FakeContext();
++        Main m = start(c);
++        m.onEvent("payment.posted", Map.of("account", "a1", "amountCents", "725", "requestId", "r1"));
++        c.stubs.put("ledger.balance", r -> Map.of("balanceCents", "725"));
++
++        Map<String, String> s = m.handle("statement", Map.of("account", "a1"));
++
++        assertEquals("7.25", s.get("balance"));
++        assertEquals("1", s.get("lines"));
++        assertEquals("725", s.get("availableCents"));
+     }
+ 
+     @Test

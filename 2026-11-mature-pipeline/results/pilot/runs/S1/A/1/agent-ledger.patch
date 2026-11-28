@@ -1,0 +1,145 @@
+diff -ruN /home/garry/code/experiments/2026-11-mature-pipeline/estate/ledger/src/main/java/estate/svc/Main.java /home/garry/code/experiments/2026-11-mature-pipeline/results/pilot/runs/S1/A/1/work/ledger/ledger/src/main/java/estate/svc/Main.java
+--- /home/garry/code/experiments/2026-11-mature-pipeline/estate/ledger/src/main/java/estate/svc/Main.java	2026-11-26 00:30:54.000000000 +0000
++++ /home/garry/code/experiments/2026-11-mature-pipeline/results/pilot/runs/S1/A/1/work/ledger/ledger/src/main/java/estate/svc/Main.java	2026-11-26 13:51:42.471488947 +0000
+@@ -31,6 +31,15 @@
+                 s.execute("CREATE TABLE postings(id BIGINT AUTO_INCREMENT PRIMARY KEY, account VARCHAR(40) NOT NULL, "
+                         + "amount DECIMAL(18,2) NOT NULL, request_id VARCHAR(80) NOT NULL UNIQUE, ts BIGINT NOT NULL)");
+                 s.execute("INSERT INTO schema_version(v) VALUES (1)");
++                v = 1;
++            }
++            if (v < 2) {
++                // Keep the legacy amount column and allow amount_minor to be null so an older
++                // binary can still insert during a rolling deployment. Reads below fall back to
++                // the legacy value for those rows.
++                s.execute("ALTER TABLE postings ADD COLUMN amount_minor BIGINT");
++                s.execute("UPDATE postings SET amount_minor = CAST(amount * 100 AS BIGINT) WHERE amount_minor IS NULL");
++                s.execute("INSERT INTO schema_version(v) VALUES (2)");
+             }
+         }
+     }
+@@ -53,7 +62,7 @@
+     }
+ 
+     private Map<String, String> health() throws Exception {
+-        try (Statement s = db.createStatement(); ResultSet rs = s.executeQuery("SELECT COALESCE(SUM(amount),0) FROM postings")) {
++        try (Statement s = db.createStatement(); ResultSet rs = s.executeQuery("SELECT COALESCE(SUM(COALESCE(amount_minor, CAST(amount * 100 AS BIGINT))),0) FROM postings")) {
+             rs.next();
+         }
+         return Map.of("status", "UP");
+@@ -71,39 +80,44 @@
+         }
+         long id;
+         try (PreparedStatement ins = db.prepareStatement(
+-                "INSERT INTO postings(account, amount, request_id, ts) VALUES (?,?,?,?)", Statement.RETURN_GENERATED_KEYS)) {
++                "INSERT INTO postings(account, amount, amount_minor, request_id, ts) VALUES (?,?,?,?,?)", Statement.RETURN_GENERATED_KEYS)) {
+             ins.setString(1, account);
+             ins.setBigDecimal(2, amount);
+-            ins.setString(3, requestId);
+-            ins.setLong(4, ctx.now());
++            ins.setLong(3, amount.movePointRight(2).toBigIntegerExact().longValueExact());
++            ins.setString(4, requestId);
++            ins.setLong(5, ctx.now());
+             ins.executeUpdate();
+             try (ResultSet k = ins.getGeneratedKeys()) { k.next(); id = k.getLong(1); }
+         }
+         Map<String, String> ev = new HashMap<>();
+         ev.put("account", account);
+-        ev.put("amount", amount.toPlainString());
++        ev.put("amountMinor", amount.movePointRight(2).toBigIntegerExact().toString());
+         ev.put("requestId", requestId);
+         ctx.publish("payment.posted", ev);
+         return Map.of("id", String.valueOf(id), "dup", "false");
+     }
+ 
+     private Map<String, String> balance(Map<String, String> req) throws Exception {
+-        try (PreparedStatement q = db.prepareStatement("SELECT COALESCE(SUM(amount),0) FROM postings WHERE account = ?")) {
++        try (PreparedStatement q = db.prepareStatement("SELECT COALESCE(SUM(COALESCE(amount_minor, CAST(amount * 100 AS BIGINT))),0) FROM postings WHERE account = ?")) {
+             q.setString(1, req.get("account"));
+             try (ResultSet rs = q.executeQuery()) {
+                 rs.next();
+-                return Map.of("balance", rs.getBigDecimal(1).setScale(2).toPlainString());
++                return Map.of("balance", minorToMajor(rs.getLong(1)));
+             }
+         }
+     }
+ 
+     private Map<String, String> postings(Map<String, String> req) throws Exception {
+-        try (PreparedStatement q = db.prepareStatement("SELECT COUNT(*), COALESCE(SUM(amount),0) FROM postings WHERE account = ?")) {
++        try (PreparedStatement q = db.prepareStatement("SELECT COUNT(*), COALESCE(SUM(COALESCE(amount_minor, CAST(amount * 100 AS BIGINT))),0) FROM postings WHERE account = ?")) {
+             q.setString(1, req.get("account"));
+             try (ResultSet rs = q.executeQuery()) {
+                 rs.next();
+-                return Map.of("count", String.valueOf(rs.getLong(1)), "total", rs.getBigDecimal(2).setScale(2).toPlainString());
++                return Map.of("count", String.valueOf(rs.getLong(1)), "total", minorToMajor(rs.getLong(2)));
+             }
+         }
+     }
++
++    private String minorToMajor(long minor) {
++        return BigDecimal.valueOf(minor, 2).toPlainString();
++    }
+ }
+diff -ruN /home/garry/code/experiments/2026-11-mature-pipeline/estate/ledger/src/test/java/estate/svc/MainTest.java /home/garry/code/experiments/2026-11-mature-pipeline/results/pilot/runs/S1/A/1/work/ledger/ledger/src/test/java/estate/svc/MainTest.java
+--- /home/garry/code/experiments/2026-11-mature-pipeline/estate/ledger/src/test/java/estate/svc/MainTest.java	2026-11-26 00:30:54.000000000 +0000
++++ /home/garry/code/experiments/2026-11-mature-pipeline/results/pilot/runs/S1/A/1/work/ledger/ledger/src/test/java/estate/svc/MainTest.java	2026-11-26 13:51:42.471775728 +0000
+@@ -2,6 +2,7 @@
+ 
+ import org.junit.jupiter.api.Test;
+ 
++import java.sql.Statement;
+ import java.util.Map;
+ 
+ import static org.junit.jupiter.api.Assertions.*;
+@@ -21,7 +22,8 @@
+         assertEquals("false", r.get("dup"));
+         assertEquals("12.50", m.handle("balance", Map.of("account", "a1")).get("balance"));
+         assertEquals("payment.posted", c.published.get(0));
+-        assertEquals("12.50", c.events.get(0).get("amount"));
++        assertEquals("1250", c.events.get(0).get("amountMinor"));
++        assertFalse(c.events.get(0).containsKey("amount"));
+     }
+ 
+     @Test
+@@ -39,4 +41,42 @@
+     void healthIsUp() throws Exception {
+         assertEquals("UP", start(new FakeContext()).handle("health", Map.of()).get("status"));
+     }
++
++    @Test
++    void migratesExistingPostingsToMinorUnits() throws Exception {
++        FakeContext c = new FakeContext();
++        try (Statement s = c.db().createStatement()) {
++            s.execute("CREATE TABLE schema_version(v INT NOT NULL)");
++            s.execute("INSERT INTO schema_version(v) VALUES (1)");
++            s.execute("CREATE TABLE postings(id BIGINT AUTO_INCREMENT PRIMARY KEY, account VARCHAR(40) NOT NULL, "
++                    + "amount DECIMAL(18,2) NOT NULL, request_id VARCHAR(80) NOT NULL UNIQUE, ts BIGINT NOT NULL)");
++            s.execute("INSERT INTO postings(account, amount, request_id, ts) VALUES ('a1', 12.25, 'old', 1)");
++        }
++
++        Main m = start(c);
++        assertEquals("12.25", m.handle("balance", Map.of("account", "a1")).get("balance"));
++        Map<String, String> r = m.handle("post", Map.of("account", "a1", "amount", "1.75", "requestId", "new"));
++        assertEquals("175", c.events.get(0).get("amountMinor"));
++        assertEquals("14.00", m.handle("balance", Map.of("account", "a1")).get("balance"));
++        assertEquals("2", m.handle("postings", Map.of("account", "a1")).get("count"));
++        assertEquals("false", r.get("dup"));
++    }
++
++    @Test
++    void remainsReadableAndWritableAfterRollbackToLegacyBinary() throws Exception {
++        FakeContext c = new FakeContext();
++        Main m = start(c);
++
++        // Simulate a post made by the pre-minor-unit binary after this migration ran.
++        try (var s = c.db().prepareStatement(
++                "INSERT INTO postings(account, amount, request_id, ts) VALUES (?,?,?,?)")) {
++            s.setString(1, "a1");
++            s.setBigDecimal(2, new java.math.BigDecimal("3.25"));
++            s.setString(3, "legacy");
++            s.setLong(4, 1);
++            s.executeUpdate();
++        }
++
++        assertEquals("3.25", m.handle("balance", Map.of("account", "a1")).get("balance"));
++    }
+ }

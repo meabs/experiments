@@ -1,0 +1,202 @@
+diff -ruN /home/garry/code/experiments/2026-11-mature-pipeline/estate/ledger/src/main/java/estate/svc/Main.java /home/garry/code/experiments/2026-11-mature-pipeline/results/main/runs/S3/B/1/work/ledger/ledger/src/main/java/estate/svc/Main.java
+--- /home/garry/code/experiments/2026-11-mature-pipeline/estate/ledger/src/main/java/estate/svc/Main.java	2026-11-26 00:30:54.000000000 +0000
++++ /home/garry/code/experiments/2026-11-mature-pipeline/results/main/runs/S3/B/1/work/ledger/ledger/src/main/java/estate/svc/Main.java	2026-11-26 14:17:47.696355055 +0000
+@@ -8,11 +8,14 @@
+ import java.sql.Connection;
+ import java.sql.PreparedStatement;
+ import java.sql.ResultSet;
++import java.sql.SQLException;
+ import java.sql.Statement;
+ import java.util.HashMap;
++import java.util.ArrayList;
++import java.util.List;
+ import java.util.Map;
+ 
+-/** Ledger: persistent postings with idempotent posting by requestId. */
++/** Ledger: persistent postings with idempotent posting by requestId or idempotencyKey. */
+ public class Main implements Service {
+     private Context ctx;
+     private Connection db;
+@@ -31,6 +34,27 @@
+                 s.execute("CREATE TABLE postings(id BIGINT AUTO_INCREMENT PRIMARY KEY, account VARCHAR(40) NOT NULL, "
+                         + "amount DECIMAL(18,2) NOT NULL, request_id VARCHAR(80) NOT NULL UNIQUE, ts BIGINT NOT NULL)");
+                 s.execute("INSERT INTO schema_version(v) VALUES (1)");
++                v = 1;
++            }
++            if (v < 2) {
++                // Keep each DDL step repeatable. A process can disappear between
++                // migration statements while another version is still serving.
++                s.execute("ALTER TABLE postings ADD COLUMN IF NOT EXISTS idempotency_key VARCHAR(160)");
++                // requestId remains unique for legacy (keyless) posts, but is only a trace id for keyed posts.
++                List<String> constraints = new ArrayList<>();
++                try (ResultSet rs = s.executeQuery("SELECT tc.constraint_name FROM information_schema.table_constraints tc "
++                        + "JOIN information_schema.constraint_column_usage ccu "
++                        + "ON ccu.constraint_name = tc.constraint_name AND ccu.constraint_schema = tc.constraint_schema "
++                        + "WHERE tc.table_name = 'POSTINGS' AND tc.constraint_type = 'UNIQUE' "
++                        + "AND ccu.column_name = 'REQUEST_ID'")) {
++                    while (rs.next()) constraints.add(rs.getString(1));
++                }
++                for (String name : constraints) s.execute("ALTER TABLE postings DROP CONSTRAINT " + name);
++                s.execute("ALTER TABLE postings ADD COLUMN IF NOT EXISTS request_dedupe_id VARCHAR(80) "
++                        + "GENERATED ALWAYS AS (CASE WHEN idempotency_key IS NULL THEN request_id ELSE NULL END)");
++                s.execute("CREATE UNIQUE INDEX IF NOT EXISTS postings_request_dedupe ON postings(request_dedupe_id)");
++                s.execute("CREATE UNIQUE INDEX IF NOT EXISTS postings_idempotency_key ON postings(idempotency_key)");
++                s.execute("INSERT INTO schema_version(v) VALUES (2)");
+             }
+         }
+     }
+@@ -61,24 +85,29 @@
+ 
+     private Map<String, String> post(Map<String, String> req) throws Exception {
+         String account = req.get("account");
+-        BigDecimal amount = new BigDecimal(req.get("amount")).setScale(2);
+         String requestId = req.get("requestId");
+-        try (PreparedStatement q = db.prepareStatement("SELECT id FROM postings WHERE request_id = ?")) {
+-            q.setString(1, requestId);
+-            try (ResultSet rs = q.executeQuery()) {
+-                if (rs.next()) return Map.of("id", String.valueOf(rs.getLong(1)), "dup", "true");
+-            }
+-        }
++        String idempotencyKey = req.get("idempotencyKey");
++        Long existing = findExistingId(requestId, idempotencyKey);
++        if (existing != null) return Map.of("id", String.valueOf(existing), "dup", "true");
++
++        BigDecimal amount = new BigDecimal(req.get("amount")).setScale(2);
+         long id;
+         try (PreparedStatement ins = db.prepareStatement(
+-                "INSERT INTO postings(account, amount, request_id, ts) VALUES (?,?,?,?)", Statement.RETURN_GENERATED_KEYS)) {
++                "INSERT INTO postings(account, amount, request_id, ts, idempotency_key) VALUES (?,?,?,?,?)", Statement.RETURN_GENERATED_KEYS)) {
+             ins.setString(1, account);
+             ins.setBigDecimal(2, amount);
+             ins.setString(3, requestId);
+             ins.setLong(4, ctx.now());
++            ins.setString(5, idempotencyKey);
+             ins.executeUpdate();
+             try (ResultSet k = ins.getGeneratedKeys()) { k.next(); id = k.getLong(1); }
++        } catch (SQLException e) {
++            // Another instance may have won the race between lookup and insert.
++            existing = findExistingId(requestId, idempotencyKey);
++            if (existing != null) return Map.of("id", String.valueOf(existing), "dup", "true");
++            throw e;
+         }
++
+         Map<String, String> ev = new HashMap<>();
+         ev.put("account", account);
+         ev.put("amount", amount.toPlainString());
+@@ -87,6 +116,18 @@
+         return Map.of("id", String.valueOf(id), "dup", "false");
+     }
+ 
++    private Long findExistingId(String requestId, String idempotencyKey) throws Exception {
++        String sql = idempotencyKey != null
++                ? "SELECT id FROM postings WHERE idempotency_key = ?"
++                : "SELECT id FROM postings WHERE request_id = ? AND idempotency_key IS NULL";
++        try (PreparedStatement q = db.prepareStatement(sql)) {
++            q.setString(1, idempotencyKey != null ? idempotencyKey : requestId);
++            try (ResultSet rs = q.executeQuery()) {
++                return rs.next() ? rs.getLong(1) : null;
++            }
++        }
++    }
++
+     private Map<String, String> balance(Map<String, String> req) throws Exception {
+         try (PreparedStatement q = db.prepareStatement("SELECT COALESCE(SUM(amount),0) FROM postings WHERE account = ?")) {
+             q.setString(1, req.get("account"));
+diff -ruN /home/garry/code/experiments/2026-11-mature-pipeline/estate/ledger/src/test/java/estate/svc/MainTest.java /home/garry/code/experiments/2026-11-mature-pipeline/results/main/runs/S3/B/1/work/ledger/ledger/src/test/java/estate/svc/MainTest.java
+--- /home/garry/code/experiments/2026-11-mature-pipeline/estate/ledger/src/test/java/estate/svc/MainTest.java	2026-11-26 00:30:54.000000000 +0000
++++ /home/garry/code/experiments/2026-11-mature-pipeline/results/main/runs/S3/B/1/work/ledger/ledger/src/test/java/estate/svc/MainTest.java	2026-11-26 14:17:59.261983713 +0000
+@@ -2,6 +2,7 @@
+ 
+ import org.junit.jupiter.api.Test;
+ 
++import java.sql.Statement;
+ import java.util.Map;
+ 
+ import static org.junit.jupiter.api.Assertions.*;
+@@ -36,6 +37,86 @@
+     }
+ 
+     @Test
++    void sameIdempotencyKeyPostsOnceAndUsesRequestIdAsTraceId() throws Exception {
++        FakeContext c = new FakeContext();
++        Main m = start(c);
++        Map<String, String> first = Map.of("account", "a1", "amount", "5.00", "requestId", "trace-1", "idempotencyKey", "payment-1");
++        Map<String, String> second = Map.of("account", "a1", "amount", "99.00", "requestId", "trace-2", "idempotencyKey", "payment-1");
++
++        Map<String, String> original = m.handle("post", first);
++        Map<String, String> duplicate = m.handle("post", second);
++
++        assertEquals("false", original.get("dup"));
++        assertEquals("true", duplicate.get("dup"));
++        assertEquals(original.get("id"), duplicate.get("id"));
++        assertEquals("1", m.handle("postings", Map.of("account", "a1")).get("count"));
++        assertEquals("trace-1", c.events.get(0).get("requestId"));
++    }
++
++    @Test
++    void keyedRequestIdIsNotTheDedupeKey() throws Exception {
++        FakeContext c = new FakeContext();
++        Main m = start(c);
++        m.handle("post", Map.of("account", "a1", "amount", "1.00", "requestId", "same"));
++        m.handle("post", Map.of("account", "a1", "amount", "2.00", "requestId", "same", "idempotencyKey", "payment-2"));
++        assertEquals("2", m.handle("postings", Map.of("account", "a1")).get("count"));
++    }
++
++    @Test
++    void migratesExistingV1DataAndKeepsKeyedRetriesIdempotent() throws Exception {
++        FakeContext c = new FakeContext();
++        try (Statement s = c.db().createStatement()) {
++            s.execute("CREATE TABLE schema_version(v INT NOT NULL)");
++            s.execute("INSERT INTO schema_version(v) VALUES (1)");
++            s.execute("CREATE TABLE postings(id BIGINT AUTO_INCREMENT PRIMARY KEY, account VARCHAR(40) NOT NULL, "
++                    + "amount DECIMAL(18,2) NOT NULL, request_id VARCHAR(80) NOT NULL UNIQUE, ts BIGINT NOT NULL)");
++            s.execute("INSERT INTO postings(account, amount, request_id, ts) VALUES ('legacy', 3.25, 'old-r1', 1)");
++        }
++
++        Main m = start(c);
++        Map<String, String> first = m.handle("post", Map.of("account", "a1", "amount", "4.00",
++                "requestId", "trace-1", "idempotencyKey", "payment-1"));
++        Map<String, String> retry = m.handle("post", Map.of("account", "a1", "amount", "99.00",
++                "requestId", "trace-2", "idempotencyKey", "payment-1"));
++
++        assertEquals("3.25", m.handle("balance", Map.of("account", "legacy")).get("balance"));
++        assertEquals("false", first.get("dup"));
++        assertEquals("true", retry.get("dup"));
++        assertEquals("1", m.handle("postings", Map.of("account", "a1")).get("count"));
++        assertEquals(1, c.events.size());
++
++        // A second instance sees the completed migration and the same durable key.
++        Main restarted = start(c);
++        Map<String, String> afterRestart = restarted.handle("post", Map.of("account", "a1", "amount", "7.00",
++                "requestId", "trace-3", "idempotencyKey", "payment-1"));
++        assertEquals("true", afterRestart.get("dup"));
++        assertEquals("1", restarted.handle("postings", Map.of("account", "a1")).get("count"));
++    }
++
++    @Test
++    void resumesIfMigrationStoppedAfterAddingTheKeyColumn() throws Exception {
++        FakeContext c = new FakeContext();
++        try (Statement s = c.db().createStatement()) {
++            s.execute("CREATE TABLE schema_version(v INT NOT NULL)");
++            s.execute("INSERT INTO schema_version(v) VALUES (1)");
++            s.execute("CREATE TABLE postings(id BIGINT AUTO_INCREMENT PRIMARY KEY, account VARCHAR(40) NOT NULL, "
++                    + "amount DECIMAL(18,2) NOT NULL, request_id VARCHAR(80) NOT NULL UNIQUE, ts BIGINT NOT NULL)");
++            // Simulate a process stopping after the first DDL statement of v2.
++            s.execute("ALTER TABLE postings ADD COLUMN idempotency_key VARCHAR(160)");
++        }
++
++        Main m = start(c);
++        Map<String, String> first = m.handle("post", Map.of("account", "a1", "amount", "4.00",
++                "requestId", "trace-1", "idempotencyKey", "payment-1"));
++        Map<String, String> retry = m.handle("post", Map.of("account", "a1", "amount", "9.00",
++                "requestId", "trace-2", "idempotencyKey", "payment-1"));
++
++        assertEquals("false", first.get("dup"));
++        assertEquals("true", retry.get("dup"));
++        assertEquals("1", m.handle("postings", Map.of("account", "a1")).get("count"));
++    }
++
++    @Test
+     void healthIsUp() throws Exception {
+         assertEquals("UP", start(new FakeContext()).handle("health", Map.of()).get("status"));
+     }

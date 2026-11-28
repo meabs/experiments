@@ -1,0 +1,122 @@
+diff -ruN /home/garry/code/experiments/2026-11-mature-pipeline/estate/ledger/src/main/java/estate/svc/Main.java /home/garry/code/experiments/2026-11-mature-pipeline/results/main/runs/S2/A/3/work/ledger/ledger/src/main/java/estate/svc/Main.java
+--- /home/garry/code/experiments/2026-11-mature-pipeline/estate/ledger/src/main/java/estate/svc/Main.java	2026-11-26 00:30:54.000000000 +0000
++++ /home/garry/code/experiments/2026-11-mature-pipeline/results/main/runs/S2/A/3/work/ledger/ledger/src/main/java/estate/svc/Main.java	2026-11-26 14:47:25.483274996 +0000
+@@ -31,6 +31,15 @@
+                 s.execute("CREATE TABLE postings(id BIGINT AUTO_INCREMENT PRIMARY KEY, account VARCHAR(40) NOT NULL, "
+                         + "amount DECIMAL(18,2) NOT NULL, request_id VARCHAR(80) NOT NULL UNIQUE, ts BIGINT NOT NULL)");
+                 s.execute("INSERT INTO schema_version(v) VALUES (1)");
++                v = 1;
++            }
++            if (v < 2) {
++                // Keep the legacy amount column as the compatibility write path. An old
++                // instance may be started after this migration during rollback and will
++                // insert amount without knowing about amount_cents. A generated column
++                // keeps those writes visible to the integer-based implementation too.
++                s.execute("ALTER TABLE postings ADD amount_cents BIGINT AS (CAST(amount * 100 AS BIGINT))");
++                s.execute("INSERT INTO schema_version(v) VALUES (2)");
+             }
+         }
+     }
+@@ -53,7 +62,7 @@
+     }
+ 
+     private Map<String, String> health() throws Exception {
+-        try (Statement s = db.createStatement(); ResultSet rs = s.executeQuery("SELECT COALESCE(SUM(amount),0) FROM postings")) {
++        try (Statement s = db.createStatement(); ResultSet rs = s.executeQuery("SELECT COALESCE(SUM(amount_cents),0) FROM postings")) {
+             rs.next();
+         }
+         return Map.of("status", "UP");
+@@ -88,22 +97,27 @@
+     }
+ 
+     private Map<String, String> balance(Map<String, String> req) throws Exception {
+-        try (PreparedStatement q = db.prepareStatement("SELECT COALESCE(SUM(amount),0) FROM postings WHERE account = ?")) {
++        try (PreparedStatement q = db.prepareStatement("SELECT COALESCE(SUM(amount_cents),0) FROM postings WHERE account = ?")) {
+             q.setString(1, req.get("account"));
+             try (ResultSet rs = q.executeQuery()) {
+                 rs.next();
+-                return Map.of("balance", rs.getBigDecimal(1).setScale(2).toPlainString());
++                long cents = rs.getLong(1);
++                return Map.of("balance", decimal(cents), "balanceCents", String.valueOf(cents));
+             }
+         }
+     }
+ 
+     private Map<String, String> postings(Map<String, String> req) throws Exception {
+-        try (PreparedStatement q = db.prepareStatement("SELECT COUNT(*), COALESCE(SUM(amount),0) FROM postings WHERE account = ?")) {
++        try (PreparedStatement q = db.prepareStatement("SELECT COUNT(*), COALESCE(SUM(amount_cents),0) FROM postings WHERE account = ?")) {
+             q.setString(1, req.get("account"));
+             try (ResultSet rs = q.executeQuery()) {
+                 rs.next();
+-                return Map.of("count", String.valueOf(rs.getLong(1)), "total", rs.getBigDecimal(2).setScale(2).toPlainString());
++                return Map.of("count", String.valueOf(rs.getLong(1)), "total", decimal(rs.getLong(2)));
+             }
+         }
+     }
++
++    private static String decimal(long cents) {
++        return BigDecimal.valueOf(cents, 2).toPlainString();
++    }
+ }
+diff -ruN /home/garry/code/experiments/2026-11-mature-pipeline/estate/ledger/src/test/java/estate/svc/MainTest.java /home/garry/code/experiments/2026-11-mature-pipeline/results/main/runs/S2/A/3/work/ledger/ledger/src/test/java/estate/svc/MainTest.java
+--- /home/garry/code/experiments/2026-11-mature-pipeline/estate/ledger/src/test/java/estate/svc/MainTest.java	2026-11-26 00:30:54.000000000 +0000
++++ /home/garry/code/experiments/2026-11-mature-pipeline/results/main/runs/S2/A/3/work/ledger/ledger/src/test/java/estate/svc/MainTest.java	2026-11-26 14:47:25.483274996 +0000
+@@ -2,6 +2,8 @@
+ 
+ import org.junit.jupiter.api.Test;
+ 
++import java.sql.ResultSet;
++import java.sql.Statement;
+ import java.util.Map;
+ 
+ import static org.junit.jupiter.api.Assertions.*;
+@@ -20,6 +22,7 @@
+         Map<String, String> r = m.handle("post", Map.of("account", "a1", "amount", "12.5", "requestId", "r1"));
+         assertEquals("false", r.get("dup"));
+         assertEquals("12.50", m.handle("balance", Map.of("account", "a1")).get("balance"));
++        assertEquals("1250", m.handle("balance", Map.of("account", "a1")).get("balanceCents"));
+         assertEquals("payment.posted", c.published.get(0));
+         assertEquals("12.50", c.events.get(0).get("amount"));
+     }
+@@ -39,4 +42,41 @@
+     void healthIsUp() throws Exception {
+         assertEquals("UP", start(new FakeContext()).handle("health", Map.of()).get("status"));
+     }
++
++    @Test
++    void migrationBackfillsIntegerAmounts() throws Exception {
++        FakeContext c = new FakeContext();
++        try (Statement s = c.db().createStatement()) {
++            s.execute("CREATE TABLE schema_version(v INT NOT NULL)");
++            s.execute("INSERT INTO schema_version(v) VALUES (1)");
++            s.execute("CREATE TABLE postings(id BIGINT AUTO_INCREMENT PRIMARY KEY, account VARCHAR(40) NOT NULL, "
++                    + "amount DECIMAL(18,2) NOT NULL, request_id VARCHAR(80) NOT NULL UNIQUE, ts BIGINT NOT NULL)");
++            s.execute("INSERT INTO postings(account, amount, request_id, ts) VALUES ('a1', 7.25, 'old', 1)");
++        }
++
++        Main m = start(c);
++        assertEquals("725", m.handle("balance", Map.of("account", "a1")).get("balanceCents"));
++        try (Statement s = c.db().createStatement(); ResultSet rs = s.executeQuery("SELECT amount_cents FROM postings WHERE request_id = 'old'")) {
++            assertTrue(rs.next());
++            assertEquals(725L, rs.getLong(1));
++        }
++    }
++
++    @Test
++    void migratedSchemaAcceptsLegacyWritesDuringRollback() throws Exception {
++        FakeContext c = new FakeContext();
++        Main m = start(c);
++
++        // Simulate the rolled-back version: it knows only about the legacy amount column.
++        try (var q = c.db().prepareStatement(
++                "INSERT INTO postings(account, amount, request_id, ts) VALUES (?,?,?,?)")) {
++            q.setString(1, "a1");
++            q.setBigDecimal(2, new java.math.BigDecimal("7.25"));
++            q.setString(3, "legacy");
++            q.setLong(4, 1);
++            q.executeUpdate();
++        }
++
++        assertEquals("725", m.handle("balance", Map.of("account", "a1")).get("balanceCents"));
++    }
+ }

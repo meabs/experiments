@@ -1,0 +1,102 @@
+diff -ruN /home/garry/code/experiments/2026-11-mature-pipeline/estate/customer/src/main/java/estate/svc/Main.java /home/garry/code/experiments/2026-11-mature-pipeline/results/main/runs/S3/C/2/work/customer/customer/src/main/java/estate/svc/Main.java
+--- /home/garry/code/experiments/2026-11-mature-pipeline/estate/customer/src/main/java/estate/svc/Main.java	2026-11-26 00:31:13.000000000 +0000
++++ /home/garry/code/experiments/2026-11-mature-pipeline/results/main/runs/S3/C/2/work/customer/customer/src/main/java/estate/svc/Main.java	2026-11-26 14:32:57.155154726 +0000
+@@ -64,17 +64,22 @@
+     }
+ 
+     private Map<String, String> pay(Map<String, String> req) throws Exception {
+-        Map<String, String> post = new HashMap<>();
+-        post.put("account", req.get("account"));
+-        post.put("amount", req.get("amount"));
+-        post.put("requestId", req.get("ref"));
+-        try {
+-            ctx.call("ledger", "post", post);
+-            return Map.of("status", "OK");
+-        } catch (ServiceException e) {
+-            if ("timeout".equals(e.code)) return Map.of("status", "FAILED", "reason", "timeout");
+-            throw e;
++        String ref = req.get("ref");
++        for (int attempt = 1; attempt <= 3; attempt++) {
++            Map<String, String> post = new HashMap<>();
++            post.put("account", req.get("account"));
++            post.put("amount", req.get("amount"));
++            post.put("idempotencyKey", ref);
++            post.put("requestId", ref + "-" + attempt);
++            try {
++                ctx.call("ledger", "post", post);
++                return Map.of("status", "OK");
++            } catch (ServiceException e) {
++                if (!"timeout".equals(e.code)) throw e;
++                if (attempt == 3) return Map.of("status", "FAILED", "reason", "timeout");
++            }
+         }
++        throw new IllegalStateException("unreachable");
+     }
+ 
+     @Override
+diff -ruN /home/garry/code/experiments/2026-11-mature-pipeline/estate/customer/src/test/java/estate/svc/MainTest.java /home/garry/code/experiments/2026-11-mature-pipeline/results/main/runs/S3/C/2/work/customer/customer/src/test/java/estate/svc/MainTest.java
+--- /home/garry/code/experiments/2026-11-mature-pipeline/estate/customer/src/test/java/estate/svc/MainTest.java	2026-11-26 00:31:13.000000000 +0000
++++ /home/garry/code/experiments/2026-11-mature-pipeline/results/main/runs/S3/C/2/work/customer/customer/src/test/java/estate/svc/MainTest.java	2026-11-26 14:32:57.156154694 +0000
+@@ -2,6 +2,9 @@
+ 
+ import org.junit.jupiter.api.Test;
+ 
++import java.util.ArrayList;
++import java.util.HashMap;
++import java.util.List;
+ import java.util.Map;
+ 
+ import static org.junit.jupiter.api.Assertions.*;
+@@ -25,13 +28,48 @@
+     }
+ 
+     @Test
+-    void payPostsToTheLedgerAndReportsTimeouts() throws Exception {
++    void payRetriesTimeoutsWithStableIdempotencyAndFreshRequestIds() throws Exception {
+         FakeContext c = new FakeContext();
+         Main m = start(c);
+-        c.stubs.put("ledger.post", r -> Map.of("id", "1", "dup", "false"));
++        List<Map<String, String>> calls = new ArrayList<>();
++        c.stubs.put("ledger.post", r -> {
++            calls.add(new HashMap<>(r));
++            if (calls.size() < 3) throw new estate.api.ServiceException("timeout", "lost");
++            return Map.of("id", "1", "dup", "false");
++        });
++
+         assertEquals("OK", m.handle("pay", Map.of("customerId", "c1", "account", "a1", "amount", "5.00", "ref", "r1")).get("status"));
+-        c.stubs.put("ledger.post", r -> { throw new estate.api.ServiceException("timeout", "lost"); });
+-        assertEquals("FAILED", m.handle("pay", Map.of("customerId", "c1", "account", "a1", "amount", "5.00", "ref", "r2")).get("status"));
++        assertEquals(3, calls.size());
++        for (int i = 0; i < calls.size(); i++) {
++            assertEquals("r1", calls.get(i).get("idempotencyKey"));
++            assertEquals("r1-" + (i + 1), calls.get(i).get("requestId"));
++        }
++    }
++
++    @Test
++    void payFailsAfterThreeTimeouts() throws Exception {
++        FakeContext c = new FakeContext();
++        Main m = start(c);
++        List<Map<String, String>> calls = new ArrayList<>();
++        c.stubs.put("ledger.post", r -> {
++            calls.add(new HashMap<>(r));
++            throw new estate.api.ServiceException("timeout", "lost");
++        });
++
++        Map<String, String> result = m.handle("pay", Map.of("customerId", "c1", "account", "a1", "amount", "5.00", "ref", "r2"));
++        assertEquals(Map.of("status", "FAILED", "reason", "timeout"), result);
++        assertEquals(3, calls.size());
++    }
++
++    @Test
++    void payStillPropagatesNonTimeoutErrors() throws Exception {
++        FakeContext c = new FakeContext();
++        Main m = start(c);
++        c.stubs.put("ledger.post", r -> { throw new estate.api.ServiceException("error", "rejected"); });
++
++        estate.api.ServiceException error = assertThrows(estate.api.ServiceException.class,
++                () -> m.handle("pay", Map.of("customerId", "c1", "account", "a1", "amount", "5.00", "ref", "r3")));
++        assertEquals("error", error.code);
+     }
+ 
+     @Test

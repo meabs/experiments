@@ -1,0 +1,124 @@
+diff -ruN /home/garry/code/experiments/2026-11-mature-pipeline/estate/customer/src/main/java/estate/svc/Main.java /home/garry/code/experiments/2026-11-mature-pipeline/results/main/runs/S3/B/2/work/customer/customer/src/main/java/estate/svc/Main.java
+--- /home/garry/code/experiments/2026-11-mature-pipeline/estate/customer/src/main/java/estate/svc/Main.java	2026-11-26 00:31:13.000000000 +0000
++++ /home/garry/code/experiments/2026-11-mature-pipeline/results/main/runs/S3/B/2/work/customer/customer/src/main/java/estate/svc/Main.java	2026-11-26 14:36:52.110610925 +0000
+@@ -17,6 +17,7 @@
+  * credit applications (through the decision service) and marketing offers.
+  */
+ public class Main implements Service {
++    private static final int MAX_PAYMENT_ATTEMPTS = 3;
+     private Context ctx;
+     private Connection db;
+ 
+@@ -64,17 +65,31 @@
+     }
+ 
+     private Map<String, String> pay(Map<String, String> req) throws Exception {
+-        Map<String, String> post = new HashMap<>();
+-        post.put("account", req.get("account"));
+-        post.put("amount", req.get("amount"));
+-        post.put("requestId", req.get("ref"));
+-        try {
+-            ctx.call("ledger", "post", post);
+-            return Map.of("status", "OK");
+-        } catch (ServiceException e) {
+-            if ("timeout".equals(e.code)) return Map.of("status", "FAILED", "reason", "timeout");
+-            throw e;
++        String ref = req.get("ref");
++        for (int attempt = 1; attempt <= MAX_PAYMENT_ATTEMPTS; attempt++) {
++            Map<String, String> post = new HashMap<>();
++            post.put("account", req.get("account"));
++            post.put("amount", req.get("amount"));
++            // idempotencyKey is understood by CHG-103 ledger versions; keeping it
++            // on every retry makes a lost response safe to replay.
++            post.put("idempotencyKey", ref);
++            // requestId is also the deduplication key used by pre-CHG-103
++            // ledgers. Keep it stable so a customer rolled out before (or
++            // rolled back alongside) the new ledger cannot duplicate a post.
++            // The attempt-specific value remains available for tracing.
++            post.put("requestId", ref);
++            post.put("attemptRequestId", ref + "-" + attempt);
++            try {
++                ctx.call("ledger", "post", post);
++                return Map.of("status", "OK");
++            } catch (ServiceException e) {
++                if (!"timeout".equals(e.code)) throw e;
++                if (attempt == MAX_PAYMENT_ATTEMPTS) {
++                    return Map.of("status", "FAILED", "reason", "timeout");
++                }
++            }
+         }
++        throw new AssertionError("unreachable");
+     }
+ 
+     @Override
+diff -ruN /home/garry/code/experiments/2026-11-mature-pipeline/estate/customer/src/test/java/estate/svc/MainTest.java /home/garry/code/experiments/2026-11-mature-pipeline/results/main/runs/S3/B/2/work/customer/customer/src/test/java/estate/svc/MainTest.java
+--- /home/garry/code/experiments/2026-11-mature-pipeline/estate/customer/src/test/java/estate/svc/MainTest.java	2026-11-26 00:31:13.000000000 +0000
++++ /home/garry/code/experiments/2026-11-mature-pipeline/results/main/runs/S3/B/2/work/customer/customer/src/test/java/estate/svc/MainTest.java	2026-11-26 14:36:52.110610925 +0000
+@@ -28,10 +28,64 @@
+     void payPostsToTheLedgerAndReportsTimeouts() throws Exception {
+         FakeContext c = new FakeContext();
+         Main m = start(c);
+-        c.stubs.put("ledger.post", r -> Map.of("id", "1", "dup", "false"));
++        c.stubs.put("ledger.post", r -> {
++            assertEquals("r1", r.get("idempotencyKey"));
++            assertEquals("r1", r.get("requestId"));
++            assertEquals("r1-1", r.get("attemptRequestId"));
++            return Map.of("id", "1", "dup", "false");
++        });
+         assertEquals("OK", m.handle("pay", Map.of("customerId", "c1", "account", "a1", "amount", "5.00", "ref", "r1")).get("status"));
+-        c.stubs.put("ledger.post", r -> { throw new estate.api.ServiceException("timeout", "lost"); });
+-        assertEquals("FAILED", m.handle("pay", Map.of("customerId", "c1", "account", "a1", "amount", "5.00", "ref", "r2")).get("status"));
++        c.stubs.put("ledger.post", new FakeContext.Stub() {
++            int calls;
++
++            @Override
++            public Map<String, String> apply(Map<String, String> r) throws estate.api.ServiceException {
++                calls++;
++                assertEquals("r2", r.get("idempotencyKey"));
++                assertEquals("r2", r.get("requestId"));
++                assertEquals("r2-" + calls, r.get("attemptRequestId"));
++                throw new estate.api.ServiceException("timeout", "lost");
++            }
++        });
++        Map<String, String> result = m.handle("pay", Map.of("customerId", "c1", "account", "a1", "amount", "5.00", "ref", "r2"));
++        assertEquals("FAILED", result.get("status"));
++        assertEquals("timeout", result.get("reason"));
++    }
++
++    @Test
++    void payDoesNotRetryNonTimeoutFailures() throws Exception {
++        FakeContext c = new FakeContext();
++        Main m = start(c);
++        int[] calls = {0};
++        c.stubs.put("ledger.post", r -> {
++            calls[0]++;
++            throw new estate.api.ServiceException("error", "rejected");
++        });
++
++        estate.api.ServiceException failure = assertThrows(estate.api.ServiceException.class,
++                () -> m.handle("pay", Map.of("customerId", "c1", "account", "a1", "amount", "5.00", "ref", "r4")));
++        assertEquals("error", failure.code);
++        assertEquals(1, calls[0]);
++    }
++
++    @Test
++    void payStopsRetryingWhenLedgerAnswers() throws Exception {
++        FakeContext c = new FakeContext();
++        Main m = start(c);
++        c.stubs.put("ledger.post", new FakeContext.Stub() {
++            int calls;
++
++            @Override
++            public Map<String, String> apply(Map<String, String> r) throws estate.api.ServiceException {
++                calls++;
++                assertEquals("r3", r.get("idempotencyKey"));
++                assertEquals("r3", r.get("requestId"));
++                assertEquals("r3-" + calls, r.get("attemptRequestId"));
++                if (calls < 2) throw new estate.api.ServiceException("timeout", "lost");
++                return Map.of("id", "1", "dup", "true");
++            }
++        });
++        assertEquals("OK", m.handle("pay", Map.of("customerId", "c1", "account", "a1", "amount", "5.00", "ref", "r3")).get("status"));
+     }
+ 
+     @Test

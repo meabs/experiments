@@ -1,0 +1,163 @@
+diff -ruN /home/garry/code/experiments/2026-11-mature-pipeline/estate/customer/src/main/java/estate/svc/LegacyConsentTrigger.java /home/garry/code/experiments/2026-11-mature-pipeline/results/main/runs/S4/C/3/work/customer/customer/src/main/java/estate/svc/LegacyConsentTrigger.java
+--- /home/garry/code/experiments/2026-11-mature-pipeline/estate/customer/src/main/java/estate/svc/LegacyConsentTrigger.java	1970-01-01 01:00:00.000000000 +0100
++++ /home/garry/code/experiments/2026-11-mature-pipeline/results/main/runs/S4/C/3/work/customer/customer/src/main/java/estate/svc/LegacyConsentTrigger.java	2026-11-26 15:00:06.099260078 +0000
+@@ -0,0 +1,34 @@
++package estate.svc;
++
++import org.h2.api.Trigger;
++
++import java.sql.Connection;
++import java.sql.SQLException;
++
++/**
++ * Makes inserts from a pre-CHG-104 customer binary safe after the migration.
++ * H2 passes the mutable row to a BEFORE trigger, so the legacy binary's
++ * two-column INSERT is transparently stored as effective none plus its basis.
++ */
++public final class LegacyConsentTrigger implements Trigger {
++    @Override
++    public void init(Connection connection, String schemaName, String triggerName,
++                     String tableName, boolean before, int type) {
++    }
++
++    @Override
++    public void fire(Connection connection, Object[] oldRow, Object[] newRow) throws SQLException {
++        if (newRow != null && newRow.length >= 3 && "implied".equals(newRow[1])) {
++            newRow[1] = "none";
++            newRow[2] = "implied";
++        }
++    }
++
++    @Override
++    public void close() {
++    }
++
++    @Override
++    public void remove() {
++    }
++}
+diff -ruN /home/garry/code/experiments/2026-11-mature-pipeline/estate/customer/src/main/java/estate/svc/Main.java /home/garry/code/experiments/2026-11-mature-pipeline/results/main/runs/S4/C/3/work/customer/customer/src/main/java/estate/svc/Main.java
+--- /home/garry/code/experiments/2026-11-mature-pipeline/estate/customer/src/main/java/estate/svc/Main.java	2026-11-26 00:31:13.000000000 +0000
++++ /home/garry/code/experiments/2026-11-mature-pipeline/results/main/runs/S4/C/3/work/customer/customer/src/main/java/estate/svc/Main.java	2026-11-26 15:00:06.099260078 +0000
+@@ -27,6 +27,15 @@
+         try (Statement s = db.createStatement()) {
+             s.execute("CREATE TABLE IF NOT EXISTS customers(id VARCHAR(40) PRIMARY KEY, consent VARCHAR(20) NOT NULL)");
+             s.execute("CREATE TABLE IF NOT EXISTS statement(account VARCHAR(40) PRIMARY KEY, balance_cents BIGINT NOT NULL, lines INT NOT NULL)");
++            // Keep the old customer binary from treating legacy consent as permission after this
++            // version has started.  The original value remains available to this version via
++            // consent_basis, while old binaries only see the effective value in consent.
++            s.execute("ALTER TABLE customers ADD COLUMN IF NOT EXISTS consent_basis VARCHAR(20)");
++            s.execute("UPDATE customers SET consent_basis = consent WHERE consent_basis IS NULL");
++            s.execute("UPDATE customers SET consent = 'none' WHERE consent = 'implied'");
++            s.execute("CREATE TRIGGER IF NOT EXISTS customer_legacy_consent_guard "
++                    + "BEFORE INSERT ON customers FOR EACH ROW "
++                    + "CALL 'estate.svc.LegacyConsentTrigger'");
+         }
+     }
+ 
+@@ -55,9 +64,10 @@
+ 
+     /** consent is one of: none, implied (legacy customers), explicit. */
+     private Map<String, String> create(Map<String, String> req) throws Exception {
+-        try (PreparedStatement ins = db.prepareStatement("INSERT INTO customers(id, consent) VALUES (?,?)")) {
++        try (PreparedStatement ins = db.prepareStatement("INSERT INTO customers(id, consent, consent_basis) VALUES (?,?,?)")) {
+             ins.setString(1, req.get("customerId"));
+             ins.setString(2, req.get("consent"));
++            ins.setString(3, req.get("consent"));
+             ins.executeUpdate();
+         }
+         return Map.of("status", "OK");
+@@ -113,7 +123,7 @@
+     }
+ 
+     private String consentOf(String customerId) throws Exception {
+-        try (PreparedStatement q = db.prepareStatement("SELECT consent FROM customers WHERE id = ?")) {
++        try (PreparedStatement q = db.prepareStatement("SELECT COALESCE(consent_basis, consent) FROM customers WHERE id = ?")) {
+             q.setString(1, customerId);
+             try (ResultSet rs = q.executeQuery()) { return rs.next() ? rs.getString(1) : "none"; }
+         }
+@@ -121,13 +131,13 @@
+ 
+     private Map<String, String> consentCheck(Map<String, String> req) throws Exception {
+         String c = consentOf(req.get("customerId"));
+-        boolean allowed = c.equals("implied") || c.equals("explicit");
++        boolean allowed = c.equals("explicit");
+         return Map.of("allowed", String.valueOf(allowed), "basis", c);
+     }
+ 
+     private Map<String, String> offer(Map<String, String> req) throws Exception {
+         String c = consentOf(req.get("customerId"));
+-        if (!(c.equals("implied") || c.equals("explicit"))) return Map.of("queued", "false");
++        if (!c.equals("explicit")) return Map.of("queued", "false");
+         ctx.publish("offer.queued", Map.of("customerId", req.get("customerId"), "offerId", req.get("offerId")));
+         return Map.of("queued", "true");
+     }
+diff -ruN /home/garry/code/experiments/2026-11-mature-pipeline/estate/customer/src/test/java/estate/svc/MainTest.java /home/garry/code/experiments/2026-11-mature-pipeline/results/main/runs/S4/C/3/work/customer/customer/src/test/java/estate/svc/MainTest.java
+--- /home/garry/code/experiments/2026-11-mature-pipeline/estate/customer/src/test/java/estate/svc/MainTest.java	2026-11-26 00:31:13.000000000 +0000
++++ /home/garry/code/experiments/2026-11-mature-pipeline/results/main/runs/S4/C/3/work/customer/customer/src/test/java/estate/svc/MainTest.java	2026-11-26 15:00:06.099260078 +0000
+@@ -47,13 +47,63 @@
+     }
+ 
+     @Test
+-    void offersNeedConsent() throws Exception {
++    void marketingRequiresExplicitConsent() throws Exception {
+         FakeContext c = new FakeContext();
+         Main m = start(c);
+         m.handle("create", Map.of("customerId", "c1", "consent", "explicit"));
+-        m.handle("create", Map.of("customerId", "c2", "consent", "none"));
++        m.handle("create", Map.of("customerId", "c2", "consent", "implied"));
++        m.handle("create", Map.of("customerId", "c3", "consent", "none"));
+         assertEquals("true", m.handle("offer", Map.of("customerId", "c1", "offerId", "o1")).get("queued"));
+         assertEquals("false", m.handle("offer", Map.of("customerId", "c2", "offerId", "o1")).get("queued"));
++        assertEquals("false", m.handle("offer", Map.of("customerId", "c3", "offerId", "o1")).get("queued"));
+         assertEquals(1, c.events.size());
+     }
++
++    @Test
++    void consentCheckAllowsOnlyExplicitConsent() throws Exception {
++        FakeContext c = new FakeContext();
++        Main m = start(c);
++        m.handle("create", Map.of("customerId", "explicit-customer", "consent", "explicit"));
++        m.handle("create", Map.of("customerId", "legacy-customer", "consent", "implied"));
++
++        assertEquals(Map.of("allowed", "true", "basis", "explicit"),
++                m.handle("consent.check", Map.of("customerId", "explicit-customer", "purpose", "marketing")));
++        assertEquals(Map.of("allowed", "false", "basis", "implied"),
++                m.handle("consent.check", Map.of("customerId", "legacy-customer", "purpose", "marketing")));
++        assertEquals(Map.of("allowed", "false", "basis", "none"),
++                m.handle("consent.check", Map.of("customerId", "unknown", "purpose", "marketing")));
++    }
++
++    @Test
++    void legacyRowsAreMigratedWithoutChangingTheirReportedBasis() throws Exception {
++        FakeContext c = new FakeContext();
++        try (var s = c.db().createStatement()) {
++            s.execute("CREATE TABLE customers(id VARCHAR(40) PRIMARY KEY, consent VARCHAR(20) NOT NULL)");
++            s.execute("INSERT INTO customers(id, consent) VALUES ('legacy-customer', 'implied')");
++        }
++        Main m = start(c);
++
++        assertEquals(Map.of("allowed", "false", "basis", "implied"),
++                m.handle("consent.check", Map.of("customerId", "legacy-customer", "purpose", "marketing")));
++        assertEquals("false", m.handle("offer", Map.of("customerId", "legacy-customer", "offerId", "o1")).get("queued"));
++        try (var q = c.db().createStatement(); var rs = q.executeQuery("SELECT consent FROM customers WHERE id = 'legacy-customer'")) {
++            assertTrue(rs.next());
++            assertEquals("none", rs.getString(1));
++        }
++    }
++
++    @Test
++    void oldBinaryStyleInsertIsGuardedAfterMigration() throws Exception {
++        FakeContext c = new FakeContext();
++        Main m = start(c);
++        try (var ins = c.db().prepareStatement("INSERT INTO customers(id, consent) VALUES (?, ?)")) {
++            ins.setString(1, "legacy-created-by-old-instance");
++            ins.setString(2, "implied");
++            ins.executeUpdate();
++        }
++
++        assertEquals(Map.of("allowed", "false", "basis", "implied"),
++                m.handle("consent.check", Map.of("customerId", "legacy-created-by-old-instance", "purpose", "marketing")));
++        assertEquals("false", m.handle("offer", Map.of("customerId", "legacy-created-by-old-instance", "offerId", "o1")).get("queued"));
++    }
+ }

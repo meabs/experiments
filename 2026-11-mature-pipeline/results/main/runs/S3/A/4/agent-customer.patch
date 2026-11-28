@@ -1,0 +1,200 @@
+diff -ruN /home/garry/code/experiments/2026-11-mature-pipeline/estate/customer/src/main/java/estate/svc/Main.java /home/garry/code/experiments/2026-11-mature-pipeline/results/main/runs/S3/A/4/work/customer/customer/src/main/java/estate/svc/Main.java
+--- /home/garry/code/experiments/2026-11-mature-pipeline/estate/customer/src/main/java/estate/svc/Main.java	2026-11-26 00:31:13.000000000 +0000
++++ /home/garry/code/experiments/2026-11-mature-pipeline/results/main/runs/S3/A/4/work/customer/customer/src/main/java/estate/svc/Main.java	2026-11-26 15:15:01.879643836 +0000
+@@ -8,6 +8,7 @@
+ import java.sql.Connection;
+ import java.sql.PreparedStatement;
+ import java.sql.ResultSet;
++import java.sql.SQLException;
+ import java.sql.Statement;
+ import java.util.HashMap;
+ import java.util.Map;
+@@ -27,6 +28,12 @@
+         try (Statement s = db.createStatement()) {
+             s.execute("CREATE TABLE IF NOT EXISTS customers(id VARCHAR(40) PRIMARY KEY, consent VARCHAR(20) NOT NULL)");
+             s.execute("CREATE TABLE IF NOT EXISTS statement(account VARCHAR(40) PRIMARY KEY, balance_cents BIGINT NOT NULL, lines INT NOT NULL)");
++            s.execute("CREATE TABLE IF NOT EXISTS payment_refs(ref VARCHAR(40) PRIMARY KEY)");
++            s.execute("CREATE TABLE IF NOT EXISTS payment_events(request_id VARCHAR(120) PRIMARY KEY)");
++            // Keep the payment identity stable when a ledger timeout causes a retry
++            // with a new tracing request ID. This also migrates older databases.
++            s.execute("ALTER TABLE payment_events ADD COLUMN IF NOT EXISTS payment_key VARCHAR(120)");
++            s.execute("CREATE UNIQUE INDEX IF NOT EXISTS payment_events_payment_key ON payment_events(payment_key)");
+         }
+     }
+ 
+@@ -64,22 +71,46 @@
+     }
+ 
+     private Map<String, String> pay(Map<String, String> req) throws Exception {
+-        Map<String, String> post = new HashMap<>();
+-        post.put("account", req.get("account"));
+-        post.put("amount", req.get("amount"));
+-        post.put("requestId", req.get("ref"));
+-        try {
+-            ctx.call("ledger", "post", post);
+-            return Map.of("status", "OK");
+-        } catch (ServiceException e) {
+-            if ("timeout".equals(e.code)) return Map.of("status", "FAILED", "reason", "timeout");
+-            throw e;
++        String ref = req.get("ref");
++        if (paymentAlreadyCompleted(ref)) return Map.of("status", "OK");
++        for (int attempt = 1; attempt <= 3; attempt++) {
++            Map<String, String> post = new HashMap<>();
++            post.put("account", req.get("account"));
++            post.put("amount", req.get("amount"));
++            post.put("idempotencyKey", ref);
++            post.put("requestId", ref + "-" + attempt);
++            try {
++                ctx.call("ledger", "post", post);
++                rememberPayment(ref);
++                return Map.of("status", "OK");
++            } catch (ServiceException e) {
++                if (!"timeout".equals(e.code)) throw e;
++                if (attempt == 3) return Map.of("status", "FAILED", "reason", "timeout");
++            }
++        }
++        throw new AssertionError("unreachable");
++    }
++
++    private boolean paymentAlreadyCompleted(String ref) throws Exception {
++        try (PreparedStatement q = db.prepareStatement("SELECT 1 FROM payment_refs WHERE ref = ?")) {
++            q.setString(1, ref);
++            try (ResultSet rs = q.executeQuery()) { return rs.next(); }
++        }
++    }
++
++    private void rememberPayment(String ref) throws Exception {
++        try (PreparedStatement ins = db.prepareStatement("MERGE INTO payment_refs KEY(ref) VALUES (?)")) {
++            ins.setString(1, ref);
++            ins.executeUpdate();
+         }
+     }
+ 
+     @Override
+     public void onEvent(String topic, Map<String, String> ev) throws Exception {
+         if (!"payment.posted".equals(topic)) return;
++        String requestId = ev.get("requestId");
++        String paymentKey = paymentKey(ev);
++        if (paymentKey != null && !rememberEvent(requestId, paymentKey)) return;
+         long cents = new BigDecimal(ev.get("amount")).movePointRight(2).longValueExact();
+         try (PreparedStatement up = db.prepareStatement("UPDATE statement SET balance_cents = balance_cents + ?, lines = lines + 1 WHERE account = ?")) {
+             up.setLong(1, cents);
+@@ -94,6 +125,26 @@
+         }
+     }
+ 
++    private String paymentKey(Map<String, String> event) {
++        String key = event.get("idempotencyKey");
++        if (key != null) return key;
++        String requestId = event.get("requestId");
++        if (requestId == null) return null;
++        return requestId.replaceFirst("-[0-9]+$", "");
++    }
++
++    private boolean rememberEvent(String requestId, String paymentKey) throws Exception {
++        try (PreparedStatement ins = db.prepareStatement("INSERT INTO payment_events(request_id, payment_key) VALUES (?,?)")) {
++            ins.setString(1, requestId);
++            ins.setString(2, paymentKey);
++            ins.executeUpdate();
++            return true;
++        } catch (SQLException e) {
++            if ("23505".equals(e.getSQLState())) return false;
++            throw e;
++        }
++    }
++
+     private Map<String, String> statement(Map<String, String> req) throws Exception {
+         try (PreparedStatement q = db.prepareStatement("SELECT balance_cents, lines FROM statement WHERE account = ?")) {
+             q.setString(1, req.get("account"));
+diff -ruN /home/garry/code/experiments/2026-11-mature-pipeline/estate/customer/src/test/java/estate/svc/MainTest.java /home/garry/code/experiments/2026-11-mature-pipeline/results/main/runs/S3/A/4/work/customer/customer/src/test/java/estate/svc/MainTest.java
+--- /home/garry/code/experiments/2026-11-mature-pipeline/estate/customer/src/test/java/estate/svc/MainTest.java	2026-11-26 00:31:13.000000000 +0000
++++ /home/garry/code/experiments/2026-11-mature-pipeline/results/main/runs/S3/A/4/work/customer/customer/src/test/java/estate/svc/MainTest.java	2026-11-26 15:15:01.879643836 +0000
+@@ -2,6 +2,9 @@
+ 
+ import org.junit.jupiter.api.Test;
+ 
++import java.util.ArrayList;
++import java.util.HashMap;
++import java.util.List;
+ import java.util.Map;
+ 
+ import static org.junit.jupiter.api.Assertions.*;
+@@ -25,13 +28,74 @@
+     }
+ 
+     @Test
+-    void payPostsToTheLedgerAndReportsTimeouts() throws Exception {
++    void payRetriesTimeoutsWithStableIdempotencyAndFreshRequestIds() throws Exception {
+         FakeContext c = new FakeContext();
+         Main m = start(c);
+-        c.stubs.put("ledger.post", r -> Map.of("id", "1", "dup", "false"));
++        List<Map<String, String>> calls = new ArrayList<>();
++        c.stubs.put("ledger.post", r -> {
++            calls.add(new HashMap<>(r));
++            if (calls.size() < 3) throw new estate.api.ServiceException("timeout", "lost");
++            return Map.of("id", "1", "dup", "false");
++        });
+         assertEquals("OK", m.handle("pay", Map.of("customerId", "c1", "account", "a1", "amount", "5.00", "ref", "r1")).get("status"));
+-        c.stubs.put("ledger.post", r -> { throw new estate.api.ServiceException("timeout", "lost"); });
+-        assertEquals("FAILED", m.handle("pay", Map.of("customerId", "c1", "account", "a1", "amount", "5.00", "ref", "r2")).get("status"));
++        assertEquals(3, calls.size());
++        for (int i = 0; i < calls.size(); i++) {
++            assertEquals("r1", calls.get(i).get("idempotencyKey"));
++            assertEquals("r1-" + (i + 1), calls.get(i).get("requestId"));
++        }
++    }
++
++    @Test
++    void payFailsAfterThreeTimeouts() throws Exception {
++        FakeContext c = new FakeContext();
++        Main m = start(c);
++        List<Map<String, String>> calls = new ArrayList<>();
++        c.stubs.put("ledger.post", r -> {
++            calls.add(new HashMap<>(r));
++            throw new estate.api.ServiceException("timeout", "lost");
++        });
++        Map<String, String> result = m.handle("pay", Map.of("customerId", "c1", "account", "a1", "amount", "5.00", "ref", "r2"));
++        assertEquals(Map.of("status", "FAILED", "reason", "timeout"), result);
++        assertEquals(3, calls.size());
++    }
++
++    @Test
++    void completedPaymentRefIsNotPostedAgain() throws Exception {
++        FakeContext c = new FakeContext();
++        Main m = start(c);
++        int[] calls = {0};
++        c.stubs.put("ledger.post", r -> {
++            calls[0]++;
++            return Map.of("id", "1", "dup", "false");
++        });
++
++        Map<String, String> request = Map.of("customerId", "c1", "account", "a1", "amount", "5.00", "ref", "same-ref");
++        assertEquals("OK", m.handle("pay", request).get("status"));
++        assertEquals("OK", m.handle("pay", request).get("status"));
++        assertEquals(1, calls[0]);
++    }
++
++    @Test
++    void duplicatePaymentEventsAreAppliedOnce() throws Exception {
++        FakeContext c = new FakeContext();
++        Main m = start(c);
++        Map<String, String> event = Map.of("account", "a1", "amount", "12.50", "requestId", "r1");
++
++        m.onEvent("payment.posted", event);
++        m.onEvent("payment.posted", event);
++
++        assertEquals(Map.of("balance", "12.50", "lines", "1"), m.handle("statement", Map.of("account", "a1")));
++    }
++
++    @Test
++    void retryEventsWithFreshRequestIdsAreAppliedOnce() throws Exception {
++        FakeContext c = new FakeContext();
++        Main m = start(c);
++
++        m.onEvent("payment.posted", Map.of("account", "a1", "amount", "12.50", "requestId", "ref-1"));
++        m.onEvent("payment.posted", Map.of("account", "a1", "amount", "12.50", "requestId", "ref-2"));
++
++        assertEquals(Map.of("balance", "12.50", "lines", "1"), m.handle("statement", Map.of("account", "a1")));
+     }
+ 
+     @Test

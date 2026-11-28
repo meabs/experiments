@@ -1,0 +1,104 @@
+diff -ruN /home/garry/code/experiments/2026-11-mature-pipeline/estate/customer/src/main/java/estate/svc/Main.java /home/garry/code/experiments/2026-11-mature-pipeline/results/pilot/runs/S4/A/2/work/customer/customer/src/main/java/estate/svc/Main.java
+--- /home/garry/code/experiments/2026-11-mature-pipeline/estate/customer/src/main/java/estate/svc/Main.java	2026-11-26 00:31:13.000000000 +0000
++++ /home/garry/code/experiments/2026-11-mature-pipeline/results/pilot/runs/S4/A/2/work/customer/customer/src/main/java/estate/svc/Main.java	2026-11-26 14:00:38.713341858 +0000
+@@ -26,6 +26,11 @@
+         this.db = c.db();
+         try (Statement s = db.createStatement()) {
+             s.execute("CREATE TABLE IF NOT EXISTS customers(id VARCHAR(40) PRIMARY KEY, consent VARCHAR(20) NOT NULL)");
++            // Keep the old value visible in consent.check, but make the authorization
++            // value safe for an old instance that may be brought back during rollback.
++            s.execute("ALTER TABLE customers ADD COLUMN IF NOT EXISTS consent_basis VARCHAR(20)");
++            s.execute("UPDATE customers SET consent_basis = consent WHERE consent_basis IS NULL");
++            s.execute("UPDATE customers SET consent = 'none' WHERE consent = 'implied'");
+             s.execute("CREATE TABLE IF NOT EXISTS statement(account VARCHAR(40) PRIMARY KEY, balance_cents BIGINT NOT NULL, lines INT NOT NULL)");
+         }
+     }
+@@ -55,9 +60,11 @@
+ 
+     /** consent is one of: none, implied (legacy customers), explicit. */
+     private Map<String, String> create(Map<String, String> req) throws Exception {
+-        try (PreparedStatement ins = db.prepareStatement("INSERT INTO customers(id, consent) VALUES (?,?)")) {
++        try (PreparedStatement ins = db.prepareStatement("INSERT INTO customers(id, consent, consent_basis) VALUES (?,?,?)")) {
+             ins.setString(1, req.get("customerId"));
+-            ins.setString(2, req.get("consent"));
++            String consent = req.get("consent");
++            ins.setString(2, "implied".equals(consent) ? "none" : consent);
++            ins.setString(3, consent);
+             ins.executeUpdate();
+         }
+         return Map.of("status", "OK");
+@@ -121,13 +128,23 @@
+ 
+     private Map<String, String> consentCheck(Map<String, String> req) throws Exception {
+         String c = consentOf(req.get("customerId"));
+-        boolean allowed = c.equals("implied") || c.equals("explicit");
+-        return Map.of("allowed", String.valueOf(allowed), "basis", c);
++        boolean allowed = c.equals("explicit");
++        return Map.of("allowed", String.valueOf(allowed), "basis", consentBasisOf(req.get("customerId")));
++    }
++
++    private String consentBasisOf(String customerId) throws Exception {
++        try (PreparedStatement q = db.prepareStatement("SELECT consent_basis, consent FROM customers WHERE id = ?")) {
++            q.setString(1, customerId);
++            try (ResultSet rs = q.executeQuery()) {
++                if (!rs.next()) return "none";
++                return rs.getString(1) == null ? rs.getString(2) : rs.getString(1);
++            }
++        }
+     }
+ 
+     private Map<String, String> offer(Map<String, String> req) throws Exception {
+         String c = consentOf(req.get("customerId"));
+-        if (!(c.equals("implied") || c.equals("explicit"))) return Map.of("queued", "false");
++        if (!c.equals("explicit")) return Map.of("queued", "false");
+         ctx.publish("offer.queued", Map.of("customerId", req.get("customerId"), "offerId", req.get("offerId")));
+         return Map.of("queued", "true");
+     }
+diff -ruN /home/garry/code/experiments/2026-11-mature-pipeline/estate/customer/src/test/java/estate/svc/MainTest.java /home/garry/code/experiments/2026-11-mature-pipeline/results/pilot/runs/S4/A/2/work/customer/customer/src/test/java/estate/svc/MainTest.java
+--- /home/garry/code/experiments/2026-11-mature-pipeline/estate/customer/src/test/java/estate/svc/MainTest.java	2026-11-26 00:31:13.000000000 +0000
++++ /home/garry/code/experiments/2026-11-mature-pipeline/results/pilot/runs/S4/A/2/work/customer/customer/src/test/java/estate/svc/MainTest.java	2026-11-26 14:00:38.713341858 +0000
+@@ -2,6 +2,7 @@
+ 
+ import org.junit.jupiter.api.Test;
+ 
++import java.sql.Statement;
+ import java.util.Map;
+ 
+ import static org.junit.jupiter.api.Assertions.*;
+@@ -56,4 +57,36 @@
+         assertEquals("false", m.handle("offer", Map.of("customerId", "c2", "offerId", "o1")).get("queued"));
+         assertEquals(1, c.events.size());
+     }
++
++    @Test
++    void impliedConsentDoesNotAllowMarketing() throws Exception {
++        FakeContext c = new FakeContext();
++        Main m = start(c);
++        m.handle("create", Map.of("customerId", "legacy", "consent", "implied"));
++
++        Map<String, String> check = m.handle("consent.check", Map.of("customerId", "legacy", "purpose", "marketing"));
++        assertEquals("false", check.get("allowed"));
++        assertEquals("implied", check.get("basis"));
++        assertEquals("false", m.handle("offer", Map.of("customerId", "legacy", "offerId", "o1")).get("queued"));
++        assertTrue(c.events.isEmpty());
++    }
++
++    @Test
++    void startupNormalizesLegacyConsentForRollbackSafety() throws Exception {
++        FakeContext c = new FakeContext();
++        try (Statement s = c.db().createStatement()) {
++            s.execute("CREATE TABLE customers(id VARCHAR(40) PRIMARY KEY, consent VARCHAR(20) NOT NULL)");
++            s.execute("INSERT INTO customers(id, consent) VALUES ('legacy', 'implied')");
++        }
++
++        Main m = start(c);
++
++        Map<String, String> check = m.handle("consent.check", Map.of("customerId", "legacy", "purpose", "marketing"));
++        assertEquals("false", check.get("allowed"));
++        assertEquals("implied", check.get("basis"));
++        try (Statement s = c.db().createStatement(); var rs = s.executeQuery("SELECT consent FROM customers WHERE id = 'legacy'")) {
++            assertTrue(rs.next());
++            assertEquals("none", rs.getString(1));
++        }
++    }
+ }

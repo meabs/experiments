@@ -1,0 +1,190 @@
+diff -ruN /home/garry/code/experiments/2026-11-mature-pipeline/estate/notifier/src/main/java/estate/svc/Main.java /home/garry/code/experiments/2026-11-mature-pipeline/results/main/runs/S4/C/1/work/notifier/notifier/src/main/java/estate/svc/Main.java
+--- /home/garry/code/experiments/2026-11-mature-pipeline/estate/notifier/src/main/java/estate/svc/Main.java	2026-11-26 00:30:54.000000000 +0000
++++ /home/garry/code/experiments/2026-11-mature-pipeline/results/main/runs/S4/C/1/work/notifier/notifier/src/main/java/estate/svc/Main.java	2026-11-26 14:21:48.220632454 +0000
+@@ -22,17 +22,82 @@
+         try (Statement s = db.createStatement()) {
+             s.execute("CREATE TABLE IF NOT EXISTS sent(id BIGINT AUTO_INCREMENT PRIMARY KEY, customer_id VARCHAR(40) NOT NULL, "
+                     + "offer_id VARCHAR(40) NOT NULL, ts BIGINT NOT NULL)");
++            s.execute("CREATE TABLE IF NOT EXISTS offer_daily(customer_id VARCHAR(40) NOT NULL, tick_day BIGINT NOT NULL, "
++                    + "sent_count INT NOT NULL DEFAULT 0, dropped_count INT NOT NULL DEFAULT 0, "
++                    + "PRIMARY KEY(customer_id, tick_day))");
++            // Backfill the new bookkeeping table when upgrading a database containing old sends.
++            // Aggregate first, then correlate against the aggregate row. Referencing sent.ts
++            // from the outer HAVING clause is rejected by H2 because ts is not grouped.
++            s.execute("INSERT INTO offer_daily(customer_id, tick_day, sent_count, dropped_count) "
++                    + "SELECT x.customer_id, x.tick_day, x.sent_count, 0 "
++                    + "FROM (SELECT customer_id, CAST(FLOOR(ts / 100) AS BIGINT) AS tick_day, COUNT(*) AS sent_count "
++                    + "      FROM sent GROUP BY customer_id, CAST(FLOOR(ts / 100) AS BIGINT)) x "
++                    + "WHERE NOT EXISTS (SELECT 1 FROM offer_daily d "
++                    + "                  WHERE d.customer_id = x.customer_id AND d.tick_day = x.tick_day)");
+         }
+     }
+ 
+     @Override
+     public void onEvent(String topic, Map<String, String> ev) throws Exception {
+         if (!"offer.queued".equals(topic)) return;
+-        try (PreparedStatement ins = db.prepareStatement("INSERT INTO sent(customer_id, offer_id, ts) VALUES (?,?,?)")) {
+-            ins.setString(1, ev.get("customerId"));
+-            ins.setString(2, ev.get("offerId"));
+-            ins.setLong(3, ctx.now());
+-            ins.executeUpdate();
++        long now = ctx.now();
++        long day = Math.floorDiv(now, 100);
++        boolean wasAutoCommit = db.getAutoCommit();
++        try {
++            db.setAutoCommit(false);
++            // MERGE supplies only the key columns, so an existing row's counters are preserved.
++            try (PreparedStatement ensure = db.prepareStatement(
++                    "MERGE INTO offer_daily(customer_id, tick_day) KEY(customer_id, tick_day) VALUES (?, ?)")) {
++                ensure.setString(1, ev.get("customerId"));
++                ensure.setLong(2, day);
++                ensure.executeUpdate();
++            }
++
++            int sent;
++            try (PreparedStatement q = db.prepareStatement(
++                    "SELECT sent_count FROM offer_daily WHERE customer_id = ? AND tick_day = ? FOR UPDATE")) {
++                q.setString(1, ev.get("customerId"));
++                q.setLong(2, day);
++                try (ResultSet rs = q.executeQuery()) { rs.next(); sent = rs.getInt(1); }
++            }
++            // An old instance knows nothing about offer_daily. Reconcile its writes while versions overlap.
++            try (PreparedStatement q = db.prepareStatement(
++                    "SELECT COUNT(*) FROM sent WHERE customer_id = ? AND FLOOR(ts / 100) = ?")) {
++                q.setString(1, ev.get("customerId"));
++                q.setLong(2, day);
++                try (ResultSet rs = q.executeQuery()) {
++                    rs.next();
++                    sent = Math.max(sent, rs.getInt(1));
++                }
++            }
++            if (sent < 2) {
++                try (PreparedStatement ins = db.prepareStatement(
++                        "INSERT INTO sent(customer_id, offer_id, ts) VALUES (?,?,?)")) {
++                    ins.setString(1, ev.get("customerId"));
++                    ins.setString(2, ev.get("offerId"));
++                    ins.setLong(3, now);
++                    ins.executeUpdate();
++                }
++                try (PreparedStatement update = db.prepareStatement(
++                        "UPDATE offer_daily SET sent_count = sent_count + 1 WHERE customer_id = ? AND tick_day = ?")) {
++                    update.setString(1, ev.get("customerId"));
++                    update.setLong(2, day);
++                    update.executeUpdate();
++                }
++            } else {
++                try (PreparedStatement update = db.prepareStatement(
++                        "UPDATE offer_daily SET dropped_count = dropped_count + 1 WHERE customer_id = ? AND tick_day = ?")) {
++                    update.setString(1, ev.get("customerId"));
++                    update.setLong(2, day);
++                    update.executeUpdate();
++                }
++            }
++            db.commit();
++        } catch (Exception e) {
++            try { db.rollback(); } catch (Exception ignored) { }
++            throw e;
++        } finally {
++            db.setAutoCommit(wasAutoCommit);
+         }
+     }
+ 
+@@ -54,7 +119,7 @@
+         }
+     }
+ 
+-    /** Messages sent to a customer: count, and the ticks as a comma separated list. */
++    /** Messages sent to a customer: count, ticks, and the all-time dropped count. */
+     private Map<String, String> sent(Map<String, String> req) throws Exception {
+         try (PreparedStatement q = db.prepareStatement("SELECT ts FROM sent WHERE customer_id = ? ORDER BY id")) {
+             q.setString(1, req.get("customerId"));
+@@ -63,7 +128,15 @@
+             try (ResultSet rs = q.executeQuery()) {
+                 while (rs.next()) { if (n++ > 0) ticks.append(','); ticks.append(rs.getLong(1)); }
+             }
+-            return Map.of("count", String.valueOf(n), "ticks", ticks.toString());
++            try (PreparedStatement dropped = db.prepareStatement(
++                    "SELECT COALESCE(SUM(dropped_count), 0) FROM offer_daily WHERE customer_id = ?")) {
++                dropped.setString(1, req.get("customerId"));
++                try (ResultSet rs = dropped.executeQuery()) {
++                    rs.next();
++                    return Map.of("count", String.valueOf(n), "ticks", ticks.toString(),
++                            "capped", String.valueOf(rs.getLong(1)));
++                }
++            }
+         }
+     }
+ }
+diff -ruN /home/garry/code/experiments/2026-11-mature-pipeline/estate/notifier/src/test/java/estate/svc/MainTest.java /home/garry/code/experiments/2026-11-mature-pipeline/results/main/runs/S4/C/1/work/notifier/notifier/src/test/java/estate/svc/MainTest.java
+--- /home/garry/code/experiments/2026-11-mature-pipeline/estate/notifier/src/test/java/estate/svc/MainTest.java	2026-11-26 00:30:54.000000000 +0000
++++ /home/garry/code/experiments/2026-11-mature-pipeline/results/main/runs/S4/C/1/work/notifier/notifier/src/test/java/estate/svc/MainTest.java	2026-11-26 14:22:00.034253149 +0000
+@@ -2,6 +2,7 @@
+ 
+ import org.junit.jupiter.api.Test;
+ 
++import java.sql.Statement;
+ import java.util.Map;
+ 
+ import static org.junit.jupiter.api.Assertions.*;
+@@ -17,6 +18,61 @@
+         Map<String, String> r = m.handle("sent", Map.of("customerId", "c1"));
+         assertEquals("1", r.get("count"));
+         assertEquals("7", r.get("ticks"));
++        assertEquals("0", r.get("capped"));
++    }
++
++    @Test
++    void sendsAtMostTwoOffersPerCustomerPerDayAndCountsDrops() throws Exception {
++        FakeContext c = new FakeContext();
++        Main m = new Main();
++        m.start(c);
++        for (int i = 0; i < 3; i++) m.onEvent("offer.queued", Map.of("customerId", "c1", "offerId", "o" + i));
++
++        Map<String, String> firstDay = m.handle("sent", Map.of("customerId", "c1"));
++        assertEquals("2", firstDay.get("count"));
++        assertEquals("0,0", firstDay.get("ticks"));
++        assertEquals("1", firstDay.get("capped"));
++
++        c.tick = 100;
++        m.onEvent("offer.queued", Map.of("customerId", "c1", "offerId", "o3"));
++        assertEquals("3", m.handle("sent", Map.of("customerId", "c1")).get("count"));
++        assertEquals("1", m.handle("sent", Map.of("customerId", "c1")).get("capped"));
++    }
++
++    @Test
++    void dailyCountersSurviveAServiceRestart() throws Exception {
++        FakeContext c = new FakeContext();
++        Main first = new Main();
++        first.start(c);
++        first.onEvent("offer.queued", Map.of("customerId", "c1", "offerId", "o1"));
++        first.onEvent("offer.queued", Map.of("customerId", "c1", "offerId", "o2"));
++
++        Main second = new Main();
++        second.start(c);
++        second.onEvent("offer.queued", Map.of("customerId", "c1", "offerId", "o3"));
++        assertEquals("2", second.handle("sent", Map.of("customerId", "c1")).get("count"));
++        assertEquals("1", second.handle("sent", Map.of("customerId", "c1")).get("capped"));
++    }
++
++    @Test
++    void startupBackfillsExistingSendsOnAnUpgrade() throws Exception {
++        FakeContext c = new FakeContext();
++        Main first = new Main();
++        first.start(c);
++        try (Statement s = c.db().createStatement()) {
++            s.executeUpdate("INSERT INTO sent(customer_id, offer_id, ts) VALUES ('c1', 'old-1', 100)");
++            s.executeUpdate("INSERT INTO sent(customer_id, offer_id, ts) VALUES ('c1', 'old-2', 101)");
++        }
++
++        Main upgraded = new Main();
++        upgraded.start(c);
++        c.tick = 150;
++        upgraded.onEvent("offer.queued", Map.of("customerId", "c1", "offerId", "new-1"));
++
++        Map<String, String> result = upgraded.handle("sent", Map.of("customerId", "c1"));
++        assertEquals("2", result.get("count"));
++        assertEquals("100,101", result.get("ticks"));
++        assertEquals("1", result.get("capped"));
+     }
+ 
+     @Test

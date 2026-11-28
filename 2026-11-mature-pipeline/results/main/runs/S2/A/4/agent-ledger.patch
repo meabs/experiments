@@ -1,0 +1,159 @@
+diff -ruN /home/garry/code/experiments/2026-11-mature-pipeline/estate/ledger/src/main/java/estate/svc/Main.java /home/garry/code/experiments/2026-11-mature-pipeline/results/main/runs/S2/A/4/work/ledger/ledger/src/main/java/estate/svc/Main.java
+--- /home/garry/code/experiments/2026-11-mature-pipeline/estate/ledger/src/main/java/estate/svc/Main.java	2026-11-26 00:30:54.000000000 +0000
++++ /home/garry/code/experiments/2026-11-mature-pipeline/results/main/runs/S2/A/4/work/ledger/ledger/src/main/java/estate/svc/Main.java	2026-11-26 15:09:15.612478656 +0000
+@@ -32,9 +32,30 @@
+                         + "amount DECIMAL(18,2) NOT NULL, request_id VARCHAR(80) NOT NULL UNIQUE, ts BIGINT NOT NULL)");
+                 s.execute("INSERT INTO schema_version(v) VALUES (1)");
+             }
++            if (v < 2) {
++                s.execute("ALTER TABLE postings ADD amount_cents BIGINT");
++                migrateAmountsToCents();
++                s.execute("INSERT INTO schema_version(v) VALUES (2)");
++            }
+         }
+     }
+ 
++    private void migrateAmountsToCents() throws Exception {
++        try (Statement q = db.createStatement();
++             ResultSet rows = q.executeQuery("SELECT id, amount FROM postings");
++             PreparedStatement update = db.prepareStatement("UPDATE postings SET amount_cents = ? WHERE id = ?")) {
++            while (rows.next()) {
++                long cents = rows.getBigDecimal(2).movePointRight(2).longValueExact();
++                update.setLong(1, cents);
++                update.setLong(2, rows.getLong(1));
++                update.addBatch();
++            }
++            update.executeBatch();
++        }
++        // Keep this column nullable: the previous release does not know about it and
++        // must still be able to insert postings if a rollout is rolled back.
++    }
++
+     @Override
+     public Map<String, String> handle(String op, Map<String, String> req) throws ServiceException {
+         try {
+@@ -53,7 +74,7 @@
+     }
+ 
+     private Map<String, String> health() throws Exception {
+-        try (Statement s = db.createStatement(); ResultSet rs = s.executeQuery("SELECT COALESCE(SUM(amount),0) FROM postings")) {
++        try (Statement s = db.createStatement(); ResultSet rs = s.executeQuery("SELECT COALESCE(SUM(COALESCE(amount_cents, amount * 100)),0) FROM postings")) {
+             rs.next();
+         }
+         return Map.of("status", "UP");
+@@ -62,6 +83,7 @@
+     private Map<String, String> post(Map<String, String> req) throws Exception {
+         String account = req.get("account");
+         BigDecimal amount = new BigDecimal(req.get("amount")).setScale(2);
++        long amountCents = amount.movePointRight(2).longValueExact();
+         String requestId = req.get("requestId");
+         try (PreparedStatement q = db.prepareStatement("SELECT id FROM postings WHERE request_id = ?")) {
+             q.setString(1, requestId);
+@@ -71,11 +93,12 @@
+         }
+         long id;
+         try (PreparedStatement ins = db.prepareStatement(
+-                "INSERT INTO postings(account, amount, request_id, ts) VALUES (?,?,?,?)", Statement.RETURN_GENERATED_KEYS)) {
++                "INSERT INTO postings(account, amount, amount_cents, request_id, ts) VALUES (?,?,?,?,?)", Statement.RETURN_GENERATED_KEYS)) {
+             ins.setString(1, account);
+             ins.setBigDecimal(2, amount);
+-            ins.setString(3, requestId);
+-            ins.setLong(4, ctx.now());
++            ins.setLong(3, amountCents);
++            ins.setString(4, requestId);
++            ins.setLong(5, ctx.now());
+             ins.executeUpdate();
+             try (ResultSet k = ins.getGeneratedKeys()) { k.next(); id = k.getLong(1); }
+         }
+@@ -88,22 +111,27 @@
+     }
+ 
+     private Map<String, String> balance(Map<String, String> req) throws Exception {
+-        try (PreparedStatement q = db.prepareStatement("SELECT COALESCE(SUM(amount),0) FROM postings WHERE account = ?")) {
++        try (PreparedStatement q = db.prepareStatement("SELECT COALESCE(SUM(COALESCE(amount_cents, amount * 100)),0) FROM postings WHERE account = ?")) {
+             q.setString(1, req.get("account"));
+             try (ResultSet rs = q.executeQuery()) {
+                 rs.next();
+-                return Map.of("balance", rs.getBigDecimal(1).setScale(2).toPlainString());
++                long cents = rs.getLong(1);
++                return Map.of("balance", major(cents), "balanceCents", String.valueOf(cents));
+             }
+         }
+     }
+ 
+     private Map<String, String> postings(Map<String, String> req) throws Exception {
+-        try (PreparedStatement q = db.prepareStatement("SELECT COUNT(*), COALESCE(SUM(amount),0) FROM postings WHERE account = ?")) {
++        try (PreparedStatement q = db.prepareStatement("SELECT COUNT(*), COALESCE(SUM(COALESCE(amount_cents, amount * 100)),0) FROM postings WHERE account = ?")) {
+             q.setString(1, req.get("account"));
+             try (ResultSet rs = q.executeQuery()) {
+                 rs.next();
+-                return Map.of("count", String.valueOf(rs.getLong(1)), "total", rs.getBigDecimal(2).setScale(2).toPlainString());
++                return Map.of("count", String.valueOf(rs.getLong(1)), "total", major(rs.getLong(2)));
+             }
+         }
+     }
++
++    private String major(long cents) {
++        return BigDecimal.valueOf(cents, 2).toPlainString();
++    }
+ }
+diff -ruN /home/garry/code/experiments/2026-11-mature-pipeline/estate/ledger/src/test/java/estate/svc/MainTest.java /home/garry/code/experiments/2026-11-mature-pipeline/results/main/runs/S2/A/4/work/ledger/ledger/src/test/java/estate/svc/MainTest.java
+--- /home/garry/code/experiments/2026-11-mature-pipeline/estate/ledger/src/test/java/estate/svc/MainTest.java	2026-11-26 00:30:54.000000000 +0000
++++ /home/garry/code/experiments/2026-11-mature-pipeline/results/main/runs/S2/A/4/work/ledger/ledger/src/test/java/estate/svc/MainTest.java	2026-11-26 15:09:15.612478656 +0000
+@@ -2,6 +2,7 @@
+ 
+ import org.junit.jupiter.api.Test;
+ 
++import java.sql.Statement;
+ import java.util.Map;
+ 
+ import static org.junit.jupiter.api.Assertions.*;
+@@ -20,6 +21,7 @@
+         Map<String, String> r = m.handle("post", Map.of("account", "a1", "amount", "12.5", "requestId", "r1"));
+         assertEquals("false", r.get("dup"));
+         assertEquals("12.50", m.handle("balance", Map.of("account", "a1")).get("balance"));
++        assertEquals("1250", m.handle("balance", Map.of("account", "a1")).get("balanceCents"));
+         assertEquals("payment.posted", c.published.get(0));
+         assertEquals("12.50", c.events.get(0).get("amount"));
+     }
+@@ -36,6 +38,40 @@
+     }
+ 
+     @Test
++    void migratesExistingAmountsToCents() throws Exception {
++        FakeContext c = new FakeContext();
++        try (Statement s = c.db().createStatement()) {
++            s.execute("CREATE TABLE schema_version(v INT NOT NULL)");
++            s.execute("INSERT INTO schema_version(v) VALUES (1)");
++            s.execute("CREATE TABLE postings(id BIGINT AUTO_INCREMENT PRIMARY KEY, account VARCHAR(40) NOT NULL, "
++                    + "amount DECIMAL(18,2) NOT NULL, request_id VARCHAR(80) NOT NULL UNIQUE, ts BIGINT NOT NULL)");
++            s.execute("INSERT INTO postings(account, amount, request_id, ts) VALUES ('a1', 7.25, 'old', 1)");
++        }
++        Main m = start(c);
++        assertEquals("725", m.handle("balance", Map.of("account", "a1")).get("balanceCents"));
++        assertEquals("7.25", m.handle("balance", Map.of("account", "a1")).get("balance"));
++        try (Statement s = c.db().createStatement(); var rs = s.executeQuery("SELECT v FROM schema_version ORDER BY v")) {
++            rs.next();
++            assertEquals(1, rs.getInt(1));
++            rs.next();
++            assertEquals(2, rs.getInt(1));
++        }
++    }
++
++    @Test
++    void remainsCompatibleWithPostingsCreatedByThePreviousRelease() throws Exception {
++        FakeContext c = new FakeContext();
++        Main m = start(c);
++        try (var s = c.db().createStatement()) {
++            s.execute("INSERT INTO postings(account, amount, request_id, ts) VALUES ('a1', 3.40, 'old-release', 1)");
++        }
++
++        assertEquals("3.40", m.handle("balance", Map.of("account", "a1")).get("balance"));
++        assertEquals("340", m.handle("balance", Map.of("account", "a1")).get("balanceCents"));
++        assertDoesNotThrow(() -> m.handle("health", Map.of()));
++    }
++
++    @Test
+     void healthIsUp() throws Exception {
+         assertEquals("UP", start(new FakeContext()).handle("health", Map.of()).get("status"));
+     }

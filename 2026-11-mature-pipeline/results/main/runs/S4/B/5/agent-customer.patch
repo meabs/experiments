@@ -1,0 +1,122 @@
+diff -ruN /home/garry/code/experiments/2026-11-mature-pipeline/estate/customer/src/main/java/estate/svc/Main.java /home/garry/code/experiments/2026-11-mature-pipeline/results/main/runs/S4/B/5/work/customer/customer/src/main/java/estate/svc/Main.java
+--- /home/garry/code/experiments/2026-11-mature-pipeline/estate/customer/src/main/java/estate/svc/Main.java	2026-11-26 00:31:13.000000000 +0000
++++ /home/garry/code/experiments/2026-11-mature-pipeline/results/main/runs/S4/B/5/work/customer/customer/src/main/java/estate/svc/Main.java	2026-11-26 15:36:11.751547446 +0000
+@@ -27,6 +27,17 @@
+         try (Statement s = db.createStatement()) {
+             s.execute("CREATE TABLE IF NOT EXISTS customers(id VARCHAR(40) PRIMARY KEY, consent VARCHAR(20) NOT NULL)");
+             s.execute("CREATE TABLE IF NOT EXISTS statement(account VARCHAR(40) PRIMARY KEY, balance_cents BIGINT NOT NULL, lines INT NOT NULL)");
++            s.execute("CREATE TABLE IF NOT EXISTS schema_version(v INT NOT NULL)");
++            int version = 0;
++            try (ResultSet rs = s.executeQuery("SELECT COALESCE(MAX(v),0) FROM schema_version")) {
++                if (rs.next()) version = rs.getInt(1);
++            }
++            if (version < 1) {
++                // Old instances treat the literal \"implied\" as marketable. Keep the
++                // public meaning, but use a value old binaries will not publish for.
++                s.execute("UPDATE customers SET consent = 'legacy' WHERE consent = 'implied'");
++                s.execute("INSERT INTO schema_version(v) VALUES (1)");
++            }
+         }
+     }
+ 
+@@ -57,7 +68,7 @@
+     private Map<String, String> create(Map<String, String> req) throws Exception {
+         try (PreparedStatement ins = db.prepareStatement("INSERT INTO customers(id, consent) VALUES (?,?)")) {
+             ins.setString(1, req.get("customerId"));
+-            ins.setString(2, req.get("consent"));
++            ins.setString(2, storedConsent(req.get("consent")));
+             ins.executeUpdate();
+         }
+         return Map.of("status", "OK");
+@@ -115,19 +126,30 @@
+     private String consentOf(String customerId) throws Exception {
+         try (PreparedStatement q = db.prepareStatement("SELECT consent FROM customers WHERE id = ?")) {
+             q.setString(1, customerId);
+-            try (ResultSet rs = q.executeQuery()) { return rs.next() ? rs.getString(1) : "none"; }
++            try (ResultSet rs = q.executeQuery()) {
++                if (!rs.next()) return "none";
++                return publicConsent(rs.getString(1));
++            }
+         }
+     }
+ 
++    private String storedConsent(String consent) {
++        return "implied".equals(consent) ? "legacy" : consent;
++    }
++
++    private String publicConsent(String consent) {
++        return "legacy".equals(consent) ? "implied" : consent;
++    }
++
+     private Map<String, String> consentCheck(Map<String, String> req) throws Exception {
+         String c = consentOf(req.get("customerId"));
+-        boolean allowed = c.equals("implied") || c.equals("explicit");
++        boolean allowed = c.equals("explicit");
+         return Map.of("allowed", String.valueOf(allowed), "basis", c);
+     }
+ 
+     private Map<String, String> offer(Map<String, String> req) throws Exception {
+         String c = consentOf(req.get("customerId"));
+-        if (!(c.equals("implied") || c.equals("explicit"))) return Map.of("queued", "false");
++        if (!c.equals("explicit")) return Map.of("queued", "false");
+         ctx.publish("offer.queued", Map.of("customerId", req.get("customerId"), "offerId", req.get("offerId")));
+         return Map.of("queued", "true");
+     }
+diff -ruN /home/garry/code/experiments/2026-11-mature-pipeline/estate/customer/src/test/java/estate/svc/MainTest.java /home/garry/code/experiments/2026-11-mature-pipeline/results/main/runs/S4/B/5/work/customer/customer/src/test/java/estate/svc/MainTest.java
+--- /home/garry/code/experiments/2026-11-mature-pipeline/estate/customer/src/test/java/estate/svc/MainTest.java	2026-11-26 00:31:13.000000000 +0000
++++ /home/garry/code/experiments/2026-11-mature-pipeline/results/main/runs/S4/B/5/work/customer/customer/src/test/java/estate/svc/MainTest.java	2026-11-26 15:36:11.751547446 +0000
+@@ -2,6 +2,7 @@
+ 
+ import org.junit.jupiter.api.Test;
+ 
++import java.sql.Statement;
+ import java.util.Map;
+ 
+ import static org.junit.jupiter.api.Assertions.*;
+@@ -47,13 +48,44 @@
+     }
+ 
+     @Test
+-    void offersNeedConsent() throws Exception {
++    void onlyExplicitConsentAllowsMarketing() throws Exception {
+         FakeContext c = new FakeContext();
+         Main m = start(c);
+         m.handle("create", Map.of("customerId", "c1", "consent", "explicit"));
+-        m.handle("create", Map.of("customerId", "c2", "consent", "none"));
++        m.handle("create", Map.of("customerId", "c2", "consent", "implied"));
++        m.handle("create", Map.of("customerId", "c3", "consent", "none"));
+         assertEquals("true", m.handle("offer", Map.of("customerId", "c1", "offerId", "o1")).get("queued"));
+         assertEquals("false", m.handle("offer", Map.of("customerId", "c2", "offerId", "o1")).get("queued"));
++        assertEquals("false", m.handle("offer", Map.of("customerId", "c3", "offerId", "o1")).get("queued"));
+         assertEquals(1, c.events.size());
+     }
++
++    @Test
++    void consentCheckDoesNotTreatImpliedConsentAsAllowed() throws Exception {
++        FakeContext c = new FakeContext();
++        Main m = start(c);
++        m.handle("create", Map.of("customerId", "c1", "consent", "implied"));
++        m.handle("create", Map.of("customerId", "c2", "consent", "explicit"));
++
++        Map<String, String> implied = m.handle("consent.check", Map.of("customerId", "c1", "purpose", "marketing"));
++        assertEquals("false", implied.get("allowed"));
++        assertEquals("implied", implied.get("basis"));
++        assertEquals("true", m.handle("consent.check", Map.of("customerId", "c2", "purpose", "marketing")).get("allowed"));
++    }
++
++    @Test
++    void migrationMakesLegacyRowsSafeForOldInstances() throws Exception {
++        FakeContext c = new FakeContext();
++        try (Statement s = c.db().createStatement()) {
++            s.execute("CREATE TABLE customers(id VARCHAR(40) PRIMARY KEY, consent VARCHAR(20) NOT NULL)");
++            s.execute("CREATE TABLE statement(account VARCHAR(40) PRIMARY KEY, balance_cents BIGINT NOT NULL, lines INT NOT NULL)");
++            s.execute("INSERT INTO customers(id, consent) VALUES ('c1', 'implied')");
++        }
++
++        Main m = start(c);
++
++        assertEquals("implied", m.handle("consent.check", Map.of("customerId", "c1", "purpose", "marketing")).get("basis"));
++        assertEquals("false", m.handle("offer", Map.of("customerId", "c1", "offerId", "o1")).get("queued"));
++        assertTrue(c.events.isEmpty());
++    }
+ }
